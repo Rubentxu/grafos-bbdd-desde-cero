@@ -2,7 +2,7 @@
 name = "vol2-liradb"
 version = "0.1.0"
 edition = "2024"
-description = "Vol.II Cap.7 — LiraDB: modelo de datos Property Graph + Value"
+description = "Vol.II Caps 7-10 — LiraDB: Property Graph + GraphStore trait + encoding + append-only"
 license = "CC-BY-NC-SA-4.0"
 authors = ["Rubentxu"]
 publish = false
