@@ -15,9 +15,14 @@ members = [
     "crates/vol1-cap-03-bfs-dfs",
     "crates/vol1-cap-04-dijkstra",
 
-    # Vol.I — capítulos pendientes de migrar (Fase M3+)
-    # "crates/vol1-cap-05-mst",
+    # Vol.I — Fase M3a (caps 5, 10, 11 — sin crates pesadas + cap 11 con rand)
+    "crates/vol1-cap-05-mst",
+    "crates/vol1-cap-10-maxflow",
+    "crates/vol1-cap-11-mincut",
+
+    # Vol.I — capítulos pendientes de migrar (Fase M3b+)
     # "crates/vol1-cap-06-topo-dag",
+    # "crates/vol1-cap-07-union-find",
     # ...
 
     # Vol.II — proyecto integrador LiraDB

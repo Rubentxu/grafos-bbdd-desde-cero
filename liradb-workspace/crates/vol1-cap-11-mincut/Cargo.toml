@@ -1,0 +1,22 @@
+[package]
+name = "vol1-cap-11-mincut"
+version = "0.1.0"
+edition = "2024"
+description = "Vol.I Cap.11 — Min-Cut: Dinic residual + König + Karger global"
+license = "CC-BY-NC-SA-4.0"
+authors = ["Rubentxu"]
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[dependencies]
+# rand 0.8 — versión histórica del Vol.I; pineada para reproducibilidad.
+# Karger usa StdRng con seed explícito; es un algoritmo Monte Carlo.
+rand = "0.8"
+
+# Reutilizamos Dinic de cap-10 para DinicCut.
+vol1-cap-10-maxflow = { path = "../vol1-cap-10-maxflow" }

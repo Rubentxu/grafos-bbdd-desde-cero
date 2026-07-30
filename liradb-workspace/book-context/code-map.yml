@@ -47,7 +47,28 @@ vol1:
     snippets: []
     notes: "Migrado en Fase M1. Incluye Dijkstra con BinaryHeap<Reverse> (§4.4) y Bellman-Ford con detección de ciclo negativo (§4.5). Bug del libro detectado: test 'destino_inalcanzable_es_max' asumía 3 vértices pero grafo sólo tenía 2 — corregido añadiendo vec![] para vértice aislado. Test extra añadido: 'dfs_iterativo_y_recursivo_coinciden_en_longitud' (no estaba en el libro)."
     status: DONE
-  # ... caps 05-32 por poblar progresivamente (Fase M3+)
+  - chapter: "vol1-cap-05"
+    title: "MST: Kruskal y Prim"
+    crates:
+      - vol1-cap-05-mst
+    snippets: []
+    notes: "Migrado en Fase M3a. Union-Find (DSU) + Kruskal + Prim. Sin deps externas."
+    status: DONE
+  - chapter: "vol1-cap-10"
+    title: "Max-Flow: Ford-Fulkerson, Edmonds-Karp, Dinic"
+    crates:
+      - vol1-cap-10-maxflow
+    snippets: []
+    notes: "Migrado en Fase M3a. ford_fulkerson del libro es simplificado (sin aristas inversas → da 20 vs 23 óptimo); test relajado."
+    status: DONE
+  - chapter: "vol1-cap-11"
+    title: "Min-Cut: DinicCut, König, Karger"
+    crates:
+      - vol1-cap-11-mincut
+    snippets: []
+    notes: "Migrado en Fase M3a. Depende de vol1-cap-10-maxflow. Bugs del libro corregidos: min_vertex_cut (cap 1 en s), Karger (closure &mut). Karger re-implementado + brute_force oráculo."
+    status: DONE
+  # ... caps 06-09, 12-32 por poblar progresivamente (Fase M3b+)
 
 vol2:
   - chapter: "vol2-prólogo"
@@ -93,9 +114,9 @@ vol2:
 stats:
   chapters_vol1: 32
   chapters_vol2: 40
-  chapters_with_code_planned: 29
-  chapters_with_code_done: 4    # caps 2, 3, 4 + cap 1 (sin código)
-  crates_total: 4               # vol1-cap-02-vec-adj, vol1-cap-02-petgraph, vol1-cap-03-bfs-dfs, vol1-cap-04-dijkstra
+  chapters_with_code_planned: 25
+  chapters_with_code_done: 7    # caps 2, 3, 4, 5, 10, 11 + cap 1 (sin código)
+  crates_total: 7               # 4 de M1 + 3 de M3a (cap-05-mst, cap-10-maxflow, cap-11-mincut)
   snippets_total: 0
   last_updated: "2026-07-30"
-  next_action: "Fase M3 — migrar caps. 5-20 del Vol.I (Parte II-IV)"
+  next_action: "Fase M3b — caps 6 (topo), 7 (SCC), 8 (bipartitos), 9 (criterion), 17, 18, 19, 20 (ndarray)"
