@@ -213,6 +213,28 @@ all = { level = "warn", priority = -1 }
 *Mantenido por: code-integration-architect (skill del BOOK-WORKFLOW).*
 *Próxima revisión: tras Fase M3c-batch-5 (caps. 13/14 ratatui, cap. 15 image).*
 
+## 13. Métricas de la Fase M3c-batch-5 (parcial)
+
+| Métrica | Valor |
+|---|---|
+| Caps. migrados | 1 (cap 13, sin TUI) |
+| Crates creadas | 1 (`vol1-cap-13-coloring`) |
+| Líneas Rust migradas | ~210 |
+| Tests propios añadidos | 8 |
+
+### Decisión: omitir TUI de cap 13
+
+El Vol.I incluye una visualización TUI interactiva con `ratatui 0.29` + `crossterm 0.28` que requiere:
+- ~150 crates transitivas.
+- Tiempo de compilación inicial: 2-5 minutos.
+- Componentes específicos de plataforma (terminal raw mode, eventos asíncronos).
+
+**Decisión**: migrar **sólo la parte algorítmica** (greedy, Welsh-Powell, DSATUR, Vizing) que es lo verificable mediante tests. La parte TUI se deja como referencia en el Vol.I; si se necesita visualización interactiva, podría re-implementarse en una fase posterior con la versión actual de `ratatui`.
+
+Esta decisión es **generalizable**: cuando un snippet del libro mezcla lógica algorítmica (testeable) con presentación/UI (no testeable automáticamente), priorizar la primera. Las puertas de calidad §8 del workflow miden compilación + tests + lints, no pixels en pantalla.
+
+---
+
 ## 11. Métricas de la Fase M3b
 
 | Métrica | Valor |

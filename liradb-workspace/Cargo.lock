@@ -420,6 +420,10 @@ name = "vol1-cap-12-mincost"
 version = "0.1.0"
 
 [[package]]
+name = "vol1-cap-13-coloring"
+version = "0.1.0"
+
+[[package]]
 name = "vol1-cap-16-spectral"
 version = "0.1.0"
 dependencies = [

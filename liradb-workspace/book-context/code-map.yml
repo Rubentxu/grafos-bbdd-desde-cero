@@ -138,7 +138,14 @@ vol1:
     snippets: []
     notes: "Migrado en Fase M3c. Mini-GCN con ndarray 0.15 + ndarray-rand 0.14 + rand 0.8 (incompatible con rand 0.9 del resto del workspace; ndarray-rand 0.14 requiere rand 0.8)."
     status: DONE
-  # ... caps 13/14/15 pendientes (ratatui, image) — Fase M3c-batch-5 (futura)
+  - chapter: "vol1-cap-13"
+    title: "Coloración de grafos"
+    crates:
+      - vol1-cap-13-coloring
+    snippets: []
+    notes: "Migrado en Fase M3c-batch-5 (algoritmo solamente, sin TUI). Greedy + Welsh-Powell + DSATUR + Vizing edge coloring. Sin deps. Decisión: omitir la parte TUI (ratatui + crossterm) por costo de compilación (~150 crates transitivas); los algoritmos son lo verificable. caps 14 (planaridad + ratatui) y 15 (strings + image) quedan para otra sesión."
+    status: DONE
+  # ... caps 14/15 pendientes (ratatui, image) — Fase M3c-batch-5 resto (futura)
 
 vol2:
   - chapter: "vol2-prólogo"
@@ -186,7 +193,7 @@ stats:
   chapters_vol2: 40
   chapters_with_code_planned: 15
   chapters_with_code_done: 17   # caps 1 (sin código), 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19, 20
-  crates_total: 16              # 4 (M1) + 3 (M3a) + 6 (M3b) + 4 (M3c parcial: 9, 12, 16, 20)
+  crates_total: 17              # 4 (M1) + 3 (M3a) + 6 (M3b) + 4 (M3c) + 1 (M3c-batch-5 parcial: cap-13 sin TUI)
   snippets_total: 0
   last_updated: "2026-07-30"
-  next_action: "Fase M3c-batch-5 (futura): caps 13/14 ratatui, cap 15 image"
+  next_action: "Fase M3c-batch-5 resto (futura): caps 14 ratatui (planaridad), cap 15 image (Aho-Corasick)"
