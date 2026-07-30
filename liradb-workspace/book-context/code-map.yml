@@ -1,0 +1,91 @@
+# ─────────────────────────────────────────────────────────────────
+# code-map.yml — Tabla bidireccional prosa ↔ código
+#
+# Mapea cada capítulo del libro a las crates y snippets de este
+# workspace que contienen su código ejecutable.
+#
+# Mantenedor: code-integration-architect (skill del BOOK-WORKFLOW).
+# Cada vez que un cap. se mueve de PLANNED a DONE, sincronizar.
+#
+# Esquema:
+#   vol1 / vol2:
+#     - chapter: "vol1-cap-NN"           # ID canónico del capítulo
+#       title: "<título evocador>"       # mismo título que en el manuscrito
+#       crates: [<crate-name>, ...]      # crates en /crates/
+#       snippets: [<snippet-id>, ...]    # IDs de snippets sueltos
+#       modules: [<module-path>, ...]    # submódulos dentro de un crate
+#       notes: "<texto libre>"           # advertencias o contexto
+#       status: PLANNED | IN_REVIEW | DONE
+# ─────────────────────────────────────────────────────────────────
+
+vol1:
+  - chapter: "vol1-cap-01"
+    title: "Introducción a grafos"
+    crates: []
+    snippets: []
+    notes: "Capítulo conceptual sin código ejecutable; sólo definiciones y figuras ASCII."
+    status: DONE
+  - chapter: "vol1-cap-02"
+    title: "Representaciones de grafos"
+    crates: []
+    snippets: []
+    notes: "Pendiente migrar (Fase M1). 2 crates previstas: vec-adj + petgraph."
+    status: PLANNED
+  - chapter: "vol1-cap-03"
+    title: "BFS y DFS"
+    crates: []
+    snippets: []
+    notes: "Pendiente migrar (Fase M1)."
+    status: PLANNED
+  # ... caps 04-32 por poblar progresivamente
+
+vol2:
+  - chapter: "vol2-prólogo"
+    title: "Vamos a construir una base de datos"
+    crates: []
+    snippets: []
+    status: DRAFTING
+  - chapter: "vol2-cap-01"
+    title: "Qué es realmente un grafo"
+    crates: []
+    snippets: []
+    status: PLANNED
+  - chapter: "vol2-cap-11"
+    title: "Páginas, bloques y slotted pages"
+    crates: []
+    modules: []
+    notes: "Cuando se implemente, vivirá como módulo en la crate vol2-liradb."
+    status: PLANNED
+  # ... caps 02-10, 12-40 por poblar
+  - chapter: "vol2-liradb"
+    title: "Proyecto integrador LiraDB"
+    crates: [vol2-liradb]
+    modules:
+      - pager
+      - buffer_pool
+      - csr
+      - wal
+      - query/lexer
+      - query/parser
+      - query/planner
+      - query/executor
+    notes: "Crate principal del Vol.II; contiene todos los módulos de caps. 11-40."
+    status: PLANNED
+  - chapter: "vol2-liradb-cli"
+    title: "CLI de LiraDB (binario)"
+    crates: [vol2-liradb-cli]
+    notes: "Binario separado para la CLI (cap. 31)."
+    status: PLANNED
+
+# ─────────────────────────────────────────────────────────────────
+# Estadísticas
+# ─────────────────────────────────────────────────────────────────
+stats:
+  chapters_vol1: 32
+  chapters_vol2: 40
+  chapters_with_code_planned: 0
+  chapters_with_code_done: 0
+  crates_total: 0
+  snippets_total: 0
+  last_updated: "2026-07-30"
+  next_action: "Fase M1 — migrar caps. 2, 3, 4 del Vol.I como crates de prueba"

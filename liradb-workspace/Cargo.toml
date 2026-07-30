@@ -1,0 +1,38 @@
+[workspace]
+# Workspace virtual de Rust que agrupa todos los crates de ejemplo
+# del libro "Grafos en Computación: de Cero a Experto" (Vol.I)
+# y "Construye LiraDB" (Vol.II).
+#
+# Cada capítulo del libro tiene (idealmente) una o más crates en
+# `crates/` y/o snippets sueltos en `snippets/`. El code-map
+# bidireccional (book-context/code-map.yml) los conecta con la prosa.
+
+resolver = "2"
+members = [
+    # Vol.I — capítulos ilustrativos (se irán añadiendo progresivamente)
+    # "crates/vol1-cap-02-vec-adj",
+    # "crates/vol1-cap-02-petgraph",
+    # "crates/vol1-cap-03-bfs-dfs",
+    # ...
+
+    # Vol.II — proyecto integrador LiraDB
+    # "crates/vol2-liradb",
+    # "crates/vol2-liradb-cli",
+]
+
+# Cada crate individual pinea sus propias dependencias (sin ^ ni ~).
+# El workspace resolver se encarga de unificar versiones en Cargo.lock.
+# Cargo.lock se commitea al repo (ver .gitignore para excepciones).
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.96"
+license = "CC-BY-NC-SA-4.0"
+authors = ["Rubentxu"]
+repository = "https://github.com/rubentxu/liradb-workspace"
+
+[workspace.dependencies]
+# Aquí se declaran versiones unificadas de dependencias compartidas.
+# Las crates individuales las referencian con `dep.workspace = true`.
+# Mantener este bloque vacío hasta que se identifiquen dependencias
+# compartidas reales (no poblarlo preventivamente).

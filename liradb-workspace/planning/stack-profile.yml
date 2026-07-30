@@ -1,0 +1,19 @@
+# ─────────────────────────────────────────────────────────────────
+# stack-profile.yml
+#
+# Define los comandos exactos que el verificador (scripts/verify.sh)
+# ejecuta sobre el workspace. Consumido por la skill
+# `code-example-verifier` (puerta de calidad §8 del BOOK-WORKFLOW).
+#
+# Para añadir un stack secundario (Python, Go, etc.) en el futuro,
+# duplicar el bloque `primary` como `secondary` y ajustar los comandos.
+# ─────────────────────────────────────────────────────────────────
+
+stack:
+  primary:
+    language: rust
+    fmt_tool: "cargo fmt --all --check"
+    build_tool: "cargo check --workspace --all-targets --locked"
+    test_runner: "cargo test --workspace --locked"
+    lint_tool: "cargo clippy --workspace --all-targets --locked -- -D warnings"
+  secondary: []

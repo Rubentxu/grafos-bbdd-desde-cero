@@ -1,0 +1,34 @@
+# ─────────────────────────────────────────────────────────────────
+# snippets.yml — Inventario de snippets sueltos (archivos .rs standalone)
+#
+# Un snippet es un archivo Rust ejecutable que NO vive dentro de una
+# crate (no tiene Cargo.toml). Se usa para ejemplos cortos que no
+# ameritan una crate entera: una función, un test aislado, un
+# algoritmo de 20 líneas.
+#
+# Convención de nombre: snippets/vol<vol>-cap-<NN>-<slug>.rs
+#
+# Esquema:
+#   - id: <string único>                # snack_case
+#     path: <relativo a la raíz>
+#     chapter_origin: "vol<N>-cap-<NN>" # capítulo del que proviene
+#     description: "<texto corto>"
+#     has_main: <bool>                  # ¿tiene fn main()?
+#     has_tests: <bool>                 # ¿tiene #[test]?
+#     standalone: <bool>                # ¿corre con rustc directo o necesita crate?
+# ─────────────────────────────────────────────────────────────────
+
+snippets: []
+
+# Ejemplo de entrada (descomentar y adaptar cuando se cree el primer snippet):
+# - id: snippet-vol1-cap-04-dijkstra-naive
+#   path: snippets/vol1-cap-04-dijkstra-naive.rs
+#   chapter_origin: vol1-cap-04
+#   description: "Implementación naive de Dijkstra con O(V²) sin heap; sólo educativo."
+#   has_main: true
+#   has_tests: true
+#   standalone: true
+
+stats:
+  snippets_total: 0
+  last_updated: "2026-07-30"

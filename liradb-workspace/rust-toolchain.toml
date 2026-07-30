@@ -1,0 +1,9 @@
+[toolchain]
+# Toolchain pinneada para todo el workspace.
+# Cambiar este valor requiere:
+#   1. Ejecutar ./scripts/verify.sh (debe pasar con la nueva toolchain).
+#   2. Documentar el cambio en CHANGELOG.md.
+#   3. Commit con mensaje "chore: bump toolchain to <version>".
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

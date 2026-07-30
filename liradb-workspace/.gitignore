@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────────────────
+# liradb-workspace .gitignore
+# ─────────────────────────────────────────────────────────────
+
+# Cargo / Rust
+/target/
+/**/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Build outputs (del verificador)
+/build/
+/verify-report.jsonl
+/verify-report-*.jsonl
+
+# Local dev overrides
+.env
+.env.local
+*.local.toml
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Tooling caches
+.cargo/
+.mypy_cache/
+.ruff_cache/
