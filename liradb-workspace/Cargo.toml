@@ -15,14 +15,20 @@ members = [
     "crates/vol1-cap-03-bfs-dfs",
     "crates/vol1-cap-04-dijkstra",
 
-    # Vol.I — Fase M3a (caps 5, 10, 11 — sin crates pesadas + cap 11 con rand)
+    # Vol.I — Fase M3a (caps 5, 10, 11)
     "crates/vol1-cap-05-mst",
     "crates/vol1-cap-10-maxflow",
     "crates/vol1-cap-11-mincut",
 
-    # Vol.I — capítulos pendientes de migrar (Fase M3b+)
-    # "crates/vol1-cap-06-topo-dag",
-    # "crates/vol1-cap-07-union-find",
+    # Vol.I — Fase M3b (caps 6, 7, 8, 17, 18, 19)
+    "crates/vol1-cap-06-toposort",
+    "crates/vol1-cap-07-scc",
+    "crates/vol1-cap-08-bipartito",
+    "crates/vol1-cap-17-random",
+    "crates/vol1-cap-18-np",
+    "crates/vol1-cap-19-dp",
+
+    # Vol.I — Fase M3c (caps 9 criterion, 20 ndarray, 12, 13/14 ratatui, 15 image, 16 nalgebra)
     # ...
 
     # Vol.II — proyecto integrador LiraDB

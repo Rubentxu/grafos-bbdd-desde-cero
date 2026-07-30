@@ -1,0 +1,16 @@
+[package]
+name = "vol1-cap-07-scc"
+version = "0.1.0"
+edition = "2024"
+description = "Vol.I Cap.7 — Union-Find (DSU) + Kosaraju SCC + Tarjan SCC"
+license = "CC-BY-NC-SA-4.0"
+authors = ["Rubentxu"]
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[dependencies]

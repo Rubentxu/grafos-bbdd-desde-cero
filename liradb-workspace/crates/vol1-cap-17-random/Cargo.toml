@@ -1,0 +1,20 @@
+[package]
+name = "vol1-cap-17-random"
+version = "0.1.0"
+edition = "2024"
+description = "Vol.I Cap.17 — Algoritmos randomizados: Karger min-cut + método probabilístico"
+license = "CC-BY-NC-SA-4.0"
+authors = ["Rubentxu"]
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[dependencies]
+# rand 0.9 — bumpeado desde 0.8 (versión del Vol.I) porque Rust 2024
+# reserva la keyword `gen`, y rand 0.8 usa `rng.gen::<T>()` que ahora
+# falla al parsear. En rand 0.9 el método es `rng.random::<T>()`.
+rand = "0.9"

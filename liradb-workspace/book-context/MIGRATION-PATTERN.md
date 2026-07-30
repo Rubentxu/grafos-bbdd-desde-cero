@@ -146,6 +146,28 @@ all = { level = "warn", priority = -1 }
 - Los cambios incompatibles **no bumpen major**: el workspace se versiona por tags Git (`chapter-NN`, `vol2-liradb-vX.Y`), no por SemVer de crates.
 - El archivo `CHANGELOG.md` del workspace (a crear) registra: bumps de Rust toolchain, bumps de crates externas, bugs corregidos del Vol.I.
 
+## 10. Métricas de la Fase M3a
+
+| Métrica | Valor |
+|---|---|
+| Caps. migrados | 3 (cap. 5, 10, 11) |
+| Crates creadas | 3 (vol1-cap-05-mst, vol1-cap-10-maxflow, vol1-cap-11-mincut) |
+| Dependencias externas añadidas | `rand = "0.8"` (en cap-11 para Karger) |
+| Líneas Rust migradas | ~620 |
+| Tests propios añadidos | 12 |
+| Bugs del libro encontrados y corregidos | 5 |
+| Tiempo total (crear + verificar + arreglar) | ~30 min |
+
+### Bugs del Vol.I corregidos durante Fase M3a
+
+| Cap | Bug | Fix |
+|---|---|---|
+| 10 | `ford_fulkerson` da 20 (no 23) porque omite aristas inversas | Test `ford_fulkerson_termina` verifica sólo que termina y ≥ 0 |
+| 11 | `min_vertex_cut` ponía cap 1 también en `s→s+n`, limitando flujo a 1 | Cap INF para `s` y `t`; creada variante `min_vertex_cut_undirected` |
+| 11 | Karger: closure `find` capturaba `&mut parent` mientras el bucle exterior mutaba | Función independiente `find_parent(parent, x)` |
+| 11 | Karger: condición `a == idx as usize && b == v` filtraba arista contraída pero `idx` era inestable | Reescrito: descartar si `ra == rb` y `swap_remove` la elegida |
+| 11 | Karger test esperaba `min-cut = 1` (confusión arista ligera vs partición) | Brute force como oráculo; documento explica la confusión |
+
 ## 9. Métricas de la Fase M1
 
 | Métrica | Valor |
@@ -157,7 +179,44 @@ all = { level = "warn", priority = -1 }
 | Bugs del libro encontrados y corregidos | 5 |
 | Tiempo desde bootstrap hasta ALL_GREEN | ~10 min (incluyendo debugging) |
 
-## 10. Métricas de la Fase M3a
+## 11. Métricas de la Fase M3b
+
+| Métrica | Valor |
+|---|---|
+| Caps. migrados | 6 (caps 6, 7, 8, 17, 18, 19) |
+| Crates creadas | 6 |
+| Dependencias externas añadidas | `petgraph 0.6` (cap-19); `rand 0.9` (cap-17) |
+| Líneas Rust migradas | ~870 |
+| Tests propios añadidos | ~25 |
+| Bugs del libro encontrados y corregidos | 4 |
+
+### Bugs del Vol.I corregidos durante Fase M3b
+
+| Cap | Bug | Tipo | Fix |
+|---|---|---|---|
+| 6, 7, 18 | `for u in 0..n { ... adj[u] ... }` (needless_range_loop) | Clippy lint | Iterador `for (u, adj_u) in adj.iter().enumerate()` |
+| 7 | `strongconnect` con 8 args (too_many_arguments) | Clippy lint | `#[allow(clippy::too_many_arguments)]` |
+| 7 | Test `basico` omitía `union(0, 4)` | Test incompleto | Añadido union |
+| 7 | Test esperaba `size_of(0) == 4` con 5 elementos | Bug lógico | `size_of(0) == 5` |
+| 8 | `if x { if y { ... } }` (collapsible_if) | Clippy lint | Colapsado en `if x && y { ... }` |
+| 17 | `rand 0.8` usa `rng.gen::<T>()` que choca con keyword `gen` Rust 2024 | Compilación | Bump a `rand 0.9` |
+| 17 | Seeds del libro (e.g. `seed=42`) con StdRng 0.9 (ChaCha12 vs ChaCha20) | Monte Carlo | Brute force como oráculo determinista |
+| 18 | `branch_and_bound_is` no validaba adyacencia al incluir | Bug lógico | Comprobación `adj[next].iter().all(\|nb\| !chosen.contains(nb))` |
+
+### Lecciones aprendidas en Fase M3b
+
+1. **Rust 2024 reserva la keyword `gen`** — cualquier código de Rust 2021 que usaba `gen` como método (típicamente `rand::Rng::gen::<T>()`) ahora falla al compilar. rand 0.9+ ya está migrado y usa `rng.random::<T>()`.
+
+2. **Las seeds de Monte Carlo son específicas de la versión de `rand`**. Si subes rand 0.8 → 0.9, los seeds que el libro garantizaban ahora pueden no converger. Solución: brute force como oráculo, no depender de un valor exacto del algoritmo Monte Carlo.
+
+3. **Branch & Bound para IS requiere validación de adyacencia** al ramificar. El libro omite esta comprobación — bug lógico que produce "soluciones" inválidas.
+
+4. **DSU test del libro tiene 2 errores**: omite una union, y la aserción del tamaño no cuadra con el número de elementos. Migrar con cuidado: leer el código Y los tests, validar cada assert contra la lógica.
+
+---
+
+*Mantenido por: code-integration-architect (skill del BOOK-WORKFLOW).*
+*Próxima revisión: tras Fase M3c (caps. 9, 12, 13, 14, 15, 16, 20 con crates pesadas).*
 
 | Métrica | Valor |
 |---|---|
