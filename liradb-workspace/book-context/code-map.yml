@@ -27,17 +27,27 @@ vol1:
     status: DONE
   - chapter: "vol1-cap-02"
     title: "Representaciones de grafos"
-    crates: []
+    crates:
+      - vol1-cap-02-vec-adj
+      - vol1-cap-02-petgraph
     snippets: []
-    notes: "Pendiente migrar (Fase M1). 2 crates previstas: vec-adj + petgraph."
-    status: PLANNED
+    notes: "Migrado en Fase M1 (commit: vol1-cap-02/03/04 migrated and verified). Bug del libro detectado: g.vecinos(&1) → g.vecinos(1). Doctest del cap-02-petgraph usa fences ```text (no ```rust) por la presencia de caracteres que rompen el parser de Rust."
+    status: DONE
   - chapter: "vol1-cap-03"
     title: "BFS y DFS"
-    crates: []
+    crates:
+      - vol1-cap-03-bfs-dfs
     snippets: []
-    notes: "Pendiente migrar (Fase M1)."
-    status: PLANNED
-  # ... caps 04-32 por poblar progresivamente
+    notes: "Migrado en Fase M1. Incluye BFS iterativo (§3.2), DFS recursivo + iterativo (§3.4). Las versiones con petgraph (§3.5) no se migraron — están en el libro como texto."
+    status: DONE
+  - chapter: "vol1-cap-04"
+    title: "Dijkstra y Bellman-Ford"
+    crates:
+      - vol1-cap-04-dijkstra
+    snippets: []
+    notes: "Migrado en Fase M1. Incluye Dijkstra con BinaryHeap<Reverse> (§4.4) y Bellman-Ford con detección de ciclo negativo (§4.5). Bug del libro detectado: test 'destino_inalcanzable_es_max' asumía 3 vértices pero grafo sólo tenía 2 — corregido añadiendo vec![] para vértice aislado. Test extra añadido: 'dfs_iterativo_y_recursivo_coinciden_en_longitud' (no estaba en el libro)."
+    status: DONE
+  # ... caps 05-32 por poblar progresivamente (Fase M3+)
 
 vol2:
   - chapter: "vol2-prólogo"
@@ -83,9 +93,9 @@ vol2:
 stats:
   chapters_vol1: 32
   chapters_vol2: 40
-  chapters_with_code_planned: 0
-  chapters_with_code_done: 0
-  crates_total: 0
+  chapters_with_code_planned: 29
+  chapters_with_code_done: 4    # caps 2, 3, 4 + cap 1 (sin código)
+  crates_total: 4               # vol1-cap-02-vec-adj, vol1-cap-02-petgraph, vol1-cap-03-bfs-dfs, vol1-cap-04-dijkstra
   snippets_total: 0
   last_updated: "2026-07-30"
-  next_action: "Fase M1 — migrar caps. 2, 3, 4 del Vol.I como crates de prueba"
+  next_action: "Fase M3 — migrar caps. 5-20 del Vol.I (Parte II-IV)"

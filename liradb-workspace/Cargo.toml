@@ -9,10 +9,15 @@
 
 resolver = "2"
 members = [
-    # Vol.I — capítulos ilustrativos (se irán añadiendo progresivamente)
-    # "crates/vol1-cap-02-vec-adj",
-    # "crates/vol1-cap-02-petgraph",
-    # "crates/vol1-cap-03-bfs-dfs",
+    # Vol.I — capítulos ilustrativos migrados (Fase M1)
+    "crates/vol1-cap-02-vec-adj",
+    "crates/vol1-cap-02-petgraph",
+    "crates/vol1-cap-03-bfs-dfs",
+    "crates/vol1-cap-04-dijkstra",
+
+    # Vol.I — capítulos pendientes de migrar (Fase M3+)
+    # "crates/vol1-cap-05-mst",
+    # "crates/vol1-cap-06-topo-dag",
     # ...
 
     # Vol.II — proyecto integrador LiraDB
