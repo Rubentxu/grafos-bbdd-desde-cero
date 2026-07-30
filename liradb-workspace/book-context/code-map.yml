@@ -143,9 +143,22 @@ vol1:
     crates:
       - vol1-cap-13-coloring
     snippets: []
-    notes: "Migrado en Fase M3c-batch-5 (algoritmo solamente, sin TUI). Greedy + Welsh-Powell + DSATUR + Vizing edge coloring. Sin deps. Decisión: omitir la parte TUI (ratatui + crossterm) por costo de compilación (~150 crates transitivas); los algoritmos son lo verificable. caps 14 (planaridad + ratatui) y 15 (strings + image) quedan para otra sesión."
+    notes: "Migrado en Fase M3c-batch-5 (algoritmo solamente, sin TUI). Greedy + Welsh-Powell + DSATUR + Vizing edge coloring. Sin deps. Decisión: omitir la parte TUI (ratatui + crossterm) por costo de compilación (~150 crates transitivas); los algoritmos son lo verificable."
     status: DONE
-  # ... caps 14/15 pendientes (ratatui, image) — Fase M3c-batch-5 resto (futura)
+  - chapter: "vol1-cap-14"
+    title: "Planaridad y fórmulas famosas"
+    crates:
+      - vol1-cap-14-planarity
+    snippets: []
+    notes: "Migrado en Fase M3c-batch-5-resto (algoritmo solamente, sin TUI). Fórmula de Euler V-E+F=2 + cota E<=3V-6 + detección K₅ y K₃,₃. Dep: itertools 0.12. Bugs del libro: (1) has_k33_subgraph asumía que el split en posición 3 del HashMap iterador coincidía con la partición bipartita real — esto falla porque HashMap itera en orden arbitrario. Fix: probar TODAS las C(6,3)/2=10 particiones."
+    status: DONE
+  - chapter: "vol1-cap-15"
+    title: "Grafos en strings (tries, suffix arrays, Aho-Corasick)"
+    crates:
+      - vol1-cap-15-strings
+    snippets: []
+    notes: "Migrado en Fase M3c-batch-5-resto (algoritmos solamente, sin image). Trie + suffix array + LCP + Aho-Corasick multi-pattern matching. Sin deps. Decisión: omitir image+imageproc (visualización PNG de matches). Bugs del libro: (1) suffix_array_banana test esperaba 6 elementos pero el algoritmo añade centinela → 7 elementos; corregido incluyendo '$'."
+    status: DONE
 
 vol2:
   - chapter: "vol2-prólogo"
@@ -193,7 +206,7 @@ stats:
   chapters_vol2: 40
   chapters_with_code_planned: 15
   chapters_with_code_done: 17   # caps 1 (sin código), 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19, 20
-  crates_total: 17              # 4 (M1) + 3 (M3a) + 6 (M3b) + 4 (M3c) + 1 (M3c-batch-5 parcial: cap-13 sin TUI)
+  crates_total: 19              # 4 (M1) + 3 (M3a) + 6 (M3b) + 4 (M3c) + 2 (M3c-batch-5: cap-13 + cap-14/15 sin UI)
   snippets_total: 0
   last_updated: "2026-07-30"
   next_action: "Fase M3c-batch-5 resto (futura): caps 14 ratatui (planaridad), cap 15 image (Aho-Corasick)"

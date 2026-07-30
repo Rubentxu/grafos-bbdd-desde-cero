@@ -235,6 +235,37 @@ Esta decisión es **generalizable**: cuando un snippet del libro mezcla lógica 
 
 ---
 
+## 14. Métricas de la Fase M3c-batch-5 (completa)
+
+| Métrica | Valor |
+|---|---|
+| Caps. migrados | 3 (caps 13, 14, 15) |
+| Crates creadas | 3 (`vol1-cap-13-coloring`, `vol1-cap-14-planarity`, `vol1-cap-15-strings`) |
+| Dependencias externas añadidas | `itertools 0.12` (cap-14) |
+| Líneas Rust migradas | ~620 |
+| Tests propios añadidos | ~18 |
+| Bugs del libro encontrados y corregidos | 2 |
+
+### Bugs del Vol.I corregidos durante Fase M3c-batch-5
+
+| Cap | Bug | Tipo | Fix |
+|---|---|---|---|
+| 14 | `has_k33_subgraph` asumía que el split en posición 3 del iterador coincidía con la partición bipartita real | Lógico | Probar TODAS las C(6,3)/2=10 particiones |
+| 15 | `build_suffix_array("banana")` devuelve 7 elementos (con `$`), no 6 | Test del libro | Añadir prefijo `[6, ...]` con el centinela |
+
+### Decisión de cierre de M3c-batch-5
+
+Caps 13/14/15 se migraron en su **parte algorítmica** sin TUI/UI:
+- Cap 13: greedy + Welsh-Powell + DSATUR + Vizing (sin ratatui).
+- Cap 14: Euler + detección K₅/K₃,₃ (sin ratatui).
+- Cap 15: Trie + suffix array + LCP + Aho-Corasick (sin image).
+
+Esto cierra la migración del Vol.I al workspace para los caps que tienen **parte algorítmica testeable**. Las visualizaciones interactivas del Vol.I (TUI en caps 13/14, imagen PNG en cap 15) quedan como referencia visual en el libro; si el usuario las necesita interactivas, pueden re-implementarse en una fase futura con la versión actual de las crates.
+
+**Estado final del workspace tras M3c-batch-5**: **19 crates, ~125 tests, ALL_GREEN**.
+
+---
+
 ## 11. Métricas de la Fase M3b
 
 | Métrica | Valor |

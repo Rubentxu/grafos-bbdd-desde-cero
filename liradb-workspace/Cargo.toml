@@ -32,6 +32,8 @@ members = [
     "crates/vol1-cap-09-shortest",
     "crates/vol1-cap-12-mincost",
     "crates/vol1-cap-13-coloring",
+    "crates/vol1-cap-14-planarity",
+    "crates/vol1-cap-15-strings",
     "crates/vol1-cap-16-spectral",
     "crates/vol1-cap-20-gnn",
 
