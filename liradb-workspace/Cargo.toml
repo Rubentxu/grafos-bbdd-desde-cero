@@ -41,7 +41,7 @@ members = [
     # ...
 
     # Vol.II — proyecto integrador LiraDB
-    # "crates/vol2-liradb",
+    "crates/vol2-liradb",
     # "crates/vol2-liradb-cli",
 ]
 

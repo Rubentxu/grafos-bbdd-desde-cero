@@ -171,6 +171,13 @@ vol2:
     crates: []
     snippets: []
     status: PLANNED
+  - chapter: "vol2-cap-07"
+    title: "El modelo de datos de LiraDB (Property Graph + Value)"
+    crates:
+      - vol2-liradb
+    snippets: []
+    notes: "Primer crate del Vol.II migrada al workspace. Define Value (Null/Bool/Int/Float/String/Bytes), Node (con labels y props), Edge (dirigida con source/target/label/props), Element enum, y PropertyGraph en memoria con listas de adyacencia. Sin deps."
+    status: DONE
   - chapter: "vol2-cap-11"
     title: "Páginas, bloques y slotted pages"
     crates: []
@@ -206,7 +213,7 @@ stats:
   chapters_vol2: 40
   chapters_with_code_planned: 15
   chapters_with_code_done: 17   # caps 1 (sin código), 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19, 20
-  crates_total: 19              # 4 (M1) + 3 (M3a) + 6 (M3b) + 4 (M3c) + 2 (M3c-batch-5: cap-13 + cap-14/15 sin UI)
+  crates_total: 20              # 19 (Vol.I completo) + 1 (vol2-liradb inicial, cap 7)
   snippets_total: 0
   last_updated: "2026-07-30"
   next_action: "Fase M3c-batch-5 resto (futura): caps 14 ratatui (planaridad), cap 15 image (Aho-Corasick)"

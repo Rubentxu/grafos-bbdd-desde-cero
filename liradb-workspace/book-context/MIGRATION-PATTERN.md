@@ -266,6 +266,30 @@ Esto cierra la migración del Vol.I al workspace para los caps que tienen **part
 
 ---
 
+## 15. Inicio del Vol.II — LiraDB (cap 7 migrado)
+
+| Métrica | Valor |
+|---|---|
+| Caps. Vol.II migrados | 1 (cap 7: Property Graph + Value) |
+| Crates creadas | 1 (`vol2-liradb`) |
+| Líneas Rust | ~210 |
+| Tests propios | 5 |
+| Dependencias externas | (ninguna) |
+
+### Decisiones de diseño del cap 7
+
+1. **Identificadores `usize` por simplicidad pedagógica**. El cap 3 del Vol.II migrará a IDs generacionales (slotmap) para estabilidad ante deletes.
+
+2. **`PropertyGraph` en memoria** con arrays de nodos, aristas, y listas de adyacencia (out/in). En el cap 14 (Vol.II) esto se migrará a almacenamiento en disco con páginas y buffer pool.
+
+3. **`Value` enum** con 6 variantes (Null, Bool, Int, Float, String, Bytes). Diseñado para ser extensible: añadir una variante va acompañada de un bump de versión del formato.
+
+4. **Bug Rust encontrado**: borrow checker extiende el lifetime del borrow inmutable de `self.nodes[id].id` hasta el final de la expresión, bloqueando el `&mut self` subsiguiente. Fix: pre-computar el ID y la condición de duplicado en variables locales antes de cualquier mutación.
+
+5. **Estado del Vol.II**: **cap 7 migrado**, caps 1-6 + 8-40 pendientes. La arquitectura objetivo (40 caps / 8 Partes) está clara en `vol2-construye-liradb.md`. Próximos caps lógicos: 8 (trait `GraphStore`), 9 (encoding), 10 (append-only).
+
+---
+
 ## 11. Métricas de la Fase M3b
 
 | Métrica | Valor |
