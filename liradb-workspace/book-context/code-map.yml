@@ -110,6 +110,35 @@ vol1:
     snippets: []
     notes: "Migrado en Fase M3b. longest_path_dag (DP sobre orden topológico) + subtree_sizes (Tree DP) + Held-Karp (duplicado de cap-18 por la estructura del Vol.I). petgraph 0.6."
     status: DONE
+  - chapter: "vol1-cap-09"
+    title: "Shortest Paths avanzado"
+    crates:
+      - vol1-cap-09-shortest
+    snippets: []
+    notes: "Migrado en Fase M3c. Floyd-Warshall + Johnson + shortest_path_dag + A*. Sin deps. Bug del libro: test floyd_warshall asumia d[0][2]=3 pero el óptimo real es 4."
+    status: DONE
+  - chapter: "vol1-cap-12"
+    title: "Flujo de costo mínimo"
+    crates:
+      - vol1-cap-12-mincost
+    snippets: []
+    notes: "Migrado en Fase M3c. SSP con potentials (Johnson reweighting). Sin deps."
+    status: DONE
+  - chapter: "vol1-cap-16"
+    title: "Teoría espectral de grafos"
+    crates:
+      - vol1-cap-16-spectral
+    snippets: []
+    notes: "Migrado en Fase M3c. Laplaciana + autovalores + PageRank. Dep: nalgebra 0.32. Bug del libro: matriz M del test PageRank no era estocástica."
+    status: DONE
+  - chapter: "vol1-cap-20"
+    title: "Grafos en Machine Learning (mini-GCN)"
+    crates:
+      - vol1-cap-20-gnn
+    snippets: []
+    notes: "Migrado en Fase M3c. Mini-GCN con ndarray 0.15 + ndarray-rand 0.14 + rand 0.8 (incompatible con rand 0.9 del resto del workspace; ndarray-rand 0.14 requiere rand 0.8)."
+    status: DONE
+  # ... caps 13/14/15 pendientes (ratatui, image) — Fase M3c-batch-5 (futura)
 
 vol2:
   - chapter: "vol2-prólogo"
@@ -155,9 +184,9 @@ vol2:
 stats:
   chapters_vol1: 32
   chapters_vol2: 40
-  chapters_with_code_planned: 19
-  chapters_with_code_done: 13   # caps 1 (sin código), 2, 3, 4, 5, 6, 7, 8, 10, 11, 17, 18, 19
-  crates_total: 12              # 4 (M1) + 3 (M3a) + 6 (M3b)
+  chapters_with_code_planned: 15
+  chapters_with_code_done: 17   # caps 1 (sin código), 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 17, 18, 19, 20
+  crates_total: 16              # 4 (M1) + 3 (M3a) + 6 (M3b) + 4 (M3c parcial: 9, 12, 16, 20)
   snippets_total: 0
   last_updated: "2026-07-30"
-  next_action: "Fase M3c — caps 9 (criterion), 12, 13/14 (ratatui), 15 (image), 16 (nalgebra), 20 (ndarray)"
+  next_action: "Fase M3c-batch-5 (futura): caps 13/14 ratatui, cap 15 image"

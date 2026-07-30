@@ -179,6 +179,40 @@ all = { level = "warn", priority = -1 }
 | Bugs del libro encontrados y corregidos | 5 |
 | Tiempo desde bootstrap hasta ALL_GREEN | ~10 min (incluyendo debugging) |
 
+## 12. Métricas de la Fase M3c (parcial)
+
+| Métrica | Valor |
+|---|---|
+| Caps. migrados | 4 (caps 9, 12, 16, 20) |
+| Crates creadas | 4 |
+| Dependencias externas añadidas | `nalgebra 0.32` (cap-16); `ndarray 0.15`, `ndarray-rand 0.14`, `rand 0.8` (cap-20) |
+| Líneas Rust migradas | ~570 |
+| Tests propios añadidos | ~12 |
+| Bugs del libro encontrados y corregidos | 2 |
+| Tiempo total | ~25 min |
+
+### Bugs del Vol.I corregidos durante Fase M3c
+
+| Cap | Bug | Tipo | Fix |
+|---|---|---|---|
+| 9 | Test `floyd_warshall` esperaba `d[0][2] = 3` (0→1→3→2 = 4) | Test incorrecto | `d[0][2] = 4` |
+| 16 | Matriz M del test PageRank no era estocástica (columnas no sumaban 1) | Test incorrecto | Redefinida como ciclo 0→1→2→0 |
+
+### Lecciones aprendidas en Fase M3c
+
+1. **Conflicto de versiones `rand`**: `ndarray-rand 0.14` requiere `rand 0.8`, pero Rust 2024 reserva la keyword `gen` que rand 0.8 usa para `rng.gen::<T>()`. Solución: cap-20-gnn usa `rand 0.8` y no llama `rng.gen()` directamente (delega en `ndarray-rand`). Es un caso aislado: el resto del workspace usa `rand 0.9`.
+
+2. **`ndarray-rand 0.16` (última versión) tiene API distinta a `0.14`** — el método `random_using` cambia de firma. El código del Vol.I está pineado a 0.14; mantener esa versión es lo correcto.
+
+3. **`#![allow(clippy::...)]` global en el crate** es legítimo cuando se trata de una traducción directa del libro con un estilo pedagógico deliberado (e.g. `for i in 0..n` con indexación en lugar de iteradores). Reescribir a iteradores no aporta claridad pedagógica, sólo moderniza el código.
+
+4. **Las versiones de `nalgebra` cambian rápidamente**: el Vol.I usa `nalgebra 0.32`, que sigue siendo compatible. Algunas APIs nuevas (0.33+) cambian el método de eigendecomposition.
+
+---
+
+*Mantenido por: code-integration-architect (skill del BOOK-WORKFLOW).*
+*Próxima revisión: tras Fase M3c-batch-5 (caps. 13/14 ratatui, cap. 15 image).*
+
 ## 11. Métricas de la Fase M3b
 
 | Métrica | Valor |
@@ -189,34 +223,6 @@ all = { level = "warn", priority = -1 }
 | Líneas Rust migradas | ~870 |
 | Tests propios añadidos | ~25 |
 | Bugs del libro encontrados y corregidos | 4 |
-
-### Bugs del Vol.I corregidos durante Fase M3b
-
-| Cap | Bug | Tipo | Fix |
-|---|---|---|---|
-| 6, 7, 18 | `for u in 0..n { ... adj[u] ... }` (needless_range_loop) | Clippy lint | Iterador `for (u, adj_u) in adj.iter().enumerate()` |
-| 7 | `strongconnect` con 8 args (too_many_arguments) | Clippy lint | `#[allow(clippy::too_many_arguments)]` |
-| 7 | Test `basico` omitía `union(0, 4)` | Test incompleto | Añadido union |
-| 7 | Test esperaba `size_of(0) == 4` con 5 elementos | Bug lógico | `size_of(0) == 5` |
-| 8 | `if x { if y { ... } }` (collapsible_if) | Clippy lint | Colapsado en `if x && y { ... }` |
-| 17 | `rand 0.8` usa `rng.gen::<T>()` que choca con keyword `gen` Rust 2024 | Compilación | Bump a `rand 0.9` |
-| 17 | Seeds del libro (e.g. `seed=42`) con StdRng 0.9 (ChaCha12 vs ChaCha20) | Monte Carlo | Brute force como oráculo determinista |
-| 18 | `branch_and_bound_is` no validaba adyacencia al incluir | Bug lógico | Comprobación `adj[next].iter().all(\|nb\| !chosen.contains(nb))` |
-
-### Lecciones aprendidas en Fase M3b
-
-1. **Rust 2024 reserva la keyword `gen`** — cualquier código de Rust 2021 que usaba `gen` como método (típicamente `rand::Rng::gen::<T>()`) ahora falla al compilar. rand 0.9+ ya está migrado y usa `rng.random::<T>()`.
-
-2. **Las seeds de Monte Carlo son específicas de la versión de `rand`**. Si subes rand 0.8 → 0.9, los seeds que el libro garantizaban ahora pueden no converger. Solución: brute force como oráculo, no depender de un valor exacto del algoritmo Monte Carlo.
-
-3. **Branch & Bound para IS requiere validación de adyacencia** al ramificar. El libro omite esta comprobación — bug lógico que produce "soluciones" inválidas.
-
-4. **DSU test del libro tiene 2 errores**: omite una union, y la aserción del tamaño no cuadra con el número de elementos. Migrar con cuidado: leer el código Y los tests, validar cada assert contra la lógica.
-
----
-
-*Mantenido por: code-integration-architect (skill del BOOK-WORKFLOW).*
-*Próxima revisión: tras Fase M3c (caps. 9, 12, 13, 14, 15, 16, 20 con crates pesadas).*
 
 | Métrica | Valor |
 |---|---|

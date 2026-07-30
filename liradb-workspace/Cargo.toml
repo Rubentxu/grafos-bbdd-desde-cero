@@ -28,6 +28,12 @@ members = [
     "crates/vol1-cap-18-np",
     "crates/vol1-cap-19-dp",
 
+    # Vol.I — Fase M3c (caps 9 std, 12 std, 16 nalgebra, 20 ndarray)
+    "crates/vol1-cap-09-shortest",
+    "crates/vol1-cap-12-mincost",
+    "crates/vol1-cap-16-spectral",
+    "crates/vol1-cap-20-gnn",
+
     # Vol.I — Fase M3c (caps 9 criterion, 20 ndarray, 12, 13/14 ratatui, 15 image, 16 nalgebra)
     # ...
 
