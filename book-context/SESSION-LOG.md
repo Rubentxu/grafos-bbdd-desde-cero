@@ -42,3 +42,17 @@
 **Estado al cierre**: obra a 3 volúmenes. Vol.II: código 12/40 caps (ALL_GREEN, 366 tests), prosa 0/40. Vol.III: outline DRAFT → pendiente aprobación fina del autor antes de chapter-planner.
 
 **Próxima sesión** (opciones): (a) chapter-planner + chapter-writer para vol-III-cap-41 tras aprobar outline; (b) prose drafting Parte III Vol.II (caps 11-16, bloque cerrado en código); (c) continuar código Vol.II cap. 19 (plan lógico).
+
+## 2026-08-14 — Sesiones 10-13 (resumen consolidado)
+
+**Sesión 10** — cap. 19 (plan lógico): `lower()` → `LogicalPlan` (NodeScan/Expand/Filter/Project/CartesianProduct), `Bindings`, `ScalarExpr` resuelto, `LogicalType` conservador, `PlanError` con span; bug del brief corregido (labels bajan como `HasLabel` al Filter). 40 tests.
+
+**Sesión 11** — cap. 20 (Volcano): `PhysicalOperator{open,next,close}`, `Row`/`Cell`, `eval_scalar` (NULL SQL/Cypher, promoción Int/Float, trivalentes con cortocircuito), 8 operadores, `Executor`+`ExecMetrics`, `run(src,store)` end-to-end. 37 tests. HITO del brief: consultas ejecutadas desde texto.
+
+**Sesión 12** — hito CLI mínima (ADR-005): crate `liradb-cli` (binario `liradb`), `demo|query|help`, sin clap, `demo_graph()` API pública. 12 tests. Workspace: 455 tests ALL_GREEN.
+
+**Sesión 13** — **ADR-006: monorepo único público**. El autor decidió unificar todo: commit de caps 12-20+CLI, reescritura del historial del workspace bajo `liradb-workspace/` (12 commits preservados), importación de manuscritos, README/LICENSE/.gitignore raíz, y publicación en **https://github.com/Rubentxu/grafos-bbdd-desde-cero** (público, main, ALL_GREEN verificado). La decisión original de «repo separado» queda superseded.
+
+**Estado al cierre**: monorepo público trazable (14 commits). Vol.II: código 14/40 caps (7-20) + CLI mínima; prosa 0/40. Vol.III: outline aprobado. Parte IV 4/5 (falta cap. 21 optimizador).
+
+**Próxima sesión**: (a) cap. 21 (optimizador + explain + estadísticas) y cierre de Parte IV; (b) prosa Parte III Vol.II; (c) chapter-planner vol-III-cap-41.
