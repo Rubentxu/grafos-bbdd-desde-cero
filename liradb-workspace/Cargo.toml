@@ -42,7 +42,9 @@ members = [
 
     # Vol.II — proyecto integrador LiraDB
     "crates/vol2-liradb",
-    # "crates/vol2-liradb-cli",
+    # Vol.II — hito CLI mínima (ADR-005, tras el cap. 20): binario `liradb`.
+    # La CLI completa del cap. 31 (REPL, import/export) expandirá esta crate.
+    "crates/vol2-liradb-cli",
 ]
 
 # Cada crate individual pinea sus propias dependencias (sin ^ ni ~).

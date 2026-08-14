@@ -1,0 +1,25 @@
+[package]
+# El PACKAGE se llama `liradb-cli` (siguiendo el prefijo del directorio
+# `crates/vol2-liradb-cli/`), pero el BINARIO se llama `liradb` (ver
+# [[bin]] abajo): la orden del usuario es `liradb demo` / `liradb query`,
+# no `liradb-cli demo`. Documentado en MIGRATION-PATTERN §25.
+name = "liradb-cli"
+version = "0.1.0"
+edition = "2024"
+description = "Vol.II — Hito CLI mínima (tras cap 20, ADR-005): binario `liradb` demostrable desde shell con subcomandos demo/query/help. La CLI completa (REPL, import/export, clap) es el cap. 31."
+license = "CC-BY-NC-SA-4.0"
+authors = ["Rubentxu"]
+publish = false
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[dependencies]
+# Dependencia interna por path (política §5 de MIGRATION-PATTERN: sólo lo
+# necesario, pineado; aquí una crate del propio workspace, sin versión).
+vol2-liradb = { path = "../vol2-liradb" }
+
+[[bin]]
+# La orden de usuario es `liradb`, no `liradb-cli`.
+name = "liradb"
+path = "src/main.rs"
