@@ -1,0 +1,138 @@
+# CURRICULUM-VOL3.yml — Grafo curricular de «Grafos en la era de la IA» (Vol.III)
+# Generado por curriculum-designer (adaptado a las convenciones del proyecto: book-context/, no planning/).
+# Es la entrada que consumió book-outline-architect → OUTLINE-VOL3.yml.
+# Metodología complementaria: sistema teaching de opencode (~/.config/opencode/teaching/) —
+# taxonomía knowledge/skills/wisdom, modelo mental + reflexión + preguntas abiertas por capítulo.
+
+audience:
+  profile: "Lector con Vol.II asimilado (o perfil datos/IA con LPG e internals básicos) que quiere usar grafos como base de conocimiento con LLMs."
+  prior_knowledge_assumed:
+    - "Modelo Property Graph y Value (Vol.II cap. 7)"
+    - "LiraQL: MATCH/WHERE/RETURN, lexer+parser (Vol.II caps. 17-18)"
+    - "PageRank y comunidades a nivel conceptual (Vol.II caps. 24-25)"
+    - "BFS/DFS sólidos (Vol.I caps. 3-4)"
+  prior_knowledge_helpful:
+    - "GNNs (Vol.I cap. 20) — se referencia, no se exige"
+
+concepts:
+  # ── Parte I: modelado ──
+  - id: lpg-modeling
+    title: "Modelado LPG: node vs edge vs property"
+    prerequisites: []           # externo: property-graph-vol2
+    depth: core
+  - id: modeling-antipatterns
+    title: "Antipatrones de modelado (supernodos, reificación)"
+    prerequisites: [lpg-modeling]
+    depth: core
+  - id: graph-temporality
+    title: "Temporalidad: valid-time, bitemporal, versionado"
+    prerequisites: [lpg-modeling]
+    depth: core
+  - id: schema-constraints
+    title: "Esquema, constraints e índices de propiedades"
+    prerequisites: [lpg-modeling, modeling-antipatterns]
+    depth: core
+  - id: ingestion-workflows
+    title: "Workflows de ingesta (CSV/JSONL, streaming, idempotencia)"
+    prerequisites: [lpg-modeling, schema-constraints]
+    depth: core
+  - id: entity-resolution
+    title: "Entity resolution: blocking y grafo de similitud"
+    prerequisites: [ingestion-workflows]
+    depth: advanced
+
+  # ── Parte II: semántica ──
+  - id: rdf-model
+    title: "RDF: tripletas, quads, IRIs, literales tipados"
+    prerequisites: [lpg-modeling]
+    depth: core
+  - id: ontology-shacl
+    title: "OWL ligero, subClassOf, razonamiento y SHACL"
+    prerequisites: [rdf-model]
+    depth: advanced
+  - id: query-languages
+    title: "Cypher, GQL (ISO 39075), SPARQL, Gremlin, LiraQL"
+    prerequisites: [lpg-modeling, rdf-model]
+    depth: core
+
+  # ── Parte III: IA ──
+  - id: graph-embeddings
+    title: "Embeddings de grafos: node2vec, TransE"
+    prerequisites: []           # externo: property-graph-vol2
+    depth: core
+  - id: ann-hnsw
+    title: "ANN y HNSW: small-world navegables, M/ef"
+    prerequisites: [graph-embeddings]
+    depth: core
+  - id: hybrid-retrieval
+    title: "Recuperación híbrida vector + grafo"
+    prerequisites: [graph-embeddings, ann-hnsw]
+    depth: core
+  - id: personalized-pagerank
+    title: "Personalized PageRank como operador de recuperación"
+    prerequisites: [hybrid-retrieval]   # externo: pagerank-vol2 (consolidación)
+    depth: advanced
+  - id: graphrag
+    title: "GraphRAG: comunidades → resúmenes → local/global"
+    prerequisites: [hybrid-retrieval]   # externo: louvain-vol2 (consolidación)
+    depth: core
+  - id: llm-extraction
+    title: "Extracción LLM: NER+RE, grounding, human-in-the-loop"
+    prerequisites: [ingestion-workflows, lpg-modeling]
+    depth: core
+  - id: agent-memory
+    title: "Memoria de agentes sobre KG temporal"
+    prerequisites: [graph-temporality, llm-extraction, graphrag]
+    depth: advanced
+
+external_concepts:   # definidos en Vol.I/II — se consolidan, no se re-enseñan
+  - { id: property-graph-vol2, origin: "Vol.II cap. 7" }
+  - { id: pagerank-vol2, origin: "Vol.II cap. 24" }
+  - { id: louvain-vol2, origin: "Vol.II cap. 25" }
+  - { id: wal-vol2, origin: "Vol.II cap. 28" }
+
+out_of_scope:
+  - "Entrenar GNNs profundas (queda en Vol.I cap. 20 como referencia)"
+  - "Inferencia OWL-DL completa (solo OWL ligero + SHACL)"
+  - "Despliegue y serving de modelos ML"
+  - "Prompt engineering general (solo el mínimo para extracción)"
+  - "Internals de bases vectoriales completas (solo HNSW pedagógico)"
+
+progressive_example:
+  id: kb-lira
+  title: "KB-Lira — base de conocimiento de un equipo de investigación"
+  evolves_in: [41..53]   # un paso por capítulo; ver OUTLINE-VOL3.yml
+
+topological_order:
+  - lpg-modeling
+  - rdf-model            # rama semántica, paralela a la de antipatrones
+  - modeling-antipatterns
+  - graph-temporality
+  - graph-embeddings     # rama IA, paralela a Parts I-II
+  - schema-constraints
+  - ingestion-workflows
+  - ontology-shacl
+  - query-languages
+  - entity-resolution
+  - ann-hnsw
+  - llm-extraction
+  - hybrid-retrieval
+  - personalized-pagerank
+  - graphrag
+  - agent-memory
+
+cycle_check:
+  status: OK
+  cycles_detected: []
+  notes: >
+    Las tres ramas (modelado, semántica, IA) nacen de lpg-modeling y convergen en
+    agent-memory. La ordenación de capítulos del outline respeta esta ordenación
+    topológica (ver OUTLINE-VOL3.yml → validation).
+
+# ── Metodología teaching (opencode) aplicada al Vol.III ──
+# Por cada capítulo, además de los 10 pasos LiraDB:
+#   - contrato de dominio: knowledge / skills / wisdom (qué sabe, qué hace, qué decide)
+#   - modelo mental explícito (una figura/taxonomía que ordenar el tema)
+#   - reflexión (qué costó entender y por qué)
+#   - preguntas abiertas (lo que el capítulo NO resuelve → gancho al siguiente)
+# El "design before code" (LR-0004) ya es patrón del proyecto: caps 17→18.

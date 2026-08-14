@@ -1,0 +1,368 @@
+# OUTLINE-VOL3.yml — Outline de «Grafos en la era de la IA» (Vol.III)
+# Generado por book-outline-architect a partir de PROPUESTA-EVOLUCION.md (Propuesta A, aprobada 2026-08-14).
+# Grafo curricular derivado de: propuesta aceptada + guion Vol.I (caps 20-21) + guion Vol.II (caps 7-25).
+# Convención del proyecto: el esqueleto navegable vive en vol3-grafos-era-ia.md; este YAML es la fuente
+# machine-readable para chapter-planner y el check de dependencias.
+
+book:
+  id: vol-III
+  title: "Grafos en la era de la IA: modelar, razonar y recuperar"
+  subtitle: "Knowledge bases, GraphRAG y memoria de agentes (con LiraDB y Rust)"
+  author: "Rubentxu"
+  edition: "Edición unificada 2026"
+  license: "CC BY-NC-SA 4.0"
+  style: "Híbrido (baterías narrativas Vol.I + 10 pasos LiraDB Vol.II, según Apéndice 0)"
+  audience: "Lector que terminó el Vol.II (o conoce LPG e internals básicos) y quiere usar grafos con LLMs; también perfiles de datos/IA que no leerán el motor completo."
+  prerequisites:
+    - "Vol.I caps 3-4 (BFS/DFS), 20 (GNN/ML), 21 (BBDD de grafos)"
+    - "Vol.II caps 7 (Property Graph + Value), 17-18 (LiraQL), 24-25 (PageRank, Louvain)"
+  progressive_example:
+    id: kb-lira
+    name: "KB-Lira — base de conocimiento de un equipo de investigación"
+    description: >
+      Dataset hilo conductor del volumen: documentos (papers, notas, informes),
+      personas, organizaciones, proyectos y temas; relaciones authored/cites/mentions/
+      member_of/about. Se modela en el cap. 41 y evoluciona capítulo a capítulo hasta
+      servir de memoria a un agente en el cap. 53. Generador determinista en
+      liradb-workspace/datasets/ (pendiente).
+
+# ─────────────────────────────────────────────────────────────────────
+# GRAFO CURRICULAR (derivado) — conceptos y dependencias
+# ─────────────────────────────────────────────────────────────────────
+concepts:
+  - id: lpg-modeling              # node vs edge vs property, criterios
+    requires: [property-graph-vol2]
+  - id: modeling-antipatterns     # supernodos, reificación, dirección
+    requires: [lpg-modeling]
+  - id: graph-temporality         # valid-time, bitemporal, versionado
+    requires: [lpg-modeling]
+  - id: schema-constraints        # esquema abierto/estricto, unicidad, índices de propiedades
+    requires: [lpg-modeling, modeling-antipatterns]
+  - id: ingestion-workflows       # CSV/JSONL → grafo, streaming, validación
+    requires: [lpg-modeling, schema-constraints]
+  - id: entity-resolution         # dedup, blocking, grafo de similitud
+    requires: [ingestion-workflows]
+  - id: rdf-model                 # tripletas, quads, IRIs, literales tipados
+    requires: [lpg-modeling]
+  - id: ontology-shacl            # OWL ligero, subClassOf, SHACL
+    requires: [rdf-model]
+  - id: query-languages           # Cypher, GQL (ISO 39075), SPARQL, Gremlin, LiraQL
+    requires: [lpg-modeling, rdf-model]
+  - id: graph-embeddings          # node2vec, TransE, similitud estructural
+    requires: [property-graph-vol2]
+  - id: ann-hnsw                  # ANN, navigable small-world, parámetros M/ef
+    requires: [graph-embeddings]
+  - id: hybrid-retrieval          # vector + grafo, multi-hop, rerank
+    requires: [graph-embeddings, ann-hnsw]
+  - id: personalized-pagerank     # PPR como operador de recuperación
+    requires: [pagerank-vol2, hybrid-retrieval]
+  - id: graphrag                  # comunidades → resúmenes → retrieval local/global
+    requires: [hybrid-retrieval, louvain-vol2]
+  - id: llm-extraction            # NER+RE, grounding, alucinaciones, human-in-the-loop
+    requires: [ingestion-workflows, lpg-modeling]
+  - id: agent-memory              # KG temporal, frescura, escritura/lectura de agentes
+    requires: [graph-temporality, llm-extraction, graphrag]
+
+# Prerrequisitos externos (definidos en Vol.I/II, no se re-enseñan, se consolidan)
+external_concepts:
+  - id: property-graph-vol2       # Vol.II cap 7
+  - id: pagerank-vol2             # Vol.II cap 24
+  - id: louvain-vol2              # Vol.II cap 25
+  - id: wal-vol2                  # Vol.II cap 28 (referenciado en cap 43)
+
+# ─────────────────────────────────────────────────────────────────────
+# PARTES Y CAPÍTULOS
+# ─────────────────────────────────────────────────────────────────────
+parts:
+  - id: I
+    title: "Modelar datos de grafos"
+    order: 1
+    objective: "Saber diseñar un grafo bueno antes de escribir la primera consulta: entidades, propiedades, tiempo, esquema e ingesta."
+
+chapters:
+  # ── Parte I ──────────────────────────────────────────────────────
+  - id: vol-III-cap-41
+    part: I
+    order: 41
+    title: "Modelar entidades, propiedades y relaciones"
+    learning_objective: "Decidir con criterios explícitos qué es nodo, qué arista y qué propiedad, y justificarlo contra las consultas previstas."
+    concepts:
+      presentados: [lpg-modeling]
+      practicados: [property-graph-vol2]
+      consolidados: []
+    sections:
+      - "De los requisitos al modelo: entrevistar las preguntas"  → lpg-modeling
+      - "Nodo vs propiedad: la prueba de la identidad propia"     → lpg-modeling
+      - "Arista vs nodo: reificación y relaciones con atributos"  → lpg-modeling
+      - "Direccionalidad y multigrafos"                            → lpg-modeling
+      - "Prueba de fuego: 10 preguntas que el modelo debe responder" → lpg-modeling
+    progressive_example_step: "kb-lira/paso-1: primer modelo de KB-Lira desde requisitos"
+    estimated_pages: 22
+
+  - id: vol-III-cap-42
+    part: I
+    order: 42
+    title: "Antipatrones: supernodos, reificación y otras trampas"
+    learning_objective: "Detectar y refactors de los errores de modelado más caros antes de que el dataset crezca."
+    concepts:
+      presentados: [modeling-antipatterns]
+      practicados: [lpg-modeling]
+      consolidados: [property-graph-vol2]
+    sections:
+      - "El supernodo: cuando un nodo tiene 10M de aristas"      → modeling-antipatterns
+      - "Reificación excesiva vs insuficiente"                    → modeling-antipatterns
+      - "Propiedades que deberían ser nodos (y al revés)"         → modeling-antipatterns
+      - "Intermedios: nodos de relación con papel propio"         → modeling-antipatterns
+      - "Refactors de modelo y su coste de migración"             → modeling-antipatterns
+    progressive_example_step: "kb-lira/paso-2: refactor del supernodo Topic:rust"
+    estimated_pages: 20
+
+  - id: vol-III-cap-43
+    part: I
+    order: 43
+    title: "El tiempo en el grafo: versionado y bitemporalidad"
+    learning_objective: "Representar historia y validez temporal sin destruir el rendimiento de las consultas del 'presente'."
+    concepts:
+      presentados: [graph-temporality]
+      practicados: [lpg-modeling]
+      consolidados: [wal-vol2]
+    sections:
+      - "Tres tiempos: evento, validez y registro"                → graph-temporality
+      - "Valid-time en aristas: caducar sin borrar"               → graph-temporality
+      - "Bitemporalidad: lo que creíamos entonces vs lo cierto ahora" → graph-temporality
+      - "Consultas 'AS OF' y su coste"                            → graph-temporality
+      - "Conexión con el WAL y el log de cambios (Vol.II cap. 28)" → graph-temporality
+    progressive_example_step: "kb-lira/paso-3: afiliaciones de personas con valid-time"
+    estimated_pages: 22
+
+  - id: vol-III-cap-44
+    part: I
+    order: 44
+    title: "Esquema, constraints e índices en property graphs"
+    learning_objective: "Elegir entre esquema abierto y estricto, y usar constraints e índices sin pagar de más."
+    concepts:
+      presentados: [schema-constraints]
+      practicados: [lpg-modeling]
+      consolidados: [property-graph-vol2]
+    sections:
+      - "Esquema abierto ('schemaless' mentiroso) vs estricto"    → schema-constraints
+      - "Constraints de existencia, tipo y unicidad"              → schema-constraints
+      - "Índices sobre propiedades: cuándo ayudan y cuándo estorban" → schema-constraints
+      - "Etiquetas múltiples y su impacto"                        → schema-constraints
+      - "El DDL de GQL como referencia industrial"                → schema-constraints
+    progressive_example_step: "kb-lira/paso-4: ORCID único, tipos por etiqueta, índice sobre año"
+    estimated_pages: 20
+
+  - id: vol-III-cap-45
+    part: I
+    order: 45
+    title: "Workflows de ingesta: de datos crudos al grafo"
+    learning_objective: "Construir un pipeline reproducible de carga (CSV/JSONL) con validación y deduplicación."
+    concepts:
+      presentados: [ingestion-workflows, entity-resolution]
+      practicados: [schema-constraints]
+      consolidados: [lpg-modeling]
+    sections:
+      - "El pipeline por etapas: extraer → validar → mapear → cargar" → ingestion-workflows
+      - "Streaming para datasets mayores que la RAM"              → ingestion-workflows
+      - "Idempotencia: recargar sin duplicar"                     → ingestion-workflows
+      - "Entity resolution: blocking y grafo de similitud"        → entity-resolution
+      - "Fusión de entidades y sobrescritura cuidada"             → entity-resolution
+    progressive_example_step: "kb-lira/paso-5: CSVs crudos con duplicados → KB-Lira deduplicada"
+    estimated_pages: 24
+
+  # ── Parte II ─────────────────────────────────────────────────────
+  - id: vol-III-cap-46
+    part: II
+    order: 46
+    title: "Property Graph vs RDF: dos filosofías, un mismo objetivo"
+    learning_objective: "Traducir un modelo LPG a RDF y viceversa, sabiendo qué se pierde en cada dirección."
+    concepts:
+      presentados: [rdf-model]
+      practicados: [lpg-modeling]
+      consolidados: [property-graph-vol2]
+    sections:
+      - "Tripletas, quads y grafos nombrados"                     → rdf-model
+      - "IRIs, literales tipados y el blanco y negro de RDF"      → rdf-model
+      - "Lo que LPG hace mejor (y por qué la industria lo eligió)" → rdf-model
+      - "Mappings LPG↔RDF: reified properties, rdf:type"          → rdf-model
+      - "Cuándo cada filosofía gana"                              → rdf-model
+    progressive_example_step: "kb-lira/paso-6: exportación N-Triples de KB-Lira"
+    estimated_pages: 22
+
+  - id: vol-III-cap-47
+    part: II
+    order: 47
+    title: "Ontologías y validación: OWL ligero y SHACL"
+    learning_objective: "Expresar y validar reglas semánticas del dominio sin construir un motor de inferencia completo."
+    concepts:
+      presentados: [ontology-shacl]
+      practicados: [rdf-model]
+      consolidados: [schema-constraints]
+    sections:
+      - "Del esquema a la ontología: qué añade rdfs:subClassOf"   → ontology-shacl
+      - "OWL ligero: propiedades transitivas, simétricas, inversas" → ontology-shacl
+      - "Razonamiento: lo que se deduce vs lo que se almacena"    → ontology-shacl
+      - "SHACL: validar datos contra shapes"                      → ontology-shacl
+      - "Cuándo merece la pena (y cuándo es sobreingeniería)"     → ontology-shacl
+    progressive_example_step: "kb-lira/paso-7: shapes SHACL para KB-Lira"
+    estimated_pages: 20
+
+  - id: vol-III-cap-48
+    part: II
+    order: 48
+    title: "El paisaje de lenguajes: Cypher, GQL, SPARQL y Gremlin"
+    learning_objective: "Escribir la misma consulta en cuatro lenguajes y entender el estándar ISO GQL y la portabilidad."
+    concepts:
+      presentados: [query-languages]
+      practicados: [rdf-model]
+      consolidados: [property-graph-vol2]
+    sections:
+      - "Cuatro formas de decir MATCH"                            → query-languages
+      - "GQL (ISO/IEC 39075): el primer ISO nuevo desde SQL"     → query-languages
+      - "SPARQL: consultas sobre tripletas y OPTIONAL"           → query-languages
+      - "Gremlin: recorridos imperativos"                        → query-languages
+      - "LiraQL ante el espejo: qué comparte con Cypher/GQL"     → query-languages
+    progressive_example_step: "kb-lira/paso-8: las 5 consultas clave de KB-Lira en los 4 lenguajes"
+    estimated_pages: 22
+
+  # ── Parte III ────────────────────────────────────────────────────
+  - id: vol-III-cap-49
+    part: III
+    order: 49
+    title: "Embeddings de grafos: de estructura a vectores"
+    learning_objective: "Generar y usar embeddings de nodos para similitud estructural, conectando con los GNN del Vol.I."
+    concepts:
+      presentados: [graph-embeddings]
+      practicados: [property-graph-vol2]
+      consolidados: []
+    sections:
+      - "Por qué embedder: similitud que el ojo no ve"            → graph-embeddings
+      - "node2vec: random walks con sesgo"                        → graph-embeddings
+      - "TransE: relaciones como traslaciones"                    → graph-embeddings
+      - "Similitud estructural: medir y validar vecinos"         → graph-embeddings
+      - "Puente con GNNs (Vol.I cap. 20): cuándo cada uno"       → graph-embeddings
+    progressive_example_step: "kb-lira/paso-9: embeddings node2vec de KB-Lira"
+    estimated_pages: 24
+
+  - id: vol-III-cap-50
+    part: III
+    order: 50
+    title: "Índices vectoriales: HNSW, o cuando el índice también es un grafo"
+    learning_objective: "Entender ANN y construir un HNSW pedagógico, reutilizando los internals del Vol.II."
+    concepts:
+      presentados: [ann-hnsw]
+      practicados: [graph-embeddings]
+      consolidados: [property-graph-vol2]
+    sections:
+      - "Búsqueda exacta vs aproximada (ANN): el trato de siempre" → ann-hnsw
+      - "Small-world navegables: la idea geométrica"              → ann-hnsw
+      - "HNSW por dentro: capas, M, efConstruction, efSearch"     → ann-hnsw
+      - "HNSW como grafo: insertar, buscar, borrar"               → ann-hnsw
+      - "Implementación en LiraDB: tipo vector + índice HNSW"     → ann-hnsw
+    progressive_example_step: "kb-lira/paso-10: HNSW sobre los embeddings + consulta por similitud"
+    estimated_pages: 26
+
+  - id: vol-III-cap-51
+    part: III
+    order: 51
+    title: "GraphRAG: recuperación híbrida vector + grafo"
+    learning_objective: "Componer recuperación semántica con recorrido estructural para responder preguntas multi-hop."
+    concepts:
+      presentados: [hybrid-retrieval, personalized-pagerank, graphrag]
+      practicados: [ann-hnsw]
+      consolidados: [pagerank-vol2, louvain-vol2]
+    sections:
+      - "Los límites del RAG vectorial puro (y por qué falla multi-hop)" → hybrid-retrieval
+      - "Recuperación híbrida: semilla vectorial, expansión por grafo, rerank" → hybrid-retrieval
+      - "Personalized PageRank como operador de recuperación"     → personalized-pagerank
+      - "Comunidades → resúmenes → búsqueda local/global"         → graphrag
+      - "Evaluar un pipeline GraphRAG: faithfulness y recall"     → graphrag
+    progressive_example_step: "kb-lira/paso-11: pregunta multi-hop sobre KB-Lira vía GraphRAG"
+    estimated_pages: 26
+
+  - id: vol-III-cap-52
+    part: III
+    order: 52
+    title: "Extracción con LLM: de texto suelto a grafo fiable"
+    learning_objective: "Diseñar un pipeline texto→tripletas con validación, dedup y human-in-the-loop que no envenene el grafo."
+    concepts:
+      presentados: [llm-extraction]
+      practicados: [ingestion-workflows, entity-resolution]
+      consolidados: [schema-constraints]
+    sections:
+      - "NER + RE con LLM: prompts, esquemas y few-shot"          → llm-extraction
+      - "El LLM como extractor no determinista: coste y deriva"   → llm-extraction
+      - "Grounding y citas: toda arista con evidencia"            → llm-extraction
+      - "Dedup contra el grafo existente (cap. 45 otra vez)"      → llm-extraction
+      - "Human-in-the-loop: colas de revisión y confianza"        → llm-extraction
+    progressive_example_step: "kb-lira/paso-12: enriquecer KB-Lira extrayendo entidades de sus documentos"
+    estimated_pages: 24
+
+  - id: vol-III-cap-53
+    part: III
+    order: 53
+    title: "Grafos como memoria de agentes"
+    learning_objective: "Usar un KG temporal como memoria de largo plazo de un agente: qué escribir, cuándo olvidar, cómo leer."
+    concepts:
+      presentados: [agent-memory]
+      practicados: [graphrag, llm-extraction]
+      consolidados: [graph-temporality]
+    sections:
+      - "La memoria de un agente: episódica, semántica y procedural" → agent-memory
+      - "El KG temporal: hechos con nacimiento y caducidad"       → agent-memory
+      - "Freshness: invalidar y re-extraer sin reconstruir todo"  → agent-memory
+      - "Lectura para actuar: recuperaciónGraphRAG como herramienta del agente" → agent-memory
+      - "El ciclo completo: percibir → extraer → fusionar → recordar" → agent-memory
+    progressive_example_step: "kb-lira/paso-13: un agente que usa KB-Lira como memoria"
+    estimated_pages: 24
+
+# ─────────────────────────────────────────────────────────────────────
+# COBERTURA — todo concepto aparece en ≥1 capítulo
+# ─────────────────────────────────────────────────────────────────────
+coverage:
+  lpg-modeling: [41, 42, 43, 44, 45, 46, 48, 52]
+  modeling-antipatterns: [42, 44]
+  graph-temporality: [43, 53]
+  schema-constraints: [44, 45, 47, 52]
+  ingestion-workflows: [45, 52]
+  entity-resolution: [45, 52]
+  rdf-model: [46, 47, 48]
+  ontology-shacl: [47]
+  query-languages: [48]
+  graph-embeddings: [49, 50, 51]
+  ann-hnsw: [50, 51]
+  hybrid-retrieval: [51, 53]
+  personalized-pagerank: [51]
+  graphrag: [51, 53]
+  llm-extraction: [52, 53]
+  agent-memory: [53]
+  gaps: []   # ningún concepto del grafo queda sin cubrir
+
+# ─────────────────────────────────────────────────────────────────────
+# VALIDACIONES (check de dependencias)
+# ─────────────────────────────────────────────────────────────────────
+validation:
+  - regla: "ningún concepto se usa antes de presentarse"
+    estado: OK
+    notas: >
+      Dependencias respetadas: lpg-modeling (41) antes que antipatrones/temporalidad/esquema (42-44);
+      esquema+ingesta (44-45) antes que LLM-extraction (52); rdf-model (46) antes que ontologías y
+      lenguajes (47-48); graph-embeddings (49) antes que HNSW (50) y GraphRAG (51);
+      graphrag+llm-extraction+temporalidad antes que agent-memory (53). Externos del Vol.II
+      consolidados, no re-enseñados.
+  - regla: "ninguna parte vacía ni capítulo sin secciones"
+    estado: OK
+  - regla: "carga cognitiva ≤3 conceptos nuevos por capítulo"
+    estado: OK
+    notas: "Máximo: cap. 51 con 3 (hybrid-retrieval, personalized-pagerank, graphrag) — justificado porque PPR ya se consolidó en Vol.II cap. 24."
+  - regla: "distribución de páginas razonable"
+    estado: OK
+    notas: "Media ~22,7 págs.; max 26 (caps. 50-51) < 150% de la media."
+
+stats:
+  parts_total: 3
+  chapters_total: 13
+  estimated_pages_total: 296
+  status: DRAFT    # pendiente aprobación fina del autor → READY_FOR_CHAPTER_PLANNER
+  next: "chapter-planner para vol-III-cap-41 tras aprobar este outline"

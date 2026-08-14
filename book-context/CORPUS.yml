@@ -1,0 +1,536 @@
+# CORPUS.yml — Estado del corpus de conocimiento para Vol.II (LiraDB) y Vol.III (Grafos era IA)
+# Generado progresivamente por research-knowledge-curator (R6).
+# Estructura inicial: temas y preguntas críticas por capítulo del Vol.II.
+# A medida que R2-R5 produzcan evidence cards, este archivo crece.
+
+book: "Construye LiraDB — Vol.II + Grafos en la era de la IA — Vol.III"
+version: 0.2.0
+last_updated: 2026-08-14
+
+# ─────────────────────────────────────────────────────────────────────
+# TEMAS — conceptos transversales que se cubrirán en varios capítulos
+# ─────────────────────────────────────────────────────────────────────
+topics:
+  - id: property-graph-model
+    title: "Modelo Property Graph"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "W3C LPG spec (draft)"
+      - "Neo4j docs — graph model"
+      - "Kùzu VLDB 2023 paper"
+      - "Apache TinkerPop / Gremlin"
+  - id: slotted-pages
+    title: "Slotted pages"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "Database Internals — Petrov cap. 2-3"
+      - "BusTub project — page layouts"
+      - "CMU 15-445 lecture notes"
+  - id: buffer-pool-lru-clock
+    title: "Buffer pool (LRU / Clock / GClock)"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "Database Internals — Petrov cap. 5"
+      - "BusTub BufferPoolManager"
+      - "GClock paper — Andrés et al."
+  - id: csr-adjacency
+    title: "Compressed Sparse Row (CSR) para adyacencias"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "Kùzu VLDB paper"
+      - "GraphflowDB papers — Salihoğlu"
+      - "petgraph::csr docs"
+  - id: write-ahead-log
+    title: "Write-Ahead Log (WAL)"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "Database Internals — Petrov cap. 9"
+      - "ARIES paper — Mohan et al. 1992"
+      - "BusTub recovery"
+  - id: mvcc
+    title: "Multi-Version Concurrency Control (MVCC)"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "BusTub concurrency control"
+      - "PostgreSQL MVCC docs"
+      - "CockroachDB papers"
+  - id: volcano-execution
+    title: "Modelo de ejecución Volcano (iterator-based)"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "Goetz Graefe — Volcano paper 1994"
+      - "Modern DB systems survey"
+  - id: vectorized-execution
+    title: "Ejecución vectorizada"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "Kùzu VLDB paper"
+      - "MonetDB/X100 — Boncz et al."
+  - id: factorized-joins
+    title: "Factorized joins (f-joins)"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "Kùzu VLDB paper"
+      - "PhD theses — Salihoğlu group"
+  - id: worst-case-optimal-joins
+    title: "Worst-case optimal joins (WCOJ / LeapFrog / Generic Worst)"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "LeapFrog Triejoin paper"
+      - "Neo4j / Kùzu papers"
+  - id: rust-ecosystem
+    title: "Ecosistema Rust para BBDD (crates seleccionadas)"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "docs.rs de cada crate"
+      - "GitHub releases / changelogs"
+      - "crates.io statistics"
+  - id: query-language-iso
+    title: "Lenguajes de consulta de grafos (Cypher / GQL / SPARQL)"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "openCypher spec"
+      - "GQL ISO/IEC 2024"
+      - "Neo4j Cypher refcard"
+  # ── Temas Vol.III (añadidos 2026-08-14, ADR-005) ──
+  - id: graph-data-modeling
+    title: "Modelado de datos de grafos (node/edge/property, antipatrones)"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "Neo4j — Graph Data Modeling (Needham/Hodler cap. 3)"
+      - "Neo4j blog — common graph modeling mistakes"
+  - id: graph-temporality-topic
+    title: "Temporalidad en grafos (valid-time, bitemporal)"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "Zep/Graphiti paper — temporal KG"
+      - "Bitemporal data — Snodgrass"
+  - id: entity-resolution-topic
+    title: "Entity resolution (blocking, similitud, dedup)"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "Fellegi-Sunter model"
+      - "Dedupe.io docs / splink"
+  - id: rdf-owl-shacl
+    title: "RDF, OWL ligero y SHACL"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "W3C RDF 1.1 primer"
+      - "W3C SHACL spec"
+      - "OWL 2 Web Ontology Language"
+  - id: graph-embeddings-topic
+    title: "Embeddings de grafos (node2vec, TransE)"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "node2vec paper (Grover & Leskovec 2016)"
+      - "TransE paper (Bordes et al. 2013)"
+  - id: hnsw-ann
+    title: "ANN / HNSW (índices vectoriales como grafos)"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "HNSW paper (Malkov & Yashunin 2016)"
+      - "Navigable small-world networks"
+  - id: graphrag-topic
+    title: "GraphRAG y recuperación híbrida vector+grafo"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "Microsoft GraphRAG paper (2024)"
+      - "HippoRAG paper (PPR sobre KG)"
+      - "arXiv Hybrid GraphRAG benchmark (2025)"
+  - id: llm-extraction-topic
+    title: "Extracción con LLM texto→grafo (NER+RE, grounding)"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "Neo4j LLM Knowledge Graph Builder"
+      - "LangChain/LlamaIndex KG constructors"
+  - id: agent-memory-topic
+    title: "Memoria de agentes sobre KG temporal"
+    confidence_score: 0.0
+    status: needs_research
+    sources_potential:
+      - "Zep/Graphiti — temporal KG para agentes"
+      - "Letta/MemCP — agent memory architectures"
+
+# ─────────────────────────────────────────────────────────────────────
+# CAPÍTULOS — 40 capítulos del Vol.II (40 caps / 8 Partes)
+# Cada cap. tiene preguntas críticas (R1) y, cuando se resuelvan, evidence cards.
+# ─────────────────────────────────────────────────────────────────────
+chapters:
+  - id: vol-II-prólogo
+    title: "Vamos a construir una base de datos"
+    questions_critical: []
+    evidence_cards: []
+  - id: vol-II-cap-01
+    part: I
+    title: "Qué es realmente un grafo"
+    questions_critical:
+      - "¿Qué relación tiene este capítulo con caps. 1-2 del Vol.I?"
+      - "¿Qué añadidos aporta el Vol.II sobre la definición de grafo?"
+    evidence_cards: []
+  - id: vol-II-cap-02
+    part: I
+    title: "Cómo representar un grafo en memoria"
+    questions_critical:
+      - "¿Cuándo usar edge list, adjacency list, CSR en una BBDD?"
+      - "Generational IDs: por qué `slotmap` y no índices reciclados?"
+    evidence_cards: []
+  - id: vol-II-cap-03
+    part: I
+    title: "Identidad, referencias y datos estables"
+    questions_critical:
+      - "¿Por qué no usar índices posicionales? Caso de uso real."
+      - "Estabilidad de IDs tras crash + recovery."
+    evidence_cards: []
+  - id: vol-II-cap-04
+    part: I
+    title: "El primer recorrido: BFS"
+    questions_critical:
+      - "¿Qué diferencia hay entre BFS sobre CSR vs sobre HashMap de listas?"
+    evidence_cards: []
+  - id: vol-II-cap-05
+    part: I
+    title: "DFS, componentes conexos, topológica, SCC"
+    questions_critical:
+      - "¿Cuándo Kosaraju vs Tarjan en código real?"
+    evidence_cards: []
+  - id: vol-II-cap-06
+    part: II
+    title: "Qué convierte un grafo en una base de datos"
+    questions_critical:
+      - "¿Cuál es la diferencia entre biblioteca de grafos y GDBMS?"
+    evidence_cards: []
+  - id: vol-II-cap-07
+    part: II
+    title: "El modelo de datos de LiraDB (Property Graph + Value)"
+    questions_critical:
+      - "¿Cómo tipar `Value` para soportar string/int/bool/list/map?"
+      - "Diferencia entre LPG y RDF."
+    evidence_cards: []
+  - id: vol-II-cap-08
+    part: II
+    title: "Diseñar una API antes de persistir (trait `GraphStore`)"
+    questions_critical:
+      - "¿Qué métodos debe tener el trait para soportar todos los caps siguientes?"
+    evidence_cards: []
+  - id: vol-II-cap-09
+    part: II
+    title: "Del objeto al byte (encoding, endianness, versionado)"
+    questions_critical:
+      - "¿Por qué little-endian como default en x86 pero big-endian en redes?"
+      - "Format versioning: cómo añadir campos sin romper bases existentes."
+    evidence_cards: []
+  - id: vol-II-cap-10
+    part: II
+    title: "Persistencia append-only"
+    questions_critical:
+      - "¿Cuándo un log append-only deja de escalar?"
+    evidence_cards: []
+  - id: vol-II-cap-11
+    part: III
+    title: "Páginas, bloques y organización del fichero"
+    questions_critical:
+      - "Slotted pages: layout concreto."
+      - "Magic numbers + version header."
+    evidence_cards: []
+  - id: vol-II-cap-12
+    part: III
+    title: "El gestor de páginas (trait `Pager`)"
+    questions_critical:
+      - "Pin/unpin semantics; deadlock prevention."
+    evidence_cards: []
+  - id: vol-II-cap-13
+    part: III
+    title: "El buffer pool (LRU, Clock, métricas)"
+    questions_critical:
+      - "Comparativa hit ratio LRU vs Clock en grafos power-law."
+    evidence_cards: []
+  - id: vol-II-cap-14
+    part: III
+    title: "Cómo almacenar adyacencias (CSR, segmentos)"
+    questions_critical:
+      - "CSR vs adjacency lists: memoria y localidad."
+    evidence_cards: []
+  - id: vol-II-cap-15
+    part: III
+    title: "Índices para encontrar datos (hash + B+ tree)"
+    questions_critical:
+      - "¿Cuándo hash index y cuándo B+ tree?"
+    evidence_cards: []
+  - id: vol-II-cap-16
+    part: III
+    title: "Compactación y mantenimiento (`liradb inspect|check|compact`)"
+    questions_critical:
+      - "Online vs offline compaction; impacto en reads."
+    evidence_cards: []
+  - id: vol-II-cap-17
+    part: IV
+    title: "Diseñar un lenguaje pequeño (MATCH-WHERE-RETURN mini)"
+    questions_critical:
+      - "Subset mínimo de Cypher útil para casos reales."
+    evidence_cards: []
+  - id: vol-II-cap-18
+    part: IV
+    title: "Construir el lexer y el parser"
+    questions_critical:
+      - "`logos` vs `pest` vs parser manual: trade-offs."
+    evidence_cards: []
+  - id: vol-II-cap-19
+    part: IV
+    title: "Del AST al plan lógico"
+    questions_critical:
+      - "Cómo representar variables ligadas, patrones y predicados."
+    evidence_cards: []
+  - id: vol-II-cap-20
+    part: IV
+    title: "El motor de ejecución (Volcano)"
+    questions_critical:
+      - "Operadores: NodeScan, IndexSeek, Expand, Filter, Project, Limit, Distinct."
+    evidence_cards: []
+  - id: vol-II-cap-21
+    part: IV
+    title: "Un optimizador pequeño pero real (`liradb explain`)"
+    questions_critical:
+      - "Predicate pushdown, join ordering, projection pruning."
+    evidence_cards: []
+  - id: vol-II-cap-22
+    part: V
+    title: "Caminos mínimos ponderados"
+    questions_critical:
+      - "Cuándo Dijkstra vs Bellman-Ford sobre grafos persistentes."
+    evidence_cards: []
+  - id: vol-II-cap-23
+    part: V
+    title: "A*, heurísticas y búsquedas dirigidas"
+    questions_critical:
+      - "Heurísticas admisibles y consistentes."
+    evidence_cards: []
+  - id: vol-II-cap-24
+    part: V
+    title: "Centralidad y PageRank"
+    questions_critical:
+      - "PageRank personalizado; damping factor."
+    evidence_cards: []
+  - id: vol-II-cap-25
+    part: V
+    title: "Comunidades y agrupaciones (Louvain simplificado)"
+    questions_critical:
+      - "Modularidad; greedy Louvain."
+    evidence_cards: []
+  - id: vol-II-cap-26
+    part: V
+    title: "Ejecutar algoritmos sin agotar la memoria"
+    questions_critical:
+      - "Proyección, streaming, frontiers."
+    evidence_cards: []
+  - id: vol-II-cap-27
+    part: VI
+    title: "Qué significa una transacción (ACID)"
+    questions_critical:
+      - "Atomicidad, Consistencia, Aislamiento, Durabilidad: trade-offs."
+    evidence_cards: []
+  - id: vol-II-cap-28
+    part: VI
+    title: "Write-Ahead Log"
+    questions_critical:
+      - "Log record formats; LSN."
+    evidence_cards: []
+  - id: vol-II-cap-29
+    part: VI
+    title: "Recuperación después de un fallo"
+    questions_critical:
+      - "ARIES (Analysis-Redo-Undo) simplificado."
+    evidence_cards: []
+  - id: vol-II-cap-30
+    part: VI
+    title: "Snapshots y concurrencia (MVCC limitado)"
+    questions_critical:
+      - "MVCC con timestamp por tupla; garbage collection de versiones."
+    evidence_cards: []
+  - id: vol-II-cap-31
+    part: VII
+    title: "La CLI de LiraDB"
+    questions_critical:
+      - "REPL vs script mode; `clap` ergonomics."
+    evidence_cards: []
+  - id: vol-II-cap-32
+    part: VII
+    title: "Importación y exportación (CSV, JSONL, GraphML)"
+    questions_critical:
+      - "Streaming para datasets > RAM."
+    evidence_cards: []
+  - id: vol-II-cap-33
+    part: VII
+    title: "Pruebas de una base de datos"
+    questions_critical:
+      - "Unit, contract, integration, property-based (`proptest`), fuzz, golden, crash."
+    evidence_cards: []
+  - id: vol-II-cap-34
+    part: VII
+    title: "Benchmarks y perfilado"
+    questions_critical:
+      - "Dataset de referencia (100k personas / 500k relaciones)."
+    evidence_cards: []
+  - id: vol-II-cap-35
+    part: VII
+    title: "Observabilidad interna (`metrics` + `tracing`)"
+    questions_critical:
+      - "Span hierarchy: query → plan → operator → page fetch."
+    evidence_cards: []
+  - id: vol-II-cap-36
+    part: VII
+    title: "Arquitectura final de LiraDB"
+    questions_critical:
+      - "Diagrama hexagonal final."
+    evidence_cards: []
+  - id: vol-II-cap-37
+    part: VIII
+    title: "Qué necesitaría una base de datos de producción"
+    questions_critical:
+      - "Lista de cosas que LiraDB Lite NO hace (con referencias)."
+    evidence_cards: []
+  - id: vol-II-cap-38
+    part: VIII
+    title: "Almacenamiento columnar y ejecución vectorizada"
+    questions_critical:
+      - "SIMD, factorización. **Requiere ADR-001 (atribución Ladybug).**"
+    evidence_cards: []
+  - id: vol-II-cap-39
+    part: VIII
+    title: "Joins, patrones y consultas cíclicas (WCOJ)"
+    questions_critical:
+      - "LeapFrog Triejoin simplificado."
+    evidence_cards: []
+  - id: vol-II-cap-40
+    part: VIII
+    title: "Distribuir una base de datos de grafos (Raft, partitioning)"
+    questions_critical:
+      - "Sharding por hash vs por comunidad; cut edges."
+    evidence_cards: []
+  - id: vol-II-apendice-0
+    title: "Manual de estilo unificado"
+    questions_critical:
+      - "¿Las dos plantillas son compatibles? Verificación."
+    evidence_cards: []
+  - id: vol-II-epilogo
+    title: "Ya sabes construir una base de datos"
+    questions_critical: []
+    evidence_cards: []
+  # ── Vol.III — 13 capítulos (ADR-005, outline aprobado 2026-08-14) ──
+  - id: vol-III-prologo
+    title: "El grafo como capa de conocimiento"
+    questions_critical: []
+    evidence_cards: []
+  - id: vol-III-cap-41
+    part: I
+    title: "Modelar entidades, propiedades y relaciones"
+    questions_critical:
+      - "Criterios reproducibles node vs edge vs property (más allá del instinto)."
+      - "¿Cómo se vincula el modelo con las consultas previstas?"
+    evidence_cards: []
+  - id: vol-III-cap-42
+    part: I
+    title: "Antipatrones: supernodos, reificación y otras trampas"
+    questions_critical:
+      - "Coste real de un supernodo en Neo4j/Kùzu (benchmarks citables)."
+    evidence_cards: []
+  - id: vol-III-cap-43
+    part: I
+    title: "El tiempo en el grafo: versionado y bitemporalidad"
+    questions_critical:
+      - "¿Cómo modela Zep/Graphiti la invalidación temporal?"
+      - "Coste de consultas AS OF en LPG."
+    evidence_cards: []
+  - id: vol-III-cap-44
+    part: I
+    title: "Esquema, constraints e índices en property graphs"
+    questions_critical:
+      - "DDL de GQL: qué constraints estandariza ISO 39075."
+    evidence_cards: []
+  - id: vol-III-cap-45
+    part: I
+    title: "Workflows de ingesta: de datos crudos al grafo"
+    questions_critical:
+      - "Blocking/canopy en entity resolution aplicado a grafos."
+    evidence_cards: []
+  - id: vol-III-cap-46
+    part: II
+    title: "Property Graph vs RDF"
+    questions_critical:
+      - "Mappings LPG↔RDF estándar (qué se pierde en cada dirección)."
+    evidence_cards: []
+  - id: vol-III-cap-47
+    part: II
+    title: "Ontologías y validación: OWL ligero y SHACL"
+    questions_critical:
+      - "Subconjunto de OWL con coste de razonamiento razonable."
+    evidence_cards: []
+  - id: vol-III-cap-48
+    part: II
+    title: "El paisaje de lenguajes: Cypher, GQL, SPARQL y Gremlin"
+    questions_critical:
+      - "Estado de adopción real de GQL (Neo4j+AWS, Spanner Graph)."
+    evidence_cards: []
+  - id: vol-III-cap-49
+    part: III
+    title: "Embeddings de grafos: de estructura a vectores"
+    questions_critical:
+      - "node2vec/TransE: parámetros y validación de vecinos."
+    evidence_cards: []
+  - id: vol-III-cap-50
+    part: III
+    title: "Índices vectoriales: HNSW"
+    questions_critical:
+      - "M/efConstruction/efSearch: guías de ajuste citables."
+      - "Borrado en HNSW (tombstones) — conexión con cap. 16 Vol.II."
+    evidence_cards: []
+  - id: vol-III-cap-51
+    part: III
+    title: "GraphRAG: recuperación híbrida vector + grafo"
+    questions_critical:
+      - "GraphRAG (Microsoft) vs HippoRAG: diferencias operativas."
+      - "Métricas de evaluación: faithfulness, recall multi-hop."
+    evidence_cards: []
+  - id: vol-III-cap-52
+    part: III
+    title: "Extracción con LLM: de texto suelto a grafo fiable"
+    questions_critical:
+      - "Tasas de alucinación en NER+RE y mitigaciones (grounding, cotas)."
+    evidence_cards: []
+  - id: vol-III-cap-53
+    part: III
+    title: "Grafos como memoria de agentes"
+    questions_critical:
+      - "Arquitecturas de producción: Zep/Graphiti, Letta."
+      - "Freshness: re-extraer sin reconstruir el grafo."
+    evidence_cards: []
+
+# ─────────────────────────────────────────────────────────────────────
+# ESTADÍSTICAS
+# ─────────────────────────────────────────────────────────────────────
+stats:
+  chapters_total: 55   # 41 Vol.II + 14 Vol.III (13 caps + epílogo)
+  chapters_with_questions: 53
+  questions_total: ~100
+  evidence_cards_total: 0
+  corpus_completeness: 0.0
+  next_action: "chapter-planner para vol-III-cap-41 (tras aprobar OUTLINE-VOL3.yml) o R1 research para vol-II-cap-01"

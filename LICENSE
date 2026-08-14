@@ -1,0 +1,17 @@
+Licencia: CC BY-NC-SA 4.0
+
+Copyright (c) 2026 Rubentxu
+
+Toda la obra de este repositorio —manuscritos (Vol.I, Vol.II, Vol.II­I), book-context,
+y el workspace de código liradb-workspace— se publica bajo la licencia
+Creative Commons Atribución-NoComercial-CompartirIgual 4.0 Internacional (CC BY-NC-SA 4.0).
+
+Texto legal completo: https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
+
+Resumen de la licencia:
+- Atribución (BY): debes dar crédito de manera adecuada y proporcionar un enlace a la licencia.
+- NoComercial (NC): no puedes utilizar el material con una finalidad comercial.
+- CompartirIgual (SA): si remezclas o transformas el material, debes difundirlo bajo la misma licencia.
+
+Excepción: cualquier código de terceros dentro de liradb-workspace conserva la licencia
+de su crate de origen (ver liradb-workspace/LICENSE y los Cargo.toml de cada crate).

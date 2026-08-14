@@ -1,0 +1,10 @@
+# Monorepo grafos-bbdd-desde-cero
+
+# Estado local de herramientas de agente (no es contenido de la obra)
+.zcode/
+.atl/
+
+# Backup puntual del Vol.I previo a la fusión (idéntico a vol1-grafos-de-cero-a-experto-rust.md)
+vol1-v3-backup-*.md
+
+# El workspace ignora su propio build/ vía liradb-workspace/.gitignore
