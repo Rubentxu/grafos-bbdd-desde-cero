@@ -259,17 +259,22 @@ vol2:
   - chapter: "vol2-liradb"
     title: "Proyecto integrador LiraDB"
     crates: [vol2-liradb]
-    modules:
-      - pager
-      - buffer_pool
-      - csr
-      - index
-      - wal
-      - query/lexer
-      - query/parser
-      - query/planner
-      - query/executor
-    notes: "Crate principal del Vol.II; contiene todos los módulos de caps. 11-40. A fecha 2026-08-14, los caps 7/8/9/10/11/12/13/14/15/16 (modelo, GraphStore, encoding, append-only log, páginas, Pager/FilePager, buffer pool, CSR, HashIndex + B+Tree, mantenimiento inspect|check|compact), 17 (diseño del lenguaje LiraQL: AST, tokens, expresiones, patrones, validación semántica), 18 (lexer + parser descendente manual: texto→tokens→AST, hito RETURN p), 19 (del AST al plan lógico: binder con Bindings, ScalarExpr resueltas, operadores NodeScan/Expand/Filter/Project/CartesianProduct, tipos lógicos y Display para explain) y 20 (motor de ejecución Volcano: trait PhysicalOperator open/next/close, Row/Cell, 8 operadores, evaluación trivalente con cortocircuito, Executor con métricas y run() parse→lower→execute) están migrados; los siguientes caps viven como secciones dentro de lib.rs hasta que se extraigan a submódulos. Parte III (motor de almacenamiento) cerrada con cap 16; Parte IV (consultar el grafo) con caps 17-20 hechos (queda el optimizador cap 21)."
+    modules:   # ADR-007: un módulo por capítulo en src/
+      - cap07_modelo
+      - cap08_graph_store
+      - cap09_encoding
+      - cap10_append_only
+      - cap11_slotted_pages
+      - cap12_pager
+      - cap13_buffer_pool
+      - cap14_csr
+      - cap15_indices
+      - cap16_mantenimiento
+      - cap17_liraql_ast
+      - cap18_lexer_parser
+      - cap19_plan_logico
+      - cap20_volcano
+    notes: "Crate principal del Vol.II; contiene todos los módulos de caps. 11-40. A fecha 2026-08-14, los caps 7/8/9/10/11/12/13/14/15/16 (modelo, GraphStore, encoding, append-only log, páginas, Pager/FilePager, buffer pool, CSR, HashIndex + B+Tree, mantenimiento inspect|check|compact), 17 (diseño del lenguaje LiraQL: AST, tokens, expresiones, patrones, validación semántica), 18 (lexer + parser descendente manual: texto→tokens→AST, hito RETURN p), 19 (del AST al plan lógico: binder con Bindings, ScalarExpr resueltas, operadores NodeScan/Expand/Filter/Project/CartesianProduct, tipos lógicos y Display para explain) y 20 (motor de ejecución Volcano: trait PhysicalOperator open/next/close, Row/Cell, 8 operadores, evaluación trivalente con cortocircuito, Executor con métricas y run() parse→lower→execute) están migrados (desde ADR-007 cada capítulo es un módulo propio en src/capNN_*.rs; lib.rs sólo declara y re-exporta). Parte III (motor de almacenamiento) cerrada con cap 16; Parte IV (consultar el grafo) con caps 17-20 hechos (queda el optimizador cap 21)."
     status: PLANNED
   - chapter: "vol2-liradb-cli"
     title: "CLI de LiraDB (binario)"

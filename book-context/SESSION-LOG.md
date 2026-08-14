@@ -53,6 +53,8 @@
 
 **Sesión 13** — **ADR-006: monorepo único público**. El autor decidió unificar todo: commit de caps 12-20+CLI, reescritura del historial del workspace bajo `liradb-workspace/` (12 commits preservados), importación de manuscritos, README/LICENSE/.gitignore raíz, y publicación en **https://github.com/Rubentxu/grafos-bbdd-desde-cero** (público, main, ALL_GREEN verificado). La decisión original de «repo separado» queda superseded.
 
-**Estado al cierre**: monorepo público trazable (14 commits). Vol.II: código 14/40 caps (7-20) + CLI mínima; prosa 0/40. Vol.III: outline aprobado. Parte IV 4/5 (falta cap. 21 optimizador).
+**Sesión 14** — **ADR-007: estructura por volúmenes y capítulos** (petición del autor, ejecutada ANTES de redactar prosa). Manuscritos: `manuscrito/vol1|2|3/` con fichero-por-capítulo (46/6/5 ficheros) + `SUMARIO.txt` + `scripts/build_book.sh` (ensambla → ficheros completos de la raíz; **reensamblado byte a byte idéntico verificado con cmp**; `--check` detecta desincronía; `split_manuscrito.py` documenta que `# Cargo.toml` dentro de bloques no es límite). Código: `vol2-liradb/src/lib.rs` (~15.500 líneas) dividido en 14 módulos `cap07_modelo.rs`…`cap20_volcano.rs` vía agente (lib.rs: 105 líneas de mod+pub use; 455 tests antes/después ALL_GREEN; reconstrucción verbatim byte-idéntica; 5 ítems a `pub(crate)`; API pública intacta). code-map.yml con mapa real de módulos. Regla editorial: los ensamblados nunca se editan a mano.
 
-**Próxima sesión**: (a) cap. 21 (optimizador + explain + estadísticas) y cierre de Parte IV; (b) prosa Parte III Vol.II; (c) chapter-planner vol-III-cap-41.
+**Estado al cierre**: monorepo público estructurado por capítulos. Vol.II: código 14/40 caps (7-20) + CLI mínima; prosa 0/40. Vol.III: outline aprobado. Parte IV 4/5 (falta cap. 21 optimizador).
+
+**Próxima sesión**: (a) cap. 21 (optimizador + explain + estadísticas) sobre la nueva estructura de módulos — añadirá `cap21_optimizador.rs` y fichero `manuscrito/vol2/cap-21-*.md`; (b) prosa Parte III Vol.II (ficheros `manuscrito/vol2/cap-1[1-6]-*.md` ya creados por el split); (c) chapter-planner vol-III-cap-41.

@@ -16,9 +16,13 @@ Este repositorio es un **monorepo trazable**: manuscritos + código verificado c
 
 ```
 .
-├── vol1-grafos-de-cero-a-experto-rust.md   # Vol.I — 32 caps + 4 apéndices (2ª ed.)
-├── vol2-construye-liradb.md                # Vol.II — 40 caps/8 Partes (guion + prólogo)
-├── vol3-grafos-era-ia.md                   # Vol.III — 13 caps/3 Partes (esqueleto)
+├── vol1-grafos-de-cero-a-experto-rust.md   # Vol.I COMPLETO — GENERADO por scripts/build_book.sh
+├── vol2-construye-liradb.md                # Vol.II COMPLETO — GENERADO
+├── vol3-grafos-era-ia.md                   # Vol.III COMPLETO — GENERADO
+├── manuscrito/                             # FUENTES: un fichero por capítulo (ADR-007)
+│   ├── vol1/                               #   46 ficheros (32 caps + secciones + apéndices)
+│   ├── vol2/                               #   portada/prólogo/ToC/apéndices (caps al redactarse)
+│   └── vol3/                               #   esqueleto del Vol.III
 ├── book-context/                           # Memoria de la obra (fuente de verdad editorial)
 │   ├── LEDGER.md                           #   Estado del workflow por capítulo/volumen
 │   ├── SESSION-LOG.md                      #   Bitácora de sesiones
@@ -26,14 +30,19 @@ Este repositorio es un **monorepo trazable**: manuscritos + código verificado c
 │   ├── CORPUS.yml                          #   Temas + preguntas críticas por capítulo
 │   ├── OUTLINE-VOL3.yml / CURRICULUM-VOL3.yml  # Outline y grafo curricular del Vol.III
 │   ├── PROPUESTA-EVOLUCION.md              #   Estudio estratégico que originó el Vol.III
-│   └── adr/                                #   Decisiones arquitectónicas (ADR-005: Vol.III)
+│   └── adr/                                #   Decisiones arquitectónicas (ADR-005 a ADR-007)
+├── scripts/
+│   ├── build_book.sh                       # Ensambla manuscrito/volN/*.md → volN-completo.md (--check)
+│   └── split_manuscrito.py                 # Divisor original (documenta los límites de capítulo)
 └── liradb-workspace/                       # TODO el código ejecutable de la obra (Rust 2024)
     ├── Cargo.toml                          #   Workspace: 21 crates (19 Vol.I + vol2-liradb + liradb-cli)
-    ├── crates/vol2-liradb/                 #   Motor LiraDB: caps 7-20 (storage, LiraQL, plan, Volcano)
-    ├── crates/vol2-liradb-cli/             #   CLI mínima (hito ADR-005): `liradb demo|query`
+    ├── crates/vol2-liradb/src/             #   Motor LiraDB: UN MÓDULO POR CAPÍTULO (cap07…cap20)
+    ├── crates/liradb-cli/                  #   CLI mínima (hito ADR-005): `liradb demo|query`
     ├── scripts/verify.sh                   #   Puerta de calidad: fmt → check → test → clippy
-    └── book-context/                       #   code-map prosa↔código + MIGRATION-PATTERN (§§1-25)
+    └── book-context/                       #   code-map prosa↔código + MIGRATION-PATTERN
 ```
+
+**Regla editorial (ADR-007)**: los ficheros completos de la raíz son GENERADOS — nunca se editan a mano; se edita `manuscrito/volN/cap-NN-*.md` y se regenera con `scripts/build_book.sh` (verificación de sincronía: `--check`).
 
 ## Cómo está organizada la obra
 
