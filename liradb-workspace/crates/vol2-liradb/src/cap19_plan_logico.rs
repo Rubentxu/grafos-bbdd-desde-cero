@@ -1,4 +1,4 @@
-use crate::cap07_modelo::Value;
+use crate::cap07_modelo::{NodeId, Value};
 use crate::cap17_liraql_ast::{
     CompareOp, Expression, NodePattern, PathPattern, Query, RelDirection, Span, display_value,
 };
@@ -550,6 +550,23 @@ pub enum LogicalPlan {
         variable: String,
         label: Option<String>,
     },
+    /// Búsqueda por índice de igualdad: liga `variable` exactamente a los
+    /// nodos cuyo `label` (todos si `None`) cumple `property = value`.
+    ///
+    /// La construye el optimizador del cap. 21 (regla `index_seek`): es la
+    /// reescritura canónica del brief (`Filter(name = "Ana") + NodeScan` →
+    /// `IndexSeek`). Los `ids` llegan YA resueltos del catálogo de
+    /// estadísticas (un plan "semi-ligado", como los planes reales tras el
+    /// binder); el Display los oculta y pinta el predicado original:
+    /// `IndexSeek(Person.name = "Ana")`.
+    IndexSeek {
+        variable: String,
+        label: Option<String>,
+        property: String,
+        value: Value,
+        /// Nodos que satisfacen la igualdad, en orden del store.
+        ids: Vec<NodeId>,
+    },
     /// Expansión por adyacencia: dado un binding de `from`, recorre las
     /// aristas de tipo `rel_type` (todas si `None`) en `direction` y liga
     /// `to` (y `rel_variable` si el patrón la nombra) por cada arista.
@@ -593,7 +610,9 @@ impl LogicalPlan {
 
     fn collect_bound(&self, out: &mut Vec<String>) {
         match self {
-            LogicalPlan::NodeScan { variable, .. } => push_unique(out, variable),
+            LogicalPlan::NodeScan { variable, .. } | LogicalPlan::IndexSeek { variable, .. } => {
+                push_unique(out, variable)
+            }
             LogicalPlan::Expand {
                 input,
                 rel_variable,
@@ -634,6 +653,24 @@ impl LogicalPlan {
                 out.push(format!(
                     "{pad}NodeScan({} AS {variable})",
                     label.as_deref().unwrap_or("ANY")
+                ));
+            }
+            LogicalPlan::IndexSeek {
+                label,
+                property,
+                value,
+                ..
+            } => {
+                // El formato del brief §cap 21 (`IndexSeek(Person.name = "Ana")`);
+                // sin etiqueta, la propiedad a secas. Los ids resueltos no se
+                // pintan: el plan muestra el PREDICADO, no su resolución.
+                let target = match label.as_deref() {
+                    Some(label) => format!("{label}.{property}"),
+                    None => property.clone(),
+                };
+                out.push(format!(
+                    "{pad}IndexSeek({target} = {})",
+                    ScalarExpr::lit(value.clone())
                 ));
             }
             LogicalPlan::Expand {

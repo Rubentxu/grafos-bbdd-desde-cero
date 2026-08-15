@@ -161,7 +161,7 @@ impl SlottedPage {
 ///   [num_pages: u32] [free_pages: u32] [root_page: u32]
 ///
 /// Total header info: 12 bytes. El resto de la página está libre para
-///扩展 futuras (versiones, checksums, etc.).
+/// extensiones futuras (versiones, checksums, etc.).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetaPage {
     pub header: PageHeader,

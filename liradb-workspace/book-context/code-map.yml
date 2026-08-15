@@ -255,7 +255,15 @@ vol2:
     snippets: []
     notes: "NO es el cap. 31: es el hito anticipado de ADR-005 (medida de utilidad) que hace el motor demostrable desde shell justo tras cerrar el cap. 20. Crate nueva crates/vol2-liradb-cli: package `liradb-cli` con [[bin]] name=`liradb` (la orden de usuario es `liradb demo`, no `liradb-cli demo`). Tres subcomandos: `liradb demo` (4 consultas representativas sobre el grafo demo — MATCH simple, WHERE con comparación, patrón relacional con Expand, consulta canónica del brief con prop de arista — imprimiendo consulta + plan lógico (Display del cap 19) + tabla (Display del ResultSet del cap 20) + métricas por operador (ExecMetrics)); `liradb query \"<LiraQL>\"` (ejecuta sobre el grafo demo, imprime la tabla; errores parse/plan/ejecución van a stderr con su Display y exit 1); `liradb help`/sin args (ayuda breve con subcomandos + 2 ejemplos). Parseo de argumentos MANUAL con std::env::args — sin clap, que llega con la CLI completa del cap. 31 (regla 'primero a mano'). Exit codes: 0 OK / 1 error de consulta / 2 error de uso. Testabilidad: toda la lógica en src/lib.rs con run(args, out, err) -> i32 sobre dyn Write; src/main.rs es un main fino (argv → run → exit code); 11 tests ejercitan la cadena end-to-end sin spawn de proceso. Grafo demo: vol2-liradb expone demo_graph() -> MemoryStore público (el fixture de los tests del cap. 20 refactorizado a un único punto de verdad; los tests ahora delegan en él + 1 doctest). Escrituras tolerantes a E/S (emitir con write_all ignorado: `liradb demo | head` no entra en pánico). Alcance congelado: sin REPL, sin import/export, sin flags/config (todo cap. 31)."
     status: DONE
-  # ... caps 02-06, 21-40 por poblar
+  # ... caps 02-06, 22-40 por poblar
+  - chapter: "vol2-cap-21"
+    title: "Un optimizador pequeño pero real (liradb explain; estadísticas)"
+    crates:
+      - vol2-liradb
+    modules: [cap21_optimizador]
+    snippets: []
+    notes: "Cierra la Parte IV (consultar el grafo): optimizador basado en reglas sobre el LogicalPlan del cap 19 + estadísticas del store + `liradb explain`. Catálogo/Stats recolectadas de &dyn GraphStore (nodos por etiqueta, grado medio out/in por etiqueta, aristas por tipo). Reglas: predicate pushdown (bajar Filter hacia NodeScan y Expand lo máximo respetando bindings), combinación de Filters adyacentes, y reordenación de patrones por selectividad estimada. Estimación de cardinalidad por heurísticas simples documentadas (selectividad por tipo de predicado + grados medios). explain(consulta, store) devuelve texto con plan ANTES (lower) / DESPUÉS (optimize) + cardinalidades estimadas por operador. Integración: run()/Query::execute pasan por optimize; equivalencia de resultados pre/post optimización testada. Subcomando `liradb explain` en la CLI. 30 tests (tests_optimizer): reglas (pushdown de Filter, combinación, reordenación), equivalencia, cardinalidades, explain end-to-end."
+    status: DONE
   - chapter: "vol2-liradb"
     title: "Proyecto integrador LiraDB"
     crates: [vol2-liradb]

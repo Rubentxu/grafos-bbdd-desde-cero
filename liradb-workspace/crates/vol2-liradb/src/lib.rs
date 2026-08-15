@@ -61,14 +61,28 @@
 //!   `GraphStore` del cap 8. [`Executor`] compila el plan y expone métricas
 //!   por operador ([`ExecMetrics`], semilla del explain del cap 21);
 //!   [`ResultSet`] devuelve columnas + filas; [`run`] y [`Query::execute`]
-//!   completan el pipeline parse → lower → execute. Errores tipados
+//!   completan el pipeline parse → lower → optimize → execute. Errores tipados
 //!   [`ExecError`].
+//! - [`Catalog`] / [`LabelStats`] / [`optimize`] / [`estimate`] / [`explain`] —
+//!   El **optimizador pequeño pero real** (cap 21, cierra la Parte IV):
+//!   [`Catalog::collect`] recolecta estadísticas del `GraphStore` (nodos por
+//!   etiqueta, grados medios out/in, aristas por tipo e índice de igualdad
+//!   (etiqueta, propiedad, valor) → ids); [`optimize`] aplica cinco reglas en
+//!   orden fijo sobre el `LogicalPlan` (punto inicial más selectivo con
+//!   reordenación de expansiones, push-down de predicados, absorción de
+//!   `HasLabel` en el escaneo, `NodeScan` → `IndexSeek`, poda de
+//!   proyecciones); [`estimate`] estima cardinalidades con heurísticas
+//!   documentadas (System R + estadísticas); [`explain`] produce el plan
+//!   ANTES/DESPUÉS con estimaciones (el hito `liradb explain`). `run` y
+//!   `Query::execute` pasan por el optimizador con resultados equivalentes
+//!   (multiconjunto de filas; sin ORDER BY el orden no es parte del contrato).
 //!
 //! Organización del crate: cada capítulo vive en su propio módulo de origen —
 //! `cap07_modelo`, `cap08_graph_store`, `cap09_encoding`, `cap10_append_only`,
 //! `cap11_slotted_pages`, `cap12_pager`, `cap13_buffer_pool`, `cap14_csr`,
 //! `cap15_indices`, `cap16_mantenimiento`, `cap17_liraql_ast`,
-//! `cap18_lexer_parser`, `cap19_plan_logico` y `cap20_volcano` — y este
+//! `cap18_lexer_parser`, `cap19_plan_logico`, `cap20_volcano` y
+//! `cap21_optimizador` — y este
 //! `lib.rs` es sólo el punto de entrada: declara los módulos y los re-exporta
 //! con `pub use capNN::*` para mantener una API pública plana
 //! (`vol2_liradb::Node`, `vol2_liradb::run`, ...). Cada módulo viaja con sus
@@ -88,6 +102,7 @@ mod cap17_liraql_ast;
 mod cap18_lexer_parser;
 mod cap19_plan_logico;
 mod cap20_volcano;
+mod cap21_optimizador;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -103,3 +118,4 @@ pub use cap17_liraql_ast::*;
 pub use cap18_lexer_parser::*;
 pub use cap19_plan_logico::*;
 pub use cap20_volcano::*;
+pub use cap21_optimizador::*;

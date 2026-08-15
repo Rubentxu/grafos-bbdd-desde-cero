@@ -1435,5 +1435,34 @@ Esto cierra la migración del Vol.I al workspace para los caps que tienen **part
 
 ---
 
+## 26. Vol.II — Cap 21 (Un optimizador pequeño pero real: `liradb explain`)
+
+**Estado**: ALL_GREEN (375 unit + 2 doctests en vol2-liradb; 455→485 tests workspace).
+**Módulo**: `crates/vol2-liradb/src/cap21_optimizador.rs` (primer capítulo que nace directo
+como módulo propio, ADR-007) + subcomando `explain` en `liradb-cli`.
+
+**Métricas**: ~1.900 líneas el módulo, 30 tests (`tests_optimizer`). Colateral: cap 19 ganó el
+operador `IndexSeek` (el plan lógico debe poder EXPRESAR el uso de índice para que el
+optimizador lo elija) y cap 20 su compilación a `IndexSeekOp`.
+
+**Decisiones**:
+1. **Catálogo de estadísticas** recolectado del `&dyn GraphStore` al abrir: nodos por etiqueta,
+   grado medio out/in por etiqueta, aristas por tipo. Sin persistir: recalcular al abrir es lo
+   pedagógicamente simple.
+2. **Reglas en orden fijo y documentado** (fn `optimize(plan, &stats)`): predicate pushdown
+   (bajar Filter hacia NodeScan/Expand respetando bindings), combinación de Filters adyacentes,
+   reordenación por selectividad estimada. El orden es parte del contrato didáctico.
+3. **Estimación por heurísticas simples** (selectividad por tipo de predicado + grados medios),
+   no por muestreo: suficiente para ORDENAR planes, no para prometer costes. `explain` muestra
+   estimación vs filas reales — la discrepancia es contenido pedagógico, no bug.
+4. **Equivalencia testeada**: los resultados pre/post optimización son idénticos en todas las
+   consultas del brief y del demo.
+5. El agente quedó interrumpido por usage-limit ANTES de actualizar docs y formatear; el
+   orquestador completó fmt + fix de imports sin usar + verificación + docs. Lección: un agente
+   cancelado puede dejar trabajo válido sin verificar en el árbol — `git status` antes de
+   lanzar el siguiente.
+
+---
+
 *Mantenido por: code-integration-architect (skill del BOOK-WORKFLOW).*
 *Próxima revisión: tras Vol.II cap 21 (el optimizador — push-down, IndexSeek y `liradb explain`, que reutilizará el Display de plan y las métricas que la CLI ya imprime).*

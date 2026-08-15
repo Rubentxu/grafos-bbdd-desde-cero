@@ -79,15 +79,20 @@ El diseño pedagógico de cada volumen sigue una cadena de skills con artefactos
 | 5. Ejercicios | `exercise-designer` | 3-5 ejercicios graduados (recordar/aplicar/analizar/crear), pistas ≤3 niveles, **soluciones verificables en el workspace** (tests en `verify.sh`) | pendiente |
 | 6. Revisión pedagógica | `pedagogical-reviewer` | informe por capítulo | pendiente |
 
-**Metodología teaching (opencode)** como capa complementaria — origen: `~/.config/opencode/teaching/`:
+**Metodología teaching** como capa complementaria — skill `teach` (`~/.agents/skills/teach/`; instancia de ejemplo en `~/.config/opencode/teaching/`):
 
 - **Contrato de dominio por capítulo**: objetivos divididos en *knowledge* (qué sabe), *skills* (qué hace) y *wisdom* (qué decide y cuándo NO hacerlo). Sustituye a "objetivo de aprendizaje" plano en los contratos de `chapter-planner`.
-- **Modelo mental explícito**: cada capítulo abre su cuerpo con una taxonomía/figura que ordena el tema (como la taxonomía de propósito de los plugins en las lecciones de opencode).
+- **Fluency vs storage strength**: leer y asentir produce dominio ilusorio; la meta es retención a largo plazo mediante **dificultad deseable** — retrieval practice (recordar > reconocer), spacing (cada capítulo ejercita conceptos previos) e interleaving (ejercicios que mezclan temas vecinos). Para el conocimiento, la dificultad es el enemigo (una idea nueva por sección); para la destreza, es la herramienta.
+- **Bucle de feedback inmediato**: todo ejercicio se verifica al instante con `cargo test` del workspace — nunca "confía en mí".
+- **Nunca conocimiento paramétrico sin fuente**: toda afirmación técnica lleva cita de alta confianza (paper, spec, libro de referencia).
+- **Modelo mental explícito**: cada capítulo abre su cuerpo con una taxonomía/figura que ordena el tema.
 - **Reflexión**: batería nueva opcional "La primera vez que no lo entendí" — qué costó entender y por qué (estilo learning-records).
 - **Preguntas abiertas**: cada capítulo cierra con lo que NO resuelve, como gancho al siguiente (estilo "Questions Still Open").
 - **Design before code** (learning-record 0004): cuando un tema tiene decisiones de política abiertas, primero el diseño como contrato (AST), luego la implementación (parser). Ya es patrón del proyecto: Vol.II caps 17→18.
 
 **Regla de verificación**: toda solución de ejercicio y todo ejemplo del Vol.II/III compila y pasa `./scripts/verify.sh` del workspace (ALL_GREEN). Las soluciones de ejercicios del Vol.III viven como tests en el workspace, no en la prosa.
+
+**Contrato de capítulo (obligatorio antes de redactar)**: `book-context/PLANTILLA-CONTRATO-CAPITULO.md`. Es el auto-interrogatorio que garantiza profundidad y didáctica: perfil del novato, conceptos present/practice/consolidate, objetivos knowledge/skills/wisdom, modelo mental, los **porqués** de cada decisión (con fuente verificable), primera solución vs solución evolucionada (con su escenario de fallo), prueba de fuego, trampas/errores comunes, ejercicios graduados y preguntas abiertas. Ningún capítulo se marca `DONE` sin responder ese checklist — es la respuesta al estándar «el capítulo debe enseñar a un novato, no solo enunciar el tema».
 
 ## 3. Tipografía y maquetación
 

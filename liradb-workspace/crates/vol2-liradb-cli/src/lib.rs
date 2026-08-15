@@ -1,5 +1,6 @@
 //! Vol.II — Hito **CLI mínima** (tras el cap. 20, ADR-005): el binario
-//! `liradb` que hace el motor demostrable desde shell.
+//! `liradb` que hace el motor demostrable desde shell. Desde el cap. 21
+//! incluye además `liradb explain` (el hito de ese capítulo).
 //!
 //! La lógica vive en esta LIB (no en `main`) para ser testeada sin
 //! arrancar procesos: [`run`] recibe los argumentos ya sin `argv[0]`,
@@ -9,14 +10,18 @@
 //!
 //! Subcomandos:
 //! - `liradb demo` — grafo de ejemplo + 4 consultas representativas,
-//!   imprimiendo consulta, plan lógico (`Display` del cap. 19), tabla
+//!   imprimiendo consulta, plan lógico OPTIMIZADO (caps. 19+21), tabla
 //!   (`Display` del `ResultSet` del cap. 20) y métricas por operador.
 //! - `liradb query "<LiraQL>"` — ejecuta una consulta sobre el grafo
-//!   demo; errores de parse/plan/ejecución van a stderr con su
-//!   `Display` y el exit code es != 0.
+//!   demo (pipeline completo con optimizador); errores de
+//!   parse/plan/ejecución van a stderr con su `Display` y el exit code
+//!   es != 0.
+//! - `liradb explain "<LiraQL>"` — el hito del cap. 21: plan ANTES
+//!   (lower) y DESPUÉS (optimize) con cardinalidades estimadas, el
+//!   catálogo de estadísticas y el contraste con las filas reales.
 //! - `liradb help` (o sin argumentos) — ayuda breve.
 //!
-//! Decisiones del hito (documentadas también en MIGRATION-PATTERN §25):
+//! Decisiones del hito (documentadas también en MIGRATION-PATTERN §25-26):
 //! - **Parseo de argumentos MANUAL con `std::env::args`**, sin clap: la
 //!   regla del Vol.II es "primero a mano, luego con crates", y la CLI
 //!   completa del cap. 31 introducirá clap con subcomandos ricos, REPL
@@ -31,7 +36,7 @@
 
 use std::io::Write;
 
-use vol2_liradb::{ExecError, Executor, GraphStore, demo_graph, parse};
+use vol2_liradb::{ExecError, Executor, GraphStore, demo_graph, explain, parse};
 
 /// Salida correcta.
 pub const EXIT_OK: i32 = 0;
@@ -93,6 +98,15 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> i32 {
             );
             EXIT_ERROR_USO
         }
+        "explain" if args.len() == 2 => cmd_explain(&args[1], out, err),
+        "explain" => {
+            error_de_uso(
+                err,
+                "`explain` espera exactamente una consulta entre comillas:\n  \
+                 liradb explain \"MATCH (p:Person) RETURN p.name\"",
+            );
+            EXIT_ERROR_USO
+        }
         otro => {
             error_de_uso(
                 err,
@@ -124,19 +138,42 @@ fn cmd_query(consulta: &str, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     }
 }
 
+// ─────────────────── Subcomando `explain` ───────────────────
+
+/// El hito del cap. 21: plan ANTES/DESPUÉS con cardinalidades estimadas.
+///
+/// Toda la lógica vive en `vol2_liradb::explain` (catálogo, reglas,
+/// estimaciones y el contraste con las filas reales); aquí sólo se cablea
+/// el subcomando y la gestión de errores/exit codes, como `query`.
+fn cmd_explain(consulta: &str, out: &mut dyn Write, err: &mut dyn Write) -> i32 {
+    let store = demo_graph();
+    match explain(consulta, &store) {
+        Ok(texto) => {
+            emitir(out, &texto);
+            emitir(out, "\n");
+            EXIT_OK
+        }
+        Err(e) => {
+            emitir(err, &format!("error: {e}\n"));
+            EXIT_ERROR_CONSULTA
+        }
+    }
+}
+
 // ─────────────────── Subcomando `demo` ───────────────────
 
 /// Ejecuta las 4 consultas de muestra sobre el grafo demo.
 ///
-/// Cada bloque imprime: la consulta, su plan lógico (pretty-printer del
-/// cap. 19, base de `liradb explain`), la tabla de resultados
-/// (`Display` del `ResultSet`) y las métricas reales por operador
-/// (`ExecMetrics`, la semilla del explain del cap. 21).
+/// Cada bloque imprime: la consulta, su plan lógico OPTIMIZADO (el ingenuo
+/// del cap. 19 reescrito por las reglas del cap. 21), la tabla de
+/// resultados (`Display` del `ResultSet`) y las métricas reales por
+/// operador (`ExecMetrics`). Para ver el ANTES y el DESPUÉS lado a lado
+/// (con estimaciones) está `liradb explain`.
 fn cmd_demo(out: &mut dyn Write, err: &mut dyn Write) -> i32 {
     let store = demo_graph();
     emitir(
         out,
-        "LiraDB — demo del motor (caps. 17-20: parse → lower → Volcano)\n",
+        "LiraDB — demo del motor (caps. 17-21: parse → lower → optimizador → Volcano)\n",
     );
     emitir(
         out,

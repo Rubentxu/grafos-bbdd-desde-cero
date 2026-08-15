@@ -1,6 +1,7 @@
 portada.md
 prologo.md
 tabla-de-contenidos.md
+cap-11-paginas-bloques-y-slotted-pages.md
 apendice-0-manual-de-estilo-unificado.md
 epilogo.md
 colofon.md

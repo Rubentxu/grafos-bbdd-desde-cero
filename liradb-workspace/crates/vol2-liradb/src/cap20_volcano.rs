@@ -3,6 +3,7 @@ use crate::cap08_graph_store::{GraphStore, MemoryStore};
 use crate::cap17_liraql_ast::{CompareOp, Query, RelDirection, display_value};
 use crate::cap18_lexer_parser::{ParseError, parse};
 use crate::cap19_plan_logico::{LogicalPlan, PlanError, Projection, ScalarExpr};
+use crate::cap21_optimizador::{Catalog, optimize};
 
 // ─────────────────── Cap 20: El motor de ejecución (modelo Volcano) ───────────────────
 //
@@ -57,8 +58,9 @@ use crate::cap19_plan_logico::{LogicalPlan, PlanError, Projection, ScalarExpr};
 //     sin cambios. `PropertyGraph` (cap 7) es la estructura didáctica; el
 //     store real de las consultas es `MemoryStore`.
 //   - `IndexSeekOp` existe y es testeable, pero recibe los IDs del nodo "desde
-//     fuera": la SELECCIÓN del índice es del optimizador (cap 21, cuyo
-//     ejemplo transforma `Filter(name="Ana")+NodeScan` en `IndexSeek`).
+//     fuera": la SELECCIÓN del índice la hace el optimizador del cap 21
+//     (regla `index_seek`, cuyo ejemplo transforma `Filter(name="Ana")+
+//     NodeScan` en `IndexSeek`) y los deja resueltos en el propio plan.
 //   - `LimitOp`/`DistinctOp` son operadores de pleno derecho, pero la
 //     gramática LiraQL (caps. 17-18) aún no expone `LIMIT`/`DISTINCT`: se
 //     usan programáticamente (ver tests) hasta que el lenguaje los admita.
@@ -1183,10 +1185,10 @@ impl PhysicalOperator for DistinctOp<'_> {
 
 /// Compila un [`LogicalPlan`] en su árbol de operadores físicos.
 ///
-/// Traducción 1:1 por ahora (el plan ingenuo del cap 19 se ejecuta tal cual);
-/// el optimizador del cap 21 insertará aquí las reescrituras: push-down de
-/// filtros, `NodeScan` → `IndexSeek` cuando haya índice, reordenación de
-/// expansiones.
+/// Traducción 1:1: el optimizador del cap. 21 reescribe el plan ANTES de
+/// llegar aquí (push-down de filtros, `NodeScan` → `IndexSeek`, reordenación
+/// de expansiones vía [`crate::cap21_optimizador::optimize`]); la compilación
+/// sólo elige el operador físico de cada nodo lógico.
 pub fn compile<'a>(
     plan: &LogicalPlan,
     store: &'a dyn GraphStore,
@@ -1194,6 +1196,9 @@ pub fn compile<'a>(
     Ok(match plan {
         LogicalPlan::NodeScan { variable, label } => {
             Box::new(NodeScanOp::new(store, variable.clone(), label.clone()))
+        }
+        LogicalPlan::IndexSeek { variable, ids, .. } => {
+            Box::new(IndexSeekOp::new(store, variable.clone(), ids.clone()))
         }
         LogicalPlan::Expand {
             input,
@@ -1375,21 +1380,28 @@ impl<'a> Executor<'a> {
 // ─── API de alto nivel: el hito del capítulo ───
 
 impl Query {
-    /// Ejecuta esta consulta sobre un store: `lower` + `Executor`.
+    /// Ejecuta esta consulta sobre un store: `lower` + `optimize` + `Executor`.
+    ///
+    /// Desde el cap. 21 el plan pasa por el optimizador (estadísticas +
+    /// reglas) antes de ejecutarse; los resultados son los mismos que los
+    /// del plan ingenuo (verificados por los tests de equivalencia del
+    /// cap. 21) — sin `ORDER BY`, el ORDEN de las filas no está garantizado.
     ///
     /// ```text
     /// let rs = parse("MATCH (p:Person) RETURN p.name")?.execute(&store)?;
     /// ```
     pub fn execute(&self, store: &dyn GraphStore) -> Result<ResultSet, ExecError> {
         let plan = self.lower()?;
+        let catalog = Catalog::collect(store);
+        let plan = optimize(&plan, &catalog);
         Executor::new(&plan, store)?.execute()
     }
 }
 
 /// Hito del cap 20: **ejecutar consultas completas desde texto**.
 ///
-/// Pipeline entero: `parse` (cap 18) → `lower` (cap 19) → `compile` +
-/// Volcano (este cap) → filas.
+/// Pipeline entero: `parse` (cap 18) → `lower` (cap 19) → `optimize`
+/// (cap 21: estadísticas + reglas) → `compile` + Volcano (este cap) → filas.
 ///
 /// ```text
 /// let rs = run("MATCH (p:Person)-[:KNOWS]->(f:Person) \
@@ -2206,13 +2218,18 @@ mod tests_executor {
         )
         .unwrap();
         assert_eq!(texto(&rs, 0), vec!["\"Bo\""]);
-        // El self-loop (sin since) da NULL y queda fuera.
+        // El self-loop (sin since) da NULL y queda fuera. Desde el cap. 21
+        // run() pasa por el optimizador, que reordena esta cadena para
+        // empezar por f (lado entrante): sin ORDER BY el ORDEN de las filas
+        // no está garantizado, así que se compara ordenado.
         let rs = run(
             "MATCH (p:Person)-[r:KNOWS]->(f:Person) WHERE r.since > 2019 RETURN p.name",
             &store,
         )
         .unwrap();
-        assert_eq!(texto(&rs, 0), vec!["\"Ana\"", "\"Bo\"", "\"Carla\""]);
+        let mut nombres = texto(&rs, 0);
+        nombres.sort();
+        assert_eq!(nombres, vec!["\"Ana\"", "\"Bo\"", "\"Carla\""]);
     }
 
     #[test]
