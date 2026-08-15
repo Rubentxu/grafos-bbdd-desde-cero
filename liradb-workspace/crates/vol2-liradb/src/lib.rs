@@ -136,6 +136,20 @@
 //!   la jerarquía [`NivelLouvain`] es el dendrograma que el cap 51
 //!   (GraphRAG) consumirá para resúmenes locales/globales. Errores tipados
 //!   [`ComunidadesError`]; stats [`ComunidadesStats`].
+//! - [`ProyeccionPonderada`] / [`FiltroProyeccion`] / [`dijkstra_proyeccion`] /
+//!   [`bfs_fronteras`] / [`bfs_streaming`] / [`Presupuesto`] / [`BitSet`] /
+//!   [`ContandoStore`] — **Ejecutar algoritmos sin agotar la memoria** (cap 26,
+//!   CIERRA la Parte V): las dos estrategias de la analítica real, medibles.
+//!   La PROYECCIÓN MATERIALIZADA pública con pesos (heredera del CSR del cap
+//!   14; semántica estricta del cap 22 pagada UNA vez; filtra por etiqueta de
+//!   nodo / tipo de arista; `dijkstra_proyeccion` y `closeness_ponderado`
+//!   sobre ella — la deuda que los caps 22 y 24 dejaron anunciada) y el
+//!   STREAMING por fronteras que NO materializa: `bfs_fronteras` produce
+//!   frontera a frontera (procesamiento por bloques) bajo un [`Presupuesto`]
+//!   de profundidad/nodos/lecturas con `MotivoParada` explícito, y
+//!   [`ContandoStore`] es el "voltímetro" que demuestra en tests que no se
+//!   leyó el grafo entero. [`BitSet`] para índices densos (la lección de cuándo
+//!   gana a un hash set).
 //!
 //! Organización del crate: cada capítulo vive en su propio módulo de origen —
 //! `cap07_modelo`, `cap08_graph_store`, `cap09_encoding`, `cap10_append_only`,
@@ -143,7 +157,7 @@
 //! `cap15_indices`, `cap16_mantenimiento`, `cap17_liraql_ast`,
 //! `cap18_lexer_parser`, `cap19_plan_logico`, `cap20_volcano`,
 //! `cap21_optimizador`, `cap22_caminos_minimos`, `cap23_a_estrella`,
-//! `cap24_centralidad` y `cap25_comunidades` — y este
+//! `cap24_centralidad`, `cap25_comunidades` y `cap26_proyeccion` — y este
 //! `lib.rs` es sólo el punto de entrada: declara los módulos y los re-exporta
 //! con `pub use capNN::*` para mantener una API pública plana
 //! (`vol2_liradb::Node`, `vol2_liradb::run`, ...). Cada módulo viaja con sus
@@ -168,6 +182,7 @@ mod cap22_caminos_minimos;
 mod cap23_a_estrella;
 mod cap24_centralidad;
 mod cap25_comunidades;
+mod cap26_proyeccion;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -188,3 +203,4 @@ pub use cap22_caminos_minimos::*;
 pub use cap23_a_estrella::*;
 pub use cap24_centralidad::*;
 pub use cap25_comunidades::*;
+pub use cap26_proyeccion::*;

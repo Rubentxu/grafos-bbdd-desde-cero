@@ -210,6 +210,54 @@ all = { level = "warn", priority = -1 }
 
 ---
 
+## 31. Vol.II — Cap 26 (Proyección, streaming y frontiers — CIERRA Parte V)
+
+**Estado**: ALL_GREEN (629 tests workspace: 597 + 27 del cap 26 + doctests).
+**Módulo**: `cap26_proyeccion.rs` (~2.150 líneas).
+
+**Contexto de la migración**: el agente quedó interrumpido por usage-limit con el módulo
+COMPLETO pero SIN cablear (lib.rs), SIN compilar y con 4 tests mal calibrados. El
+orquestador completó a mano: mod/pub use + viñeta //! en lib.rs; 2 errores de compilación
+(`sort_unstable` sobre f64 → `total_cmp` en la clave terciaria; `#[derive(Debug)]` sobre
+`&dyn GraphStore` → impl manual con los contadores); 4 lints clippy (3× collapsible_if →
+let-chains edición 2024, while_let_on_iterator → for by_ref); 4 expectativas recalibradas
+trazando `FronterasBfs::next` a mano (ver tabla).
+
+**Decisiones**:
+1. **Proyección pública con pesos** (deuda de caps 22/24 saldada): CSR heredero del cap 14
+   (offsets u32 + targets + pesos + EdgeIds), index denso con Option<usize> que compacta
+   huecos, iteración por ADYACENCIAS de nodos admitidos (las aristas de nodos excluidos NI
+   se leen — medible en descartadas/edges_scanned), sanidad de pesos UNA vez.
+2. **Streaming como Iterator**: `FronterasBfs` produce frontera a frontera (procesamiento
+   por bloques del brief); presupuesto triple (profundidad/nodos/lecturas) con
+   `MotivoParada` explícito; `bfs_streaming` consume el iterador de una tirada.
+3. **ContandoStore, el voltímetro**: wrapper de sólo lectura que cuenta get_edge/get_node/
+   out_edges/in_edges — verificación EXTERNA e independiente del auto-informe de stats
+   (el patrón "no confíes en que el algoritmo se auto-auditore").
+4. **BitSet denso vs HashSet disperso**: el bitset vive en la proyección (índices densos,
+   1 bit/nodo) y el BFS sobre ids dispersos usa HashSet — la lección de cuándo gana cada uno.
+5. **Survey sin código** (fiel al brief): paralelismo (fronteras = bloques independientes),
+   snapshots (→ cap 30 MVCC), OLTP vs analítica — documentados en el banner.
+
+**Bugs/expectativas corregidos por el orquestador**:
+| Síntoma | Causa | Fix |
+|---|---|---|
+| `descartadas == 2` fallaba (1) | la arista 4→0 ni se lee: su nodo origen está fuera del filtro | expectativa → 1, comentado el ahorro |
+| `edges_scanned == 1` fallaba (2) | se iteraron las adyacencias de los 2 nodos admitidos | expectativa → 2 |
+| `MissingWeight{edge:3}` fallaba (4) | orden de nodos ascendente: LIVES_IN de Ana (e4) se lee antes que el self-loop de Dani (e3) | expectativa → 4, comentario corregido |
+| `5·E lecturas` fallaba (45≠55) | la validación eager usa iter_edges (sin get_edge) y cada Dijkstra del store lee E−origen: 11+10+9+8+7=45 | expectativa → 45 con la derivación |
+| `aristas_leidas == 3` fallaba (2) | con profundidad 2 sólo se EXPANDEN los nodos 0 y 1 (descubrir el 2 no exige expandirlo) | expectativa → 2, voltímetro → 2 |
+
+**Lecciones**:
+1. Tercera vez que un agente interrumpido deja trabajo completo-sin-verificar (tras caps
+   15/21): el protocolo `git status` + cablear + compilar + recalibrar funciona y es barato.
+2. Los tests de CONTADORES se calibran trazando el código a mano, nunca "lo que suena
+   razonable": profundidad k ⇒ expandir k nodos, no visitarlos.
+3. El voltímetro externo (wrapper que cuenta) es el mejor test de las stats internas:
+   dos fuentes independientes que deben coincidir.
+
+---
+
 *Mantenido por: code-integration-architect (skill del BOOK-WORKFLOW).*
 *Próxima revisión: tras Fase M3c-batch-5 (caps. 13/14 ratatui, cap. 15 image).*
 
