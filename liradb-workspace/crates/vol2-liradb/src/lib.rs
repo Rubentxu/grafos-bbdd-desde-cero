@@ -99,13 +99,34 @@
 //!   documentada (no verificable sin resolver el problema), consistencia
 //!   diagnosticable con [`check_consistency`], y re-apertura de nodos para
 //!   seguir siendo óptimo con heurísticas admisibles pero inconsistentes.
+//! - [`GraphDirection`] / [`degree_centrality`] / [`closeness_centrality`] /
+//!   [`betweenness_centrality`] / [`eigenvector_centrality`] /
+//!   [`page_rank`] / [`personalized_page_rank`] / [`Teleport`] —
+//!   **Centralidad y PageRank** (cap 24, Parte V): las familias de
+//!   centralidad del guion sobre `&dyn GraphStore` vía una proyección
+//!   materializada una vez (grado O(V+E); closeness por BFS con corrección
+//!   Wasserman-Faust para componentes desconectadas; betweenness con el
+//!   algoritmo de Brandes O(V·E); eigenvector por iteración de potencia
+//!   sobre la adyacencia cruda, con sus DOS fallos documentados — masa que
+//!   escapa por nodos colgantes y oscilación en grafos periódicos) y
+//!   PageRank como eigenvector REPARADO: damping factor configurable con
+//!   validación estricta (0,1) abierto, convergencia por L1 (la masa que
+//!   se mueve) con historial por iteración (la razón geométrica ≈ d es
+//!   contenido del capítulo), y dangling nodes redistribuidos
+//!   uniformemente (Brin-Page 1998). El **PageRank personalizado**
+//!   ([`Teleport::Personalized`]) concentra el teleport en semillas
+//!   ponderadas — la costura que el cap 51 (GraphRAG) usará como operador
+//!   de recuperación, separada aquí del global para no acoplarse nunca.
+//!   Errores tipados [`CentralidadError`]; stats [`CentralidadStats`]
+//!   (BFS, aristas, iteraciones) para MEDIR el coste computacional.
 //!
 //! Organización del crate: cada capítulo vive en su propio módulo de origen —
 //! `cap07_modelo`, `cap08_graph_store`, `cap09_encoding`, `cap10_append_only`,
 //! `cap11_slotted_pages`, `cap12_pager`, `cap13_buffer_pool`, `cap14_csr`,
 //! `cap15_indices`, `cap16_mantenimiento`, `cap17_liraql_ast`,
 //! `cap18_lexer_parser`, `cap19_plan_logico`, `cap20_volcano`,
-//! `cap21_optimizador`, `cap22_caminos_minimos` y `cap23_a_estrella` — y este
+//! `cap21_optimizador`, `cap22_caminos_minimos`, `cap23_a_estrella` y
+//! `cap24_centralidad` — y este
 //! `lib.rs` es sólo el punto de entrada: declara los módulos y los re-exporta
 //! con `pub use capNN::*` para mantener una API pública plana
 //! (`vol2_liradb::Node`, `vol2_liradb::run`, ...). Cada módulo viaja con sus
@@ -128,6 +149,7 @@ mod cap20_volcano;
 mod cap21_optimizador;
 mod cap22_caminos_minimos;
 mod cap23_a_estrella;
+mod cap24_centralidad;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -146,3 +168,4 @@ pub use cap20_volcano::*;
 pub use cap21_optimizador::*;
 pub use cap22_caminos_minimos::*;
 pub use cap23_a_estrella::*;
+pub use cap24_centralidad::*;

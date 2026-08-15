@@ -1555,9 +1555,75 @@ externas (`hypot` de std para la euclídea). Cambios quirúrgicos en `cap22_cami
 
 ---
 
+## 29. Vol.II — Cap 24 (Centralidad y PageRank)
+
+**Estado**: ALL_GREEN (447 unit + 15 doctests en vol2-liradb; 537→571 tests workspace).
+**Módulo**: `crates/vol2-liradb/src/cap24_centralidad.rs`. Parte V (algoritmos sobre el
+grafo persistente), capítulo 3.
+
+**Métricas**: ~1.800 líneas el módulo, 28 tests (`tests_centralidad`) + 6 doctests. Sin
+crates externas. Cero cambios en módulos previos (sólo lib.rs: mod/pub use/cabecera).
+
+**Decisiones**:
+1. **Proyección materializada, no store en el bucle**: `Proyeccion { nodes, index,
+   vecinos }` compacta el store UNA vez (ids ordenados → determinismo; índice denso
+   NodeId→posición que deja los huecos de `delete_node` fuera del cálculo; vecindarios
+   por dirección). Los algoritmos iterativos tocan la adyacencia iteraciones×E veces:
+   re-leer `out_edges`+`get_edge` en cada ronda sería pagar el store O(n) veces. Es la
+   forma en memoria del CSR del cap 14; la proyección CON PESOS es el cap 26 (deuda
+   explícita del closeness ponderado).
+2. **`GraphDirection` (no `Direction`)**: colisión con el `Direction` forward/backward
+   del CSR (cap 14) en la API plana. `Both` = unión como CONJUNTO (vecinos distintos,
+   self-loop una vez — convención Expand UNDIRECTED del cap 20): sin dedup, un store
+   simetrizado a mano contaría cada par doble. `In` = transpuesta de la salida pura
+   (BUG corregido durante la implementación: la primera versión mezclaba in-edges en la
+   colección y ADEMÁS transponía).
+3. **Alcance según guion** (brief: grado, closeness, betweenness, eigenvector, PageRank
+   "para explicar familias, sin optimización industrial"): TODAS implementadas. Grado
+   O(V+E) normalizado por n-1; closeness por BFS de saltos con WASSERMAN-FAUST
+   (((r-1)/(n-1))·((r-1)/Σd)) para componentes desconectadas — el ponderado queda como
+   deuda hacia cap 26; betweenness = BRANDES 2001 (σ, predecesores, dependencias hacia
+   atrás; O(V·E)) con normalización dirigida 1/((n-1)(n-2)) que sobre grafo simetrizado
+   reproduce el libro no dirigido (camino 0-1-2-3 → 2/3, estrella → 1).
+4. **Eigenvector = el "antes" honesto**: iteración de potencia sobre adyacencia CRUDA
+   (x_u ← Σ_{v→u} x_v) con L2 por paso (la masa colgante ESCAPA; sin renormalizar el
+   vector colapsaría). Sus DOS fallos son tests: estrella hojas→centro con hojas a 0
+   (quien no recibe enlaces muere) y cola+3-ciclo que OSCILA (converged=false tras
+   agotar iteraciones) — el MISMO grafo donde PageRank converge: el damping no es un
+   truco numérico, hace la matriz positiva (primitiva) y garantiza convergencia.
+5. **PageRank**: damping ∈ (0,1) ABIERTO por ambos extremos (0 = puro teleport, 1 =
+   eigenvector — que existe como función propia por eso). OJO: `Range::contains` no
+   sirve para excluir el 0 (el inicio es INCLUSIVO) — comparación explícita. Dangling
+   redistribuido UNIFORMEMENTE (Brin-Page 1998; variante no-scale documentada y no
+   implementada): masa total = 1 en CADA iteración, invariante testeado. Convergencia
+   por **L1** (la masa que se mueve: interpretable como probabilidad y comparable entre
+   grafos de distinto tamaño; max-delta documentado y descartado por sin lectura de
+   masa). `PageRankResult.history` guarda el delta de CADA iteración: la razón
+   geométrica ≈ d·λ₂ es contenido del capítulo (testeada monótona y < 1; y el contraste
+   del grafo que arranca en el estacionario: history = [0.0], una iteración).
+6. **PPR separado del global para GraphRAG (cap 51)**: `enum Teleport { Uniform,
+   Personalized(Vec<(NodeId, f64)>) }` — el MISMO núcleo `iteracion_de_potencia` para
+   `page_rank` y `personalized_page_rank` (cero duplicación). Validación del teleport:
+   pesos ≥ 0 (negativo señalado por nodo), masa > 0, nodos existentes. El cap 51
+   enchufará su operador de recuperación como `Teleport::Personalized` sin tocar el
+   núcleo.
+7. **Multigrafo con sutileza documentada**: cada arista paralela vale 1/grado — el
+   duplicado NO duplica el voto (también duplica el denominador) pero SÍ roba masa a
+   los otros vecinos (test). Brandes cuenta paralelas como caminos distintos (σ
+   consistente); grado las cuenta una por arista.
+8. Corregido durante la implementación: además del bug de In/Both, el razonamiento a
+   mano del test de demo_graph ignoraba que el self-loop de Dani TAMBIÉN cobra la
+   cuota colgante uniforme → su score real es 0.386 (TOP), no 1/6 — recalculado el
+   valor exacto y reescrito el test como lección (self-loop + masa colgante = trampa
+   de acumulación). Y NaN en `assert_eq!` de errores con f64 no compara (NaN != NaN
+   bajo PartialEq) → `matches!`.
+
+
+---
+
 *Mantenido por: code-integration-architect (skill del BOOK-WORKFLOW).*
-*Próxima revisión: tras Vol.II cap 24 (Centralidad y PageRank — grado/closeness/betweenness/
-eigenvector/PageRank sobre el grafo persistente; el betweenness reutiliza los caminos del cap
-22 y el closeness las distancias de ShortestPaths; iteraciones, convergencia y coste). El
-cap 26 traerá la proyección con pesos del CSR que los algoritmos de la Parte V están
-esperando para poder correr también sobre la estructura persistida.*
+*Próxima revisión: tras Vol.II cap 25 (Comunidades y agrupaciones — Louvain simplificado:
+componentes, label propagation, modularidad; puede reusar la proyección Both y los BFS del
+cap 24). El cap 26 traerá la proyección con pesos del CSR que los algoritmos de la Parte V
+están esperando para poder correr también sobre la estructura persistida (y saldará la
+deuda del closeness ponderado).*
