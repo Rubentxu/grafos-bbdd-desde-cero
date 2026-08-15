@@ -1621,9 +1621,85 @@ crates externas. Cero cambios en módulos previos (sólo lib.rs: mod/pub use/cab
 
 ---
 
+## 30. Vol.II — Cap 25 (Comunidades y agrupaciones)
+
+**Estado**: ALL_GREEN (469 unit + 19 doctests en vol2-liradb; 571→597 tests workspace).
+**Módulo**: `crates/vol2-liradb/src/cap25_comunidades.rs`. Parte V (algoritmos sobre el
+grafo persistente), capítulo 4.
+
+**Métricas**: ~2.200 líneas el módulo, 22 tests (`tests_comunidades`) + 4 doctests. Sin
+crates externas. Cero cambios en módulos previos (sólo lib.rs: mod/pub use/cabecera).
+
+**Decisiones**:
+1. **`GrafoPonderado` propio, no la `Proyeccion` del cap 24**: la del cap 24 es NO
+   ponderada y su `GraphDirection::Both` hace unión como CONJUNTO (deduplica
+   paralelas — correcto para contar vecinos distintos, FALSO para Louvain, que debe
+   SUMAR pesos). Louvain además RECONSTRUYE el grafo en cada agregación: el
+   `GrafoPonderado` es a la vez la proyección inicial Y el grafo de nivel
+   (`contraer()` devuelve otro `GrafoPonderado`). Se heredan el PATRÓN del cap 24
+   (ids ordenados → determinismo, índice denso, materializar una vez) y la semántica
+   ESTRICTA de pesos del cap 22 (`WeightSource`/`edge_weight` con
+   `From<PathError>` → `ComunidadesError::Weight`).
+2. **Semántica de pesos y dirección, documentada en el contrato**: cada arista
+   dirigida u→v aporta w al par {u,v} (un store simetrizado a mano SUMA 2w); las
+   paralelas ACUMULAN (multigrafo → multipeso, testeado: 3 paralelas de peso 1 ≡ una
+   de peso 3 con idéntico resultado); los self-loops se separan con la convención
+   estándar **A_ii = 2s** (cuentan doble en k_i y 2m — el self-loop de Dani en
+   `demo_graph` le da comunidad propia sin unirlo a nadie); los pesos NEGATIVOS se
+   rechazan eager (como Dijkstra en cap 22: la modularidad con negativos rompe el
+   modelo nulo).
+3. **Modularidad como función VERIFICABLE** (`modularidad(store, particion, weight,
+   gamma)`): calculable sobre CUALQUIER partición dada — es la métrica guía del
+   algoritmo y el oráculo de los tests (Q del resultado == `modularidad()` de la
+   misma partición, testeado en cada caso). Nodos ausentes de la partición →
+   singletons; ids de grupo u64 arbitrarios (densificados internamente — cuidado
+   con la asignación O(max_id) si no se densificara); γ de Reichardt-Bornholdt
+   validado (0, negativo, NaN e ∞ rechazados — con el mismo `matches!` para NaN
+   que el cap 24).
+4. **Louvain simplificado, determinista**: fase local greedy con ΔQ EXACTO (diferencia
+   de los dos términos de comunidad que cambian — misma fórmula que las
+   implementaciones de referencia, autocontenida aquí) y sólo ΔQ>0 ESTRICTO;
+   agregación conservando 2m (⇒ la Q de cada nivel es igual en el grafo contraído y
+   en el original, INVARIANTE TESTEADA nivel a nivel); niveles hasta que una fase no
+   mueva nada. **Cota de terminación demostrable**: cada nivel arranca de singletons,
+   su primer movimiento vacía una comunidad ⇒ el siguiente nivel tiene estrictamente
+   menos nodos ⇒ niveles ≤ V. `max_pasadas` por nivel = seguro anti-ruido de f64
+   (ΔQ ≈ 0). Determinismo TOTAL sin barajar (el Louvain de la literatura baraja):
+   nodos por id, candidatos por id de comunidad, empates por `total_cmp` → el
+   primero gana, renumeración por menor miembro — dos ejecuciones idénticas,
+   testeado incluso con orden de inserción de aristas invertido.
+5. **La jerarquía es el producto para el cap 51 (GraphRAG)**: `NivelLouvain` lleva la
+   asignación de los nodos ORIGINALES (composición de particiones) + Q + nº de
+   comunidades + stats por nivel; anidamiento garantizado por construcción
+   (OJO al assertirlo: la dirección correcta es "misma comunidad en el nivel ℓ ⇒
+   misma en el ℓ+1" — los niveles bajos son FINOS, fundir es fusionar);
+   `particion_en(nivel)` construye el dendrograma a demanda.
+6. **El límite de resolución como TEST estrella** (Fortunato-Barthélemy 2007): anillo
+   de 12 tríos — γ=1 funde pares adyacentes (6 comunidades, Q=17/24 > 2/3 de los
+   tríos sueltos; DOS niveles de jerarquía 12→6), γ=2 los recupera (12 tríos
+   exactos, Q=7/12). La métrica guía explica el fenómeno: los valores Q_γ de ambas
+   particiones se verifican analíticamente con `modularidad()`.
+7. **Hallazgos corregidos durante la implementación** (lecciones, no bugs del código):
+   (a) el LPA determinista GOTEA por los puentes con pesos uniformes — el primer
+   grupo que se forma arrastra al vecino del puente cuya etiqueta propia aún no
+   reúne votos; política de empates "conservar la propia si empata con la máxima,
+   si no la menor" + pesos que rompan empates; y el camino 0-1-2 se funde ENTERO
+   (cascada de votos) — documentado en test en vez de imaginar particiones que la
+   heurística no tiene por qué encontrar. (b) Un puente PESADISIMO no "fusiona todo":
+   Q es invariante a escala y la mejor partición ROMPE los tríos alrededor del
+   puente ({0,2},{1,4},{3,5} con Q=100/2809, mejor que la trivial 0) — el test
+   enseña que los pesos RESTRUCTURAN, no que "más peso = más fusión". (c) En
+   `demo_graph` hay DOS óptimos con la MISMA Q=5/18 ({0,2,4},{1,5},{3} y
+   {0,1,2,4,5},{3}) separados por un dq EXACTAMENTE 0 — el test afianza Q y las
+   pertenencias que no dependen del camino, no la partición completa. (d)
+   `max_pasadas=1` NO rebaja la calidad final: lo que una pasada deja a medias en
+   el nivel 0, la agregación lo repara en el nivel 1 (la jerarquía desbloquea
+   movimientos) — testeado.
+
+---
+
 *Mantenido por: code-integration-architect (skill del BOOK-WORKFLOW).*
-*Próxima revisión: tras Vol.II cap 25 (Comunidades y agrupaciones — Louvain simplificado:
-componentes, label propagation, modularidad; puede reusar la proyección Both y los BFS del
-cap 24). El cap 26 traerá la proyección con pesos del CSR que los algoritmos de la Parte V
-están esperando para poder correr también sobre la estructura persistida (y saldará la
-deuda del closeness ponderado).*
+*Próxima revisión: tras Vol.II cap 26 (Ejecutar algoritmos sin agotar la memoria):
+la proyección CON PESOS sobre el CSR del cap 14 que la Parte V espera — saldará la
+deuda del closeness ponderado (cap 24) y podrá unificar la proyección simétrica
+ponderada del cap 25 con la vista por bloques/frontiers del guion.*

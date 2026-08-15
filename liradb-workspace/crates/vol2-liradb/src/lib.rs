@@ -119,14 +119,31 @@
 //!   de recuperación, separada aquí del global para no acoplarse nunca.
 //!   Errores tipados [`CentralidadError`]; stats [`CentralidadStats`]
 //!   (BFS, aristas, iteraciones) para MEDIR el coste computacional.
+//! - [`componentes_conexas`] / [`label_propagation`] / [`modularidad`] /
+//!   [`louvain`] / [`Particion`] / [`NivelLouvain`] — **Comunidades y
+//!   agrupaciones** (cap 25, Parte V): particionar el grafo en vez de
+//!   rankear nodos. Componentes conexas (el caso límite: alcanzabilidad),
+//!   label propagation determinista (la heurística sin métrica que MOTIVA
+//!   lo que sigue), la modularidad Q_γ de Newman-Girvan como función
+//!   verificable sobre cualquier partición dada (γ = resolución de
+//!   Reichardt-Bornholdt), y Louvain simplificado (Blondel 2008): fase
+//!   local greedy con ΔQ exacto + agregación en supernodos por nivel,
+//!   sobre una proyección simétrica ponderada (dirigidas sumadas al par,
+//!   paralelas acumuladas, self-loops ×2 de la convención estándar) con
+//!   los pesos estrictos del cap 22 (`WeightSource`). Determinismo total
+//!   (orden por id, empates por `total_cmp` → menor id, renumeración por
+//!   menor miembro), Q monótono entre niveles y anidamiento garantizado:
+//!   la jerarquía [`NivelLouvain`] es el dendrograma que el cap 51
+//!   (GraphRAG) consumirá para resúmenes locales/globales. Errores tipados
+//!   [`ComunidadesError`]; stats [`ComunidadesStats`].
 //!
 //! Organización del crate: cada capítulo vive en su propio módulo de origen —
 //! `cap07_modelo`, `cap08_graph_store`, `cap09_encoding`, `cap10_append_only`,
 //! `cap11_slotted_pages`, `cap12_pager`, `cap13_buffer_pool`, `cap14_csr`,
 //! `cap15_indices`, `cap16_mantenimiento`, `cap17_liraql_ast`,
 //! `cap18_lexer_parser`, `cap19_plan_logico`, `cap20_volcano`,
-//! `cap21_optimizador`, `cap22_caminos_minimos`, `cap23_a_estrella` y
-//! `cap24_centralidad` — y este
+//! `cap21_optimizador`, `cap22_caminos_minimos`, `cap23_a_estrella`,
+//! `cap24_centralidad` y `cap25_comunidades` — y este
 //! `lib.rs` es sólo el punto de entrada: declara los módulos y los re-exporta
 //! con `pub use capNN::*` para mantener una API pública plana
 //! (`vol2_liradb::Node`, `vol2_liradb::run`, ...). Cada módulo viaja con sus
@@ -150,6 +167,7 @@ mod cap21_optimizador;
 mod cap22_caminos_minimos;
 mod cap23_a_estrella;
 mod cap24_centralidad;
+mod cap25_comunidades;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -169,3 +187,4 @@ pub use cap21_optimizador::*;
 pub use cap22_caminos_minimos::*;
 pub use cap23_a_estrella::*;
 pub use cap24_centralidad::*;
+pub use cap25_comunidades::*;
