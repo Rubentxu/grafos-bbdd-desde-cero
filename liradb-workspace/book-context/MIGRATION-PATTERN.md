@@ -1,7 +1,7 @@
 # MIGRATION-PATTERN — Patrón de migración Vol.I → workspace
 
 > Documento vivo. Se actualiza con cada lección aprendida al migrar snippets.
-> Última revisión: 2026-08-15 (cap 22 del Vol.II, caminos mínimos ponderados — §27; abre la Parte V).
+> Última revisión: 2026-08-15 (cap 27 del Vol.II, transacciones ACID — §32; abre la Parte VI).
 
 ## 0. Resumen
 
@@ -260,6 +260,81 @@ trazando `FronterasBfs::next` a mano (ver tabla).
 
 *Mantenido por: code-integration-architect (skill del BOOK-WORKFLOW).*
 *Próxima revisión: tras Fase M3c-batch-5 (caps. 13/14 ratatui, cap. 15 image).*
+
+## 32. Vol.II — Cap 27 (Qué significa una transacción — ACID; ABRE Parte VI)
+
+**Estado**: ALL_GREEN (629 → 658 tests workspace: +28 del cap 27 + 1 doctest).
+**Módulo**: `cap27_transacciones.rs` (~1.460 líneas). Sin crates externas.
+
+**Contexto**: capítulo CONCEPTUAL + primera maquinaria, fiel al alcance del brief
+(WAL real = cap 28, recuperación = cap 29, MVCC/2PL = cap 30 — aquí NO se
+adelantan esos motores). El brief manda: ACID, autocommit, transacciones
+explícitas, lecturas sucias, lost updates, modelo «múltiples lectores / un
+único escritor».
+
+**Decisiones**:
+1. **El vocabulario ACID es un tipo, no prosa**: `GarantiaAcid` (letra/nombre/
+   definición PARA LiraDB), `NivelGarantia` (Ninguna/Parcial/Completa),
+   `informe_acid()` → `InformeAcid` con las cuatro `EntradaAcid` valoradas
+   HONESTAMENTE y verificadas por tests (la documentación no puede prometer
+   más de lo que el código cumple): **A parcial** (staging «o todas o ninguna»
+   frente a errores de validación; NO frente a un fallo del apply real),
+   **C parcial y trivial** (sólo invariantes estructurales; sin restricciones
+   declarativas — la C es un contrato compartido con la aplicación),
+   **I parcial por diseño** (sin concurrencia: el préstamo exclusivo `&mut` ES
+   el cerrojo), **D NINGUNA** (commit en RAM; sync cap 12 / flush cap 13
+   existen, el protocolo WAL no). `capitulo_que_la_cierra` en cada entrada.
+2. **Staging con commit en dos fases**: `Operacion` como DATO (el mismo shape
+   que `RecordKind` del cap 10 — la semilla del WAL), buffer privado,
+   `stage()` valida EAGER (error → la op se expulsa y la tx SIGUE VIVA con su
+   prefijo válido) y `commit()` re-valida el buffer entero (el «punto de no
+   retorno»: redundante por inducción — nada externo puede cambiar el store
+   mientras lo tenemos prestado — pero barata y robusta a refactors) antes del
+   apply. La validación es un REPLAY sobre una `Simulacion` (sets de
+   nodos/aristas creados/borrados) que respeta el ORDEN del buffer: edges tras
+   sus nodos, cascadas de `delete_node` (incluidas aristas nacidas en el
+   buffer), re-creaciones tras borrar. Coste O(n·(n+E)) — naive y documentado.
+3. **El ciclo de vida de la tx vive en los TIPOS**: `commit`/`rollback`
+   consumen `self` → usar una tx cerrada o ANIDAR dos transacciones sobre el
+   mismo store no compila (mejor que rechazarlo en runtime). El modelo «un
+   único escritor» del brief lo ejecuta el borrow checker: mientras vive la
+   tx, ni lectores ni escritores. `Drop` de una tx activa = rollback implícito
+   SEGURO por construcción (nada se aplicó).
+4. **El gancho al cap 28 como TEST, no como promesa**: `StoreQueFalla`
+   (wrapper de test que falla en la N-ésima escritura) demuestra los dos
+   agujeros del staging: (a) error del store a mitad del apply →
+   `ApplyFallido{aplicadas: 2}` con `node_count()==2` (¡a medias!); (b) pánico
+   «corte de luz simulado» con `catch_unwind` → store a medias y NADIE recuerda
+   qué faltaba. Ambos tests AFIRMAN el estado a medias: es la lección que
+   motiva el WAL.
+5. **Autocommit como función ejecutable**: `autocommit(store, op)` = begin +
+   stage + commit — hace visible que el modo por defecto de los caps 7-26
+   (cada `put_*` su propia tx) es un caso particular del nuevo mecanismo.
+   Test de equivalencia contra la operación directa.
+6. **Rollback barato vs rollback imposible**: descartar el buffer es limpio
+   POR CONSTRUCCIÓN (nada se aplicó). Deshacer DESPUÉS de aplicar exigiría un
+   log — documentado en `rollback()` como la frontera exacta del capítulo.
+
+**Bugs propios corregidos durante la calibración** (lecciones):
+| Síntoma | Causa | Fix |
+|---|---|---|
+| 2 tests esperaban error de validación en `commit()` | `stage()` valida EAGER: la op inválida se rechaza AL MOMENTO, no en commit | test de la «op 3 de 5» reescrito white-box (siembra `tx.buffer` a mano — los tests viven en el módulo) para ejercitar la re-validación del commit; el del orden, a stage-time |
+| doctest del `Transaccion` no compilaba | `node_count()` es método del trait `GraphStore`, no intrínseco de `MemoryStore` | importar el trait en el doctest |
+| `source()` no compilaba | la firma del trait exige `&(dyn Error + 'static)` | firma explícita con `'static` |
+| clippy `unused_mut` | tx de rollback vacío sin stage | quitar `mut` |
+
+**Lecciones**:
+1. Un capítulo «conceptual» del brief puede y debe dejar CÓDIGO verificable:
+   el vocabulario como tipos (`GarantiaAcid`, `Anomalia`) hace la promesa
+   AUDITABLE por tests (`informe_acid()` no puede mentir).
+2. Probar lo que NO funciona es contenido: los dos tests del store-a-medias
+   DOCUMENTAN la limitación mejor que cualquier párrafo y quedan como
+   regresión inversa para el cap 28 (cuando haya WAL, se invierten).
+3. El borrow checker como motor de aislamiento gratis: el préstamo exclusivo
+   `&mut` codifica «un único escritor» sin una línea de código de locking —
+   el ángulo Rust de un capítulo de bases de datos.
+
+---
 
 ## 13. Métricas de la Fase M3c-batch-5 (parcial)
 

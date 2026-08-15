@@ -150,6 +150,23 @@
 //!   [`ContandoStore`] es el "voltímetro" que demuestra en tests que no se
 //!   leyó el grafo entero. [`BitSet`] para índices densos (la lección de cuándo
 //!   gana a un hash set).
+//! - [`GarantiaAcid`] / [`NivelGarantia`] / [`InformeAcid`] / [`Anomalia`] /
+//!   [`Operacion`] / [`Transaccion`] / [`autocommit`] — **Qué significa una
+//!   transacción (ACID)** (cap 27, ABRE la Parte VI: fiabilidad): el
+//!   vocabulario ACID tipado con valoración honesta del estado actual
+//!   ([`informe_acid()`]: A parcial por staging, C trivial, I por préstamo
+//!   exclusivo del borrow checker, D ninguna sin WAL) y la transacción como
+//!   OBJETO con begin → staging → commit/rollback: las operaciones se
+//!   acumulan en un buffer y sólo se aplican tras validar TODO el buffer
+//!   (atomicidad naive «o todas o ninguna» frente a errores de validación,
+//!   simulando el buffer contra el store y su propio orden). Límites
+//!   documentados en tests como gancho al cap. 28: un fallo o pánico a
+//!   mitad del APPLY real deja el store a medias (sin log no hay vuelta
+//!   atrás) y el commit en RAM no es durable. [`autocommit`] hace visible
+//!   el modo por defecto de los caps. 7-26 (cada put_*/delete_* era su
+//!   propia transacción). El WAL real es cap. 28, la recuperación cap. 29
+//!   y el aislamiento MVCC/2PL cap. 30 — aquí se sientan las palabras y
+//!   el esqueleto.
 //!
 //! Organización del crate: cada capítulo vive en su propio módulo de origen —
 //! `cap07_modelo`, `cap08_graph_store`, `cap09_encoding`, `cap10_append_only`,
@@ -157,7 +174,8 @@
 //! `cap15_indices`, `cap16_mantenimiento`, `cap17_liraql_ast`,
 //! `cap18_lexer_parser`, `cap19_plan_logico`, `cap20_volcano`,
 //! `cap21_optimizador`, `cap22_caminos_minimos`, `cap23_a_estrella`,
-//! `cap24_centralidad`, `cap25_comunidades` y `cap26_proyeccion` — y este
+//! `cap24_centralidad`, `cap25_comunidades`, `cap26_proyeccion` y
+//! `cap27_transacciones` — y este
 //! `lib.rs` es sólo el punto de entrada: declara los módulos y los re-exporta
 //! con `pub use capNN::*` para mantener una API pública plana
 //! (`vol2_liradb::Node`, `vol2_liradb::run`, ...). Cada módulo viaja con sus
@@ -183,6 +201,7 @@ mod cap23_a_estrella;
 mod cap24_centralidad;
 mod cap25_comunidades;
 mod cap26_proyeccion;
+mod cap27_transacciones;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -204,3 +223,4 @@ pub use cap23_a_estrella::*;
 pub use cap24_centralidad::*;
 pub use cap25_comunidades::*;
 pub use cap26_proyeccion::*;
+pub use cap27_transacciones::*;
