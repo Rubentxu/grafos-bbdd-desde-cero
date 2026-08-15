@@ -1,7 +1,7 @@
 # MIGRATION-PATTERN — Patrón de migración Vol.I → workspace
 
 > Documento vivo. Se actualiza con cada lección aprendida al migrar snippets.
-> Última revisión: 2026-08-14 (hito CLI mínima `liradb` tras el cap 20 del Vol.II — §25).
+> Última revisión: 2026-08-15 (cap 22 del Vol.II, caminos mínimos ponderados — §27; abre la Parte V).
 
 ## 0. Resumen
 
@@ -1462,7 +1462,45 @@ optimizador lo elija) y cap 20 su compilación a `IndexSeekOp`.
    cancelado puede dejar trabajo válido sin verificar en el árbol — `git status` antes de
    lanzar el siguiente.
 
+## 27. Vol.II — Cap 22 (Caminos mínimos ponderados: Dijkstra + Bellman-Ford)
+
+**Estado**: ALL_GREEN (405 unit + 5 doctests en vol2-liradb; 486→519 tests workspace).
+**Módulo**: `crates/vol2-liradb/src/cap22_caminos_minimos.rs`. Abre la Parte V (algoritmos
+sobre el grafo persistente).
+
+**Métricas**: ~1.290 líneas el módulo, 30 tests (`tests_caminos`) + 3 doctests. Sin crates
+externas (`BinaryHeap` de std, como el cap 4 del Vol.I).
+
+**Decisiones**:
+1. **Fuente de pesos** (`WeightSource`): propiedad de arista configurable (`Property(name)`,
+   como `WEIGHT relationship.distance` del brief) o `Constant` (Default `1.0` = contar
+   saltos). Semántica ESTRICTA y tipada en `edge_weight`: ausente o NULL → `MissingWeight`,
+   tipo no numérico → `InvalidWeight` (con `Value::type_name`), NaN/±∞ → `NonFiniteWeight`,
+   Int→Float con pérdida >2^53 documentada y testeada. Un grafo schemaless debe VER sus
+   problemas de dato, no silenciarlos con un default.
+2. **Sobre `&dyn GraphStore`, no sobre el CSR**: los pesos viven en `Edge.props` y el CSR del
+   cap 14 sólo persiste topología (sin ids de arista) — la proyección con pesos llega en el
+   cap 26. El CSR queda como oráculo de consistencia en un test (alcanzabilidad BFS sobre la
+   proyección == `reached()` de Dijkstra).
+3. **Negativos**: Dijkstra valida TODAS las aristas eagermente y rechaza
+   (`NegativeWeight`) aunque la consulta no vaya a tocar esa zona — una BD prefiere fallar
+   ruidosamente a contestar casi-bien. Bellman-Ford los acepta y sólo se rinde con un ciclo
+   negativo ALCANZABLE desde el origen (`NegativeCycle`, señalando una arista que aún
+   relaja); el inalcanzable no contamina.
+4. **Misma interfaz para ambos**: tabla `ShortestPaths` (dist+pred+`PathStats`) + camino
+   `Path` (pasos con arista/peso, `nodes()`, `hops()`, Display estilo Cypher) y variantes
+   `_path` punto-a-punto. Dijkstra con finalización anticipata al destino (invariante
+   codicioso) y Bellman-Ford SIN early-exit por destino (nada lo justifica sin el invariante)
+   pero con parada temprana de pasadas. `CostOverflow` evita confundir un infinito real con
+   el centinela `INFINITY` de inalcanzable.
+5. **`Cost`**: newtype f64 con `Ord` total para el heap (f64 no puede: los NaN); el
+   `expect` de `partial_cmp` es unreachable documentado porque todos los costes se validan
+   finitos antes de entrar.
+6. Corregido al vuelo: el bloque integrador `vol2-liradb` de code-map.yml seguía sin listar
+   `cap21_optimizador` y las stats/next_action apuntaban al cap 21 ya hecho (deuda de la
+   interrupción de la Sesión 15) — actualizados junto al cap 22.
+
 ---
 
 *Mantenido por: code-integration-architect (skill del BOOK-WORKFLOW).*
-*Próxima revisión: tras Vol.II cap 21 (el optimizador — push-down, IndexSeek y `liradb explain`, que reutilizará el Display de plan y las métricas que la CLI ya imprime).*
+*Próxima revisión: tras Vol.II cap 23 (A* y heurísticas admisibles — extiende el Dijkstra del cap 22 con una heurística en la clave del heap y reutiliza su Path/ShortestPaths; primera sección donde los "algoritmos del Vol.I" ya no bastan tal cual porque necesitan datos del nodo, no de la arista).*

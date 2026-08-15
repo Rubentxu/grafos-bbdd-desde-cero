@@ -76,13 +76,24 @@
 //!   ANTES/DESPUÉS con estimaciones (el hito `liradb explain`). `run` y
 //!   `Query::execute` pasan por el optimizador con resultados equivalentes
 //!   (multiconjunto de filas; sin ORDER BY el orden no es parte del contrato).
+//! - [`WeightSource`] / [`edge_weight`] / [`dijkstra`] / [`dijkstra_path`] /
+//!   [`bellman_ford`] / [`bellman_ford_path`] / [`ShortestPaths`] / [`Path`] —
+//!   **Caminos mínimos ponderados** (cap 22, abre la Parte V: algoritmos
+//!   sobre el grafo persistente): los pesos se leen de las PROPIEDADES de las
+//!   aristas (fuente configurable [`WeightSource::Property`] tipo
+//!   `WEIGHT relationship.distance`, o constante para contar saltos) con
+//!   semántica estricta y errores tipados; Dijkstra con `BinaryHeap` de std,
+//!   borrado perezoso, predecesores por arista y finalización anticipada al
+//!   destino; Bellman-Ford que admite pesos negativos y detecta ciclos
+//!   negativos alcanzables. Ambos devuelven la misma interfaz: tabla
+//!   [`ShortestPaths`] y camino [`Path`] con stats ([`PathStats`]).
 //!
 //! Organización del crate: cada capítulo vive en su propio módulo de origen —
 //! `cap07_modelo`, `cap08_graph_store`, `cap09_encoding`, `cap10_append_only`,
 //! `cap11_slotted_pages`, `cap12_pager`, `cap13_buffer_pool`, `cap14_csr`,
 //! `cap15_indices`, `cap16_mantenimiento`, `cap17_liraql_ast`,
-//! `cap18_lexer_parser`, `cap19_plan_logico`, `cap20_volcano` y
-//! `cap21_optimizador` — y este
+//! `cap18_lexer_parser`, `cap19_plan_logico`, `cap20_volcano`,
+//! `cap21_optimizador` y `cap22_caminos_minimos` — y este
 //! `lib.rs` es sólo el punto de entrada: declara los módulos y los re-exporta
 //! con `pub use capNN::*` para mantener una API pública plana
 //! (`vol2_liradb::Node`, `vol2_liradb::run`, ...). Cada módulo viaja con sus
@@ -103,6 +114,7 @@ mod cap18_lexer_parser;
 mod cap19_plan_logico;
 mod cap20_volcano;
 mod cap21_optimizador;
+mod cap22_caminos_minimos;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -119,3 +131,4 @@ pub use cap18_lexer_parser::*;
 pub use cap19_plan_logico::*;
 pub use cap20_volcano::*;
 pub use cap21_optimizador::*;
+pub use cap22_caminos_minimos::*;
