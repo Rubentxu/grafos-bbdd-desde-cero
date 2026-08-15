@@ -1502,5 +1502,62 @@ externas (`BinaryHeap` de std, como el cap 4 del Vol.I).
 
 ---
 
+## 28. Vol.II — Cap 23 (A*, heurísticas y búsquedas dirigidas)
+
+**Estado**: ALL_GREEN (419 unit + 9 doctests en vol2-liradb; 519→537 tests workspace).
+**Módulo**: `crates/vol2-liradb/src/cap23_a_estrella.rs`. Parte V (algoritmos sobre el
+grafo persistente), continuación del cap 22.
+
+**Métricas**: ~1.000 líneas el módulo, 14 tests (`tests_a_estrella`) + 4 doctests. Sin crates
+externas (`hypot` de std para la euclídea). Cambios quirúrgicos en `cap22_caminos_minimos.rs`
+(Ver abajo).
+
+**Decisiones**:
+1. **La heurística es un TRAIT, no una closure**: `Heuristic { estimate(&self, store, node)
+   -> Result<f64, PathError> }`. Porqué: las heurísticas son familias CON ESTADO ligadas a un
+   destino (la euclídea recuerda destino y nombres de props; una de landmarks precalcularía
+   tablas); el contrato (finita, ≥ 0, h(dest)=0 si admisible) se documenta y valida EN UN
+   SITIO (a_star revisa cada estimación); y `&dyn Heuristic` evita genéricos contagiosos. Una
+   closure no podría leer el store (coordenadas) sin capturarlo prestado. Implementaciones:
+   `ZeroHeuristic` (h≡0) y `EuclideanHeuristic` (recta por props x/y de NODO, con la MISMA
+   semántica estricta que `edge_weight`: MissingCoordinate/InvalidCoordinate, Int promociona;
+   destino validado eager en `new`, resto on-demand).
+2. **Reutilización máxima del cap 22**: `a_star` usa tal cual WeightSource/`edge_weight`,
+   `Path`, `PathStats`, `PathError` y la sanidad eager de pesos — EXTRAÍDA del cuerpo de
+   `dijkstra_impl` a `validate_edge_weights` pub(crate) compartida (refactor puro, mismo
+   comportamiento; también `ensure_node`/`table_len` pasaron a pub(crate)). Heap por
+   `f = g + h` con clave `Reverse<(Cost(f), Cost(g), NodeId)>` (Cost, no f64: Ord total); con
+   h≡0 la clave degenera en la de Dijkstra y el orden de pops es IDÉNTICO (testeado).
+3. **Validación HONESTA, por coste**: eager lo barato (pesos O(E), h finita y ≥0 por
+   estimación cacheada ≤1 vez/nodo — un NaN haría PANIC en `Cost::cmp`); ADMISIBILIDAD no
+   verificable (exigiría el coste real = resolver Dijkstra) → documentada y el riesgo
+   DEMOSTRADO con tests (h sobre-estimada y unidades km/min mezcladas ⇒ subóptimo en
+   silencio); CONSISTENCIA sí es local O(E) → utilidad `check_consistency` como diagnóstico
+   (`InconsistentHeuristic{edge, h_from, bound}`), pero `a_star` NO la exige.
+4. **Re-apertura, no `settled`**: con h admisible pero inconsistente un nodo expandido puede
+   mejorar su g y debe re-expandirse; las entradas obsoletas del heap se detectan por
+   `g_entrada > g[v]`. Resultado: A* sigue devolviendo el ÓPTIMO con heurísticas sólo
+   admisibles, al precio de expandir más (medido en tests: 5 expansiones para 4 nodos).
+   Rechazar la inconsistencia habría sido rechazar respuestas correctas.
+5. **`PathStats` extendido con `expanded`** (pops vivos, sin obsoletos): añadido al struct
+   del cap 22 e incrementado también por `dijkstra_impl`, que es lo que hace posible la
+   comparativa Dijkstra vs A* (13 vs 10 en el grafo-trampa; 7 vs 3 en la red de ciudades del
+   hito). `PathError` extendido a 12 variantes (5 nuevas: MissingCoordinate,
+   InvalidCoordinate, NonFiniteHeuristic, NegativeHeuristic, InconsistentHeuristic).
+6. **Sólo punto-a-punto**: sin variante single-source — el sesgo hacia el destino es la
+   gracia y las distancias intermedias no quedan garantizadas (con h inconsistente ni las
+   de los nodos tocados). f puede desbordar a ∞ (sólo prioridad; `Cost` tolera ±∞), g no
+   (`CostOverflow` heredado).
+7. Corregido durante la implementación: MemoryStore NO reemplaza ids de arista existentes
+   (`DuplicateEdge`) — un test que mutaba una arista in situ se reescribió con store fresco;
+   y los doctests nuevos necesitaban `use vol2_liradb::GraphStore` para los métodos del trait
+   (misma lección que los doctests del cap 22).
+
+---
+
 *Mantenido por: code-integration-architect (skill del BOOK-WORKFLOW).*
-*Próxima revisión: tras Vol.II cap 23 (A* y heurísticas admisibles — extiende el Dijkstra del cap 22 con una heurística en la clave del heap y reutiliza su Path/ShortestPaths; primera sección donde los "algoritmos del Vol.I" ya no bastan tal cual porque necesitan datos del nodo, no de la arista).*
+*Próxima revisión: tras Vol.II cap 24 (Centralidad y PageRank — grado/closeness/betweenness/
+eigenvector/PageRank sobre el grafo persistente; el betweenness reutiliza los caminos del cap
+22 y el closeness las distancias de ShortestPaths; iteraciones, convergencia y coste). El
+cap 26 traerá la proyección con pesos del CSR que los algoritmos de la Parte V están
+esperando para poder correr también sobre la estructura persistida.*

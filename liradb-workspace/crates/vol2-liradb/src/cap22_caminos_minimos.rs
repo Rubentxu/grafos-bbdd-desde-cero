@@ -195,7 +195,8 @@ pub fn edge_weight(edge: &Edge, source: &WeightSource) -> Result<f64, PathError>
 
 // ─── Errores ───
 
-/// Errores de los algoritmos de caminos mínimos.
+/// Errores de los algoritmos de caminos mínimos (Dijkstra/Bellman-Ford) y,
+/// desde el cap 23, de A* y sus heurísticas.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PathError {
     /// El origen o el destino no existe en el store.
@@ -218,6 +219,33 @@ pub enum PathError {
     /// Bellman-Ford: hay un ciclo negativo alcanzable desde el origen; la
     /// arista señalada todavía relaja tras V-1 pasadas.
     NegativeCycle { edge: EdgeId },
+    /// (cap 23) El nodo no tiene la propiedad de coordenada que la heurística
+    /// pide (ausente o NULL) — la misma semántica estricta de
+    /// [`PathError::MissingWeight`], pero para PROPIEDADES DE NODO.
+    MissingCoordinate { node: NodeId, prop: String },
+    /// (cap 23) La coordenada existe pero no es un número utilizable
+    /// (tipo no numérico, o Float NaN/±∞).
+    InvalidCoordinate {
+        node: NodeId,
+        prop: String,
+        found: String,
+    },
+    /// (cap 23) La heurística devolvió NaN o ±∞ para `node`. Un NaN rompería
+    /// el orden total de `Cost` en el heap (panic documentado); se rechaza
+    /// ruidosamente en cuanto se consulta.
+    NonFiniteHeuristic { node: NodeId, value: f64 },
+    /// (cap 23) La heurística devolvió un valor negativo para `node`. En
+    /// teoría una h<0 sigue siendo admisible, pero casi siempre es un bug del
+    /// caller y además el criterio de parada de A* necesita h(destino)=0
+    /// (que la admisibilidad + no-negatividad garantizan).
+    NegativeHeuristic { node: NodeId, value: f64 },
+    /// (cap 23) [`check_consistency`](crate::check_consistency): la arista
+    /// `edge` viola la consistencia `h(from) ≤ w(from,to) + h(to)`.
+    InconsistentHeuristic {
+        edge: EdgeId,
+        h_from: f64,
+        bound: f64,
+    },
 }
 
 impl fmt::Display for PathError {
@@ -254,6 +282,37 @@ impl fmt::Display for PathError {
                     "negative cycle reachable from origin (still relaxing edge {edge}); shortest paths are undefined downstream"
                 )
             }
+            PathError::MissingCoordinate { node, prop } => {
+                write!(
+                    f,
+                    "node {node} has no coordinate property '{prop}' (missing or NULL)"
+                )
+            }
+            PathError::InvalidCoordinate { node, prop, found } => {
+                write!(
+                    f,
+                    "node {node}: coordinate property '{prop}' is {found}, not a usable number"
+                )
+            }
+            PathError::NonFiniteHeuristic { node, value } => {
+                write!(f, "heuristic for node {node} is non-finite: {value}")
+            }
+            PathError::NegativeHeuristic { node, value } => {
+                write!(
+                    f,
+                    "heuristic for node {node} is negative: {value} (A* expects h >= 0)"
+                )
+            }
+            PathError::InconsistentHeuristic {
+                edge,
+                h_from,
+                bound,
+            } => {
+                write!(
+                    f,
+                    "inconsistent heuristic: h(from)={h_from} > w + h(to)={bound} across edge {edge}"
+                )
+            }
         }
     }
 }
@@ -267,19 +326,28 @@ impl std::error::Error for PathError {}
 /// Campos por algoritmo:
 /// - `relax_attempts` / `relax_updates`: aristas consideradas / relajaciones
 ///   que MEJORARON una distancia (ambos algoritmos).
-/// - `popped`: extracciones del heap (sólo Dijkstra; Bellman-Ford no usa heap).
+/// - `popped`: extracciones del heap (sólo Dijkstra y A*; Bellman-Ford no usa
+///   heap). Incluye las entradas obsoletas del borrado perezoso.
 /// - `rounds`: pasadas sobre la lista de aristas (sólo Bellman-Ford, con la
 ///   parada temprana si nada cambia; Dijkstra deja 0).
+/// - `expanded`: nodos realmente EXPANDIDOS (pops VIVOS: extracciones que no
+///   eran entradas obsoletas) — añadido por el cap 23 para poder COMPARAR
+///   Dijkstra vs A* (el ahorro de la heurística se mide aquí). En Dijkstra
+///   coincide con los pops útiles; en A* puede superar el número de nodos del
+///   grafo cuando una heurística inconsistente fuerza re-expansiones. En
+///   Bellman-Ford queda a 0 (no expande mediante heap).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PathStats {
     /// Aristas consideradas para relajación.
     pub relax_attempts: u64,
     /// Relajaciones que mejoraron una distancia.
     pub relax_updates: u64,
-    /// Extracciones del heap (Dijkstra).
+    /// Extracciones del heap (Dijkstra y A*), obsoletas incluidas.
     pub popped: u64,
     /// Pasadas de aristas ejecutadas (Bellman-Ford).
     pub rounds: u64,
+    /// Nodos expandidos de verdad: pops vivos, sin entradas obsoletas (cap 23).
+    pub expanded: u64,
 }
 
 /// Un paso del camino: cruzar la arista `edge` de `from` a `to` costando `weight`.
@@ -403,7 +471,7 @@ impl ShortestPaths {
 // ─── Helpers internos ───
 
 /// El nodo debe existir: preguntar por uno inexistente es error del caller.
-fn ensure_node(store: &dyn GraphStore, id: NodeId) -> Result<(), PathError> {
+pub(crate) fn ensure_node(store: &dyn GraphStore, id: NodeId) -> Result<(), PathError> {
     if store.get_node(id).is_some() {
         Ok(())
     } else {
@@ -412,8 +480,35 @@ fn ensure_node(store: &dyn GraphStore, id: NodeId) -> Result<(), PathError> {
 }
 
 /// Tamaño de las tablas: máximo id de nodo + 1 (los ids huecos quedan INFINITY).
-fn table_len(store: &dyn GraphStore) -> usize {
+pub(crate) fn table_len(store: &dyn GraphStore) -> usize {
     store.iter_nodes().map(|n| n.id).max().map_or(0, |m| m + 1)
+}
+
+/// Sanidad eager de pesos O(E) para los algoritmos codiciosos por heap
+/// (Dijkstra y, desde el cap 23, A*): peso presente, numérico, finito y NO
+/// NEGATIVO en TODAS las aristas del store, antes de contestar.
+///
+/// ¿Por qué rechazar también las negativas de zonas que esta consulta no va a
+/// tocar? Porque una base de datos prefiere FAIL ruidosamente a contestar con
+/// números que podrían ser válidos por casualidad; el día que el usuario
+/// importe pesos negativos querrá saberlo en TODAS sus consultas, no sólo en
+/// las que cruzan esa zona. Para pesos negativos legítimos existe
+/// [`bellman_ford`]. Compartida por cap 22 y cap 23 para que el contracto de
+/// datos sea EXACTAMENTE el mismo en ambos.
+pub(crate) fn validate_edge_weights(
+    store: &dyn GraphStore,
+    weight: &WeightSource,
+) -> Result<(), PathError> {
+    for edge in store.iter_edges() {
+        let w = edge_weight(edge, weight)?;
+        if w < 0.0 {
+            return Err(PathError::NegativeWeight {
+                edge: edge.id,
+                weight: w,
+            });
+        }
+    }
+    Ok(())
 }
 
 // ─── Dijkstra ───
@@ -477,15 +572,7 @@ fn dijkstra_impl(
 ) -> Result<ShortestPaths, PathError> {
     // Sanidad de datos ANTES de contestar: la respuesta de una BD no debe
     // depender de qué zona del grafo llegó a pisar la consulta.
-    for edge in store.iter_edges() {
-        let w = edge_weight(edge, weight)?;
-        if w < 0.0 {
-            return Err(PathError::NegativeWeight {
-                edge: edge.id,
-                weight: w,
-            });
-        }
-    }
+    validate_edge_weights(store, weight)?;
 
     let num_nodes = table_len(store);
     let mut dist = vec![f64::INFINITY; num_nodes];
@@ -506,6 +593,7 @@ fn dijkstra_impl(
             continue; // entrada obsoleta (lazy deletion)
         }
         settled[u] = true;
+        stats.expanded += 1; // (cap 23) pop VIVO: aquí se expande de verdad
         if target == Some(u) {
             break; // finalización anticipada: dist[u] ya es definitiva
         }

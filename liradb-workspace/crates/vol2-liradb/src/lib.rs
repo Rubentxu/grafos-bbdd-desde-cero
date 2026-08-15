@@ -87,13 +87,25 @@
 //!   destino; Bellman-Ford que admite pesos negativos y detecta ciclos
 //!   negativos alcanzables. Ambos devuelven la misma interfaz: tabla
 //!   [`ShortestPaths`] y camino [`Path`] con stats ([`PathStats`]).
+//! - [`Heuristic`] / [`ZeroHeuristic`] / [`EuclideanHeuristic`] / [`a_star`] /
+//!   [`check_consistency`] — **A*, heurísticas y búsquedas dirigidas** (cap
+//!   23, Parte V): A* reutiliza toda la maquinaria del cap 22 (misma fuente
+//!   de pesos, mismos errores, mismo tipo de camino [`Path`]/[`PathStats`])
+//!   y añade la dimensión que Dijkstra no tiene: una heurística h(n) que el
+//!   USUARIO de la API aporta mediante el trait [`Heuristic`] (la euclídea
+//!   [`EuclideanHeuristic`] lee coordenadas x/y de las PROPIEDADES DE NODO;
+//!   [`ZeroHeuristic`] degenera en Dijkstra). El heap se ordena por
+//!   f(n) = g(n) + h(n) y sesga la búsqueda hacia el destino; admisibilidad
+//!   documentada (no verificable sin resolver el problema), consistencia
+//!   diagnosticable con [`check_consistency`], y re-apertura de nodos para
+//!   seguir siendo óptimo con heurísticas admisibles pero inconsistentes.
 //!
 //! Organización del crate: cada capítulo vive en su propio módulo de origen —
 //! `cap07_modelo`, `cap08_graph_store`, `cap09_encoding`, `cap10_append_only`,
 //! `cap11_slotted_pages`, `cap12_pager`, `cap13_buffer_pool`, `cap14_csr`,
 //! `cap15_indices`, `cap16_mantenimiento`, `cap17_liraql_ast`,
 //! `cap18_lexer_parser`, `cap19_plan_logico`, `cap20_volcano`,
-//! `cap21_optimizador` y `cap22_caminos_minimos` — y este
+//! `cap21_optimizador`, `cap22_caminos_minimos` y `cap23_a_estrella` — y este
 //! `lib.rs` es sólo el punto de entrada: declara los módulos y los re-exporta
 //! con `pub use capNN::*` para mantener una API pública plana
 //! (`vol2_liradb::Node`, `vol2_liradb::run`, ...). Cada módulo viaja con sus
@@ -115,6 +127,7 @@ mod cap19_plan_logico;
 mod cap20_volcano;
 mod cap21_optimizador;
 mod cap22_caminos_minimos;
+mod cap23_a_estrella;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -132,3 +145,4 @@ pub use cap19_plan_logico::*;
 pub use cap20_volcano::*;
 pub use cap21_optimizador::*;
 pub use cap22_caminos_minimos::*;
+pub use cap23_a_estrella::*;
