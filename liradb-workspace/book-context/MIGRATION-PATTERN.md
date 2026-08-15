@@ -439,6 +439,78 @@ alcance).
 
 ---
 
+## 34. Vol.II — Cap 29 (Recuperación después de un fallo — ARIES simplificado; Parte VI)
+
+**Estado**: ALL_GREEN (685 → 707 tests workspace: +20 del cap 29 + 2 doctests).
+**Módulo**: `cap29_recuperacion.rs` (~1.290 líneas). Sin crates externas. Tres
+toques quirúrgicos al cap 28 (misma semántica, cero duplicación): `aplicar_para_redo`
+pasa a `pub(crate)` (el redo de ARIES reutiliza el applier idempotente), y se añaden
+dos APIs públicas que el capítulo necesita para el reopen — `Wal::reconstruir(bytes)`
+(reabrir = escanear el log para recuperar `next_lsn`/`next_tx_id`) y el getter
+`Wal::next_tx_id()` (el checkpoint persiste el contador).
+
+**Contexto**: el cap 28 dejó el arranque A MANO (`replay_wal` había que ejecutarlo) y
+tres deudas documentadas: el fichero (el `sync` era un contador), el checkpoint/truncado
+automático y el UNDO (la decisión commit-marker-ANTES-del-apply hizo el undo trivialmente
+vacío bajo no-steal). Este capítulo construye el arranque AUTOMÁTICO con el esqueleto de
+ARIES (Mohan et al. 1992): **Analysis-Redo-Undo**.
+
+**Decisiones**:
+1. **La dirty page table de ARIES, a nivel de elemento**: `ElementoId` (Nodo/Arista) es
+   la clave de `Analisis::sucias` (elemento → primer LSN que lo tocó). `analizar` recorre
+   el log hacia delante con `Wal::iter` (parada limpia) y reconstruye: tabla de
+   transacciones (`EstadoTx` Activa/Confirmada/Abortada → ganadoras/perdedoras), los
+   contadores `next_lsn`/`next_tx_id` y los registros legibles. Sin checkpoint el análisis
+   es conservador (todo es sucio): `primer_lsn_sucio` queda como información, no como
+   punto de arranque.
+2. **Redo de TODAS las operaciones (ganadoras Y perdedoras)**: `redo` re-aplica en orden
+   de LSN con el `aplicar_para_redo` idempotente del cap 28 — el store queda en el estado
+   del instante del fallo, incluido lo que las perdedoras «robaron» (steal). Es la
+   diferencia clave con `replay_wal` del cap 28 (que rehace SOLO ganadoras, el atajo
+   no-steal); aquí se construye el ARIES general.
+3. **Undo lógico e idempotente en orden inverso**: `deshacer` recorre los registros al
+   revés y compensa las perdedoras: `PutNode`/`PutEdge` → borrado idempotente (si está);
+   `DeleteNode`/`DeleteEdge` → restaurar la imagen anterior de `AntesImagenes`. TEST-TESIS
+   del steal: una perdedora que escribió al store queda LIMPIA. La FRONTERA honesta: un
+   borrado robado SIN before-image se CUENTA en `InformeUndo::operaciones_sin_before_image`
+   (no se inventa) — es exactamente el hueco que ARIES completo cierra con before-images/CLR;
+   un log de solo after-image (cap 28) no puede cruzar esa frontera.
+4. **El fichero es el almacenamiento estable real**: `guardar_wal`/`cargar_wal` persisten
+   los bytes del log (el `sync` del cap 28 era un contador); `cargar_wal` + `Wal::reconstruir`
+   reabren escaneando (los LSN/TxId no se reutilizan). `reabrir(store, path, antes)` es el
+   flujo de arranque completo: leer fichero → reconstruir → analizar → redo → undo.
+5. **Checkpoint + truncado seguro + rotación**: `Checkpoint {hasta_lsn, next_lsn, next_tx_id}`
+   congela lo durable Y los contadores (clave: tras truncar a vacío, `Wal::reconstruir` no
+   puede recuperarlos de un log vacío — el checkpoint los persiste). `truncar_seguro` usa
+   el `truncar_hasta_lsn` del cap 28 bajo contrato ahora AUTOMATIZADO; `rotar_si_excede`
+   cierra la rotación por tamaño como checkpoint disparado por bytes.
+6. **La honestidad ACID continúa**: `informe_acid_post_recovery()` re-valora: A sigue
+   Parcial pero 29→30 (queda el before-image), D sigue Parcial pero 29→37 (el store de
+   datos no tiene checkpoint independiente). Test que verifica las transiciones contra
+   `informe_acid_post_wal()`.
+
+**Bugs propios corregidos durante la calibración** (lecciones):
+| Síntoma | Causa | Fix |
+|---|---|---|
+| 2 tests fallaban en `next_lsn`/`operaciones_redo` | asumí que `WalTransaccion::rollback` LOGUEA sus operaciones; en realidad sólo escribe el marker Rollback (el staging nunca llegó al log) | recontar: un rollback deja Begin+Rollback SIN operaciones → redo=3 (no 4), undo=0 |
+| doctests de `recuperar`/`reabrir` no compilaban (E0599 `node_count`) | `node_count`/`get_node` son métodos del trait `GraphStore`, que no estaba en scope en el doctest | añadir `GraphStore` al `use vol2_liradb::{...}` del doctest |
+| warning `unused_imports` en lib (`Node`/`Edge`) | el código no-test no nombra `Node`/`Edge` (usa `Element`); los tests los traían vía `use super::*` | importar `Element/EdgeId/NodeId` en el módulo y `Edge/Node` en el `mod tests_*` |
+| E0382 (partial move de `err`) | `match err { Redo{causa,..} }` movía `causa` y luego `err.to_string()` | comprobar el Display ANTES del match por valor |
+
+**Lecciones**:
+1. El undo es la pieza que el cap 28 eludió POR DISEÑO: bajo no-steal (staging + apply sólo
+   tras Commit) las perdedoras no dejan huella y el undo es vacío. El cap 29 no lo impone:
+   lo CONSTRUYE, y demuestra que se necesita justo cuando la política se relaja (steal).
+2. La frontera del after-image: `PutNode`/`PutEdge` se deshacen con un borrado (la imagen
+   anterior es trivial: «no existía»); `DeleteNode`/`DeleteEdge` NO — deshacerlos exige la
+   imagen anterior, y un log que sólo guarda el después no la tiene. Es la motivación exacta
+   de los CLR de ARIES, contada como una cuenta honesta en vez de un bug silencioso.
+3. El checkpoint persiste los CONTADORES, no sólo el LSN: truncar el log a vacío sin guardar
+   `next_tx_id` haría que `Wal::reconstruir` reutilizara identificadores. Un detalle que
+   parece administrativo y es la diferencia entre recuperar y corromper.
+
+---
+
 ## 13. Métricas de la Fase M3c-batch-5 (parcial)
 
 | Métrica | Valor |

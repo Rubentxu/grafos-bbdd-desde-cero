@@ -187,6 +187,33 @@
 //!   de ACID tras el WAL ([`informe_acid_post_wal`]: D de Ninguna a
 //!   Parcial). La recuperación al arranque (reopen + replay automático)
 //!   es cap. 29.
+//! - [`EstadoTx`] / [`ElementoId`] / [`Analisis`] / [`analizar`] /
+//!   [`redo`] / [`deshacer`] / [`recuperar`] / [`reabrir`] /
+//!   [`AntesImagenes`] / [`capturar_antes`] / [`Checkpoint`] /
+//!   [`truncar_seguro`] / [`rotar_si_excede`] / [`guardar_wal`] /
+//!   [`cargar_wal`] / [`informe_acid_post_recovery`] —
+//!   **Recuperación después de un fallo** (cap 29, Parte VI): el arranque
+//!   automático que el cap. 28 dejó pendiente, con el esqueleto de ARIES
+//!   (Analysis-Redo-Undo). [`analizar`] recorre el log hacia delante para
+//!   reconstruir la tabla de transacciones (ganadoras/perdedoras), los
+//!   contadores `next_lsn`/`next_tx_id` (reabrir = escanear el log) y la
+//!   dirty element table (primer LSN que tocó cada nodo/arista);
+//!   [`redo`] re-aplica TODAS las operaciones en orden de LSN de forma
+//!   idempotente (el store queda en el estado del instante del fallo);
+//!   [`deshacer`] deshace, en orden inverso, las operaciones de las
+//!   transacciones perdedoras — la pieza NUEVA: en el cap. 28 el undo era
+//!   trivialmente vacío (no-steal), aquí se demuestra con un test-tesis de
+//!   un store al que una perdedora «robó» escrituras, y se documenta la
+//!   única frontera que un log de solo after-image no cruza (deshacer un
+//!   borrado robado exige la imagen anterior → [`AntesImagenes`]).
+//!   [`guardar_wal`]/[`cargar_wal`] ponen el log en un fichero real (el
+//!   `sync` del cap. 28 era un contador) y [`reabrir`] ejecuta el flujo
+//!   completo de arranque: leer fichero + reconstruir + analizar + redo +
+//!   undo. [`Checkpoint`] + [`truncar_seguro`] automatizan el truncado que
+//!   el cap. 28 dejaba firmado a mano, y [`rotar_si_excede`] cierra la
+//!   rotación por tamaño. [`informe_acid_post_recovery`] re-valora ACID:
+//!   A y D siguen Parcial pero avanzan (A: falta el before-image; D: el
+//!   store de datos aún no tiene checkpoint independiente — cap. 37).
 //!
 //! Organización del crate: cada capítulo vive en su propio módulo de origen —
 //! `cap07_modelo`, `cap08_graph_store`, `cap09_encoding`, `cap10_append_only`,
@@ -195,7 +222,7 @@
 //! `cap18_lexer_parser`, `cap19_plan_logico`, `cap20_volcano`,
 //! `cap21_optimizador`, `cap22_caminos_minimos`, `cap23_a_estrella`,
 //! `cap24_centralidad`, `cap25_comunidades`, `cap26_proyeccion`,
-//! `cap27_transacciones` y `cap28_wal` — y este
+//! `cap27_transacciones`, `cap28_wal` y `cap29_recuperacion` — y este
 //! `lib.rs` es sólo el punto de entrada: declara los módulos y los re-exporta
 //! con `pub use capNN::*` para mantener una API pública plana
 //! (`vol2_liradb::Node`, `vol2_liradb::run`, ...). Cada módulo viaja con sus
@@ -223,6 +250,7 @@ mod cap25_comunidades;
 mod cap26_proyeccion;
 mod cap27_transacciones;
 mod cap28_wal;
+mod cap29_recuperacion;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -246,3 +274,4 @@ pub use cap25_comunidades::*;
 pub use cap26_proyeccion::*;
 pub use cap27_transacciones::*;
 pub use cap28_wal::*;
+pub use cap29_recuperacion::*;

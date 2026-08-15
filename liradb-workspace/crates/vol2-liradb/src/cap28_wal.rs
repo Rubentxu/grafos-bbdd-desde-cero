@@ -660,6 +660,39 @@ impl Wal {
         }
     }
 
+    /// REABRE un WAL a partir de sus bytes persistidos (el «escanear el
+    /// log al despertar» del cap. 29).
+    ///
+    /// Recorre los registros LEGIBLES (parada limpia ante corrupción, igual
+    /// que [`Wal::iter`]) y reconstruye los contadores: `next_lsn` y
+    /// `next_tx_id` vuelven a ser `máximo + 1` para que los LSN/TxId no se
+    /// reutilicen jamás. La política de flush es una elección de RUNTIME
+    /// (no se persiste): se reabre con la regla de oro [`PoliticaFlush::CadaEscritura`].
+    ///
+    /// ADVERTENCIA honesta (la misma que [`Wal::truncar_hasta_lsn`]): si el
+    /// log fue truncado sin guardar el contador (p.ej. a vacío), `next_tx_id`
+    /// se reanuda en 1 y un TxId YA usado podría reutilizarse. El checkpoint
+    /// del cap. 29 persiste esos contadores precisamente para cerrar ese
+    /// hueco: reabrir tras un checkpoint arranca de los valores guardados.
+    pub fn reconstruir(bytes: &[u8]) -> Self {
+        let mut next_lsn = 1u64;
+        let mut next_tx_id = 1u64;
+        for rec in (WalIterator {
+            bytes,
+            anterior: None,
+        }) {
+            next_lsn = next_lsn.max(rec.lsn + 1);
+            next_tx_id = next_tx_id.max(rec.tx_id + 1);
+        }
+        Wal {
+            bytes: bytes.to_vec(),
+            next_lsn,
+            next_tx_id,
+            syncs: 0,
+            politica: PoliticaFlush::CadaEscritura,
+        }
+    }
+
     /// La política de flush activa.
     pub fn politica(&self) -> PoliticaFlush {
         self.politica
@@ -676,6 +709,15 @@ impl Wal {
     /// cuentan: los LSN no se reutilizan).
     pub fn lsn_siguiente(&self) -> Lsn {
         self.next_lsn
+    }
+
+    /// El PRÓXIMO TxId que se asignará.
+    ///
+    /// Igual que el LSN, es un contador monótono que NUNCA se reutiliza
+    /// (ni tras truncar). El checkpoint del cap. 29 lo persiste para poder
+    /// reanudar el contador tras un reinicio sin reutilizar identificadores.
+    pub fn next_tx_id(&self) -> TxId {
+        self.next_tx_id
     }
 
     /// Bytes crudos del log (para inspección y tests de corrupción).
@@ -827,7 +869,10 @@ impl<'a> Iterator for WalIterator<'a> {
 /// * Put que ya está (idéntico) → no-op; put distinto → se sobreescribe
 ///   (el log es la verdad);
 /// * Delete de lo ya borrado → no-op silencioso.
-fn aplicar_para_redo(store: &mut dyn GraphStore, op: &Operacion) -> Result<(), StoreError> {
+pub(crate) fn aplicar_para_redo(
+    store: &mut dyn GraphStore,
+    op: &Operacion,
+) -> Result<(), StoreError> {
     match op {
         Operacion::PutNode(n) => match store.get_node(n.id) {
             Some(actual) if actual == n => Ok(()),
