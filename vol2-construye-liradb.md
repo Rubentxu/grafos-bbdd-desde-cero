@@ -2264,6 +2264,1725 @@ En el primer caso: decode OK, re-insert de los records en una `SlottedPage` nuev
 ---
 
 *(Próximo capítulo: 17 — Diseñar un lenguaje pequeño. El motor ya guarda, indexa y se mantiene; ahora toca la pregunta que el usuario lleva seis capítulos esperando hacer: MATCH-WHERE-RETURN, el nacimiento de LiraQL.)*
+# Capítulo 17 — Diseñar un lenguaje pequeño (MATCH-WHERE-RETURN mini)
+
+> *«Un lenguaje de consulta no se programa: se diseña. Programarlo es el capítulo 18.»*
+
+## 17.0 La anécdota de la esquina
+
+En mayo de 1974, en un taller de ACM SIGMOD en Ann Arbor (Michigan), Donald Chamberlin y Raymond Boyce presentaron un paper con un título optimista: *«SEQUEL: A Structured English Query Language»*. Trabajaban en IBM sobre el modelo relacional que Edgar F. Codd había publicado cuatro años antes, y su apuesta era radical para la época: que el usuario escribiera **frases casi inglesas** diciendo *qué* datos quería — `GET name OF employees WHERE dept = "toy"` — y que una máquina decidiera *cómo* buscarlos. SEQUEL se rebautizó después como SQL porque, según cuenta la historia oral del propio Chamberlin, la palabra estaba registrada como marca por una empresa aeronáutica británica llamada Hawker Siddeley. El nombre cambió; la idea no: **declarar en vez de programar**. SQL terminó siendo estandarizado por ANSI en 1986 e ISO en 1987, y es el lenguaje de datos más exitoso de la historia.
+
+Treinta y siete años después, en 2011, un ingeniero de Neo4j llamado Andrés Taylor se enfrentó al mismo problema… con grafos. Copiar SQL era posible, pero JOIN tras JOIN esconde la forma del grafo tras columnas. Su respuesta, Cypher, apostó por algo visual: que **el patrón se dibuje a sí mismo** con paréntesis y flechas —
+
+```text
+(aniversario:Persona)-[:CONOCE_A]->(invitado:Persona)
+```
+
+— es literalmente ASCII-art del subgrafo que buscas. El paper de referencia lo llama así: *ASCII-art graph pattern matching* (Francis et al., SIGMOD 2018). En 2016 Neo4j liberó el proyecto openCypher para que otros motores adoptaran la sintaxis, y en abril de 2024 esa línea desembocó en **GQL (ISO/IEC 39075)**, el primer lenguaje de consulta de bases de datos estandarizado por ISO desde SQL en 1987. Casi cuatro décadas para que naciera el segundo.
+
+Este capítulo abre la Parte IV: LiraDB ya sabe **guardar** un grafo (caps. 11-16); ahora aprenderá a que se le **pregunte**. Y lo hará igual que SEQUEL y Cypher: primero el diseño del lenguaje —vocabulario, gramática, estructura, errores—, después el código. Hoy, cero lexer, cero parser, cero ejecución. Solo el contrato.
+
+## 17.1 Objetivo
+
+Al terminar este capítulo habrás **diseñado LiraQL**, el mini-Cypher de LiraDB: un lenguaje de consulta declarativo reducido a tres cláusulas. En concreto, fijarás cuatro piezas que viven en `liradb-workspace/crates/vol2-liradb/src/cap17_liraql_ast.rs`:
+
+1. La **gramática EBNF** — qué secuencias de texto son consultas válidas.
+2. El **vocabulario de tokens** (`TokenKind`) — qué átomos existen.
+3. El **AST** (`Expression`, `PathPattern`, `AstNode`, `Query`) — qué estructura significativa tiene una consulta.
+4. Los **errores con posición** (`Span`, `QueryError`) y la **forma canónica** (`Display`) — qué mensajes ve el usuario y cómo se normaliza su consulta.
+
+Lo que NO harás: tokenizar, parsear, planificar ni ejecutar. Eso son los caps. 18, 19 y 20. Este capítulo compila 970 líneas Rust sin dependencias externas y sin ejecutar una sola consulta — y eso es exactamente lo que debe hacer un capítulo de diseño.
+
+## 17.2 Problema
+
+La Parte III cerró con un motor completo: páginas, buffer pool, CSR, índices, mantenimiento. Ana puede guardar un grafo de personas y relaciones en disco. Ahora quiere preguntar: *«¿a quién conoce Ana?»*. ¿Cómo se lo dice a LiraDB?
+
+Opción A: una **API de funciones**. Opción B: un **lenguaje**. La tentación es A, porque ya sabes Rust. Pero fíjate en quién decide *cómo* buscar la respuesta: con una API, el usuario escribe el **cómo** («recorre la adyacencia de Ana, filtra por tipo CONOCE_A, proyecta el nombre») y cada consulta es un programa; con un lenguaje, el usuario declara el **qué** — `MATCH (a:Persona {nombre: "Ana"})-[:CONOCE_A]->(f) RETURN f.nombre` — y el *cómo* puede decidirse después, y decidirse **mejor**: ese es el trabajo del optimizador del cap. 21.
+
+Esta es la razón profunda por la que los lenguajes declarativos ganaron a los imperativos para consultar datos, y no es una moda: Codd la articuló en 1970. Si el usuario fija la estrategia de acceso, ningún sistema puede mejorarla más tarde; si solo declara el resultado deseado, el motor puede reordenar, usar índices (cap. 15), empujar filtros… sin cambiar una coma del significado. Un lenguaje es, además, **texto**: se teclea en la CLI (cap. 31), se copia en un issue, se guarda en un fichero, se loguea. Ninguna API encadenada hace eso.
+
+## 17.3 Modelo mental
+
+Diseñar un lenguaje es diseñar **el menú de un restaurante**:
+
+- La **carta** son los *tokens*: los platos que existen (`MATCH`, `->`, `<>`, `"Ana"`, 42). Si no está en la carta, no hay forma de pedirlo.
+- La **comanda** es la *gramática*: cómo se combinan los platos. En LiraQL la comanda tiene forma fija: primero MATCH, luego WHERE (opcional), al final RETURN. No se sirve el postre antes del entrante.
+- El **camarero** es `validate()`: cuando pides algo que no está —una variable que nadie declaró—, no dice «error» a secas; dice *qué* no está y *dónde* lo estás señalando (`kind` + `span`).
+- La **cocina** son los caps. 18-21: lexer, parser, plan, ejecución. Hoy no existe; solo diseñamos el restaurante sobre papel. Y la **comanda reescrita en limpio** es el `Display` canónico: la misma orden, en forma normalizada, lista para archivarse o compararse con otra.
+
+Y el pipeline completo que estamos empezando a construir:
+
+```text
+             cap.18 (lexer)      cap.18 (parser)     cap.17 (validate)    caps.19-21
+  "MATCH …" ─────────────────► tokens ────────────► AST ──────────────► plan ──► filas
+   texto                     Token{kind,span}    Query + Span  ▲ TODO este capítulo vive aquí
+```
+
+## 17.4 Primera solución
+
+Empecemos por lo que un novato (yo incluido) escribiría: una API builder encadenada, type-safe, cero parsing que implementar.
+
+```rust
+// Solución ingenua: la consulta como cadena de llamadas Rust.
+let consulta = Consulta::nueva()
+    .nodo("p", "Persona").flecha_saliente("CONOCE_A").nodo("f", "Persona")
+    .donde(eq(prop("p", "nombre"), texto("Ana")))
+    .devolver(prop("f", "nombre"));
+```
+
+Compila. El compilador te protege del orden de las cláusulas. No hay gramática, ni tokens, ni mensajes de error que diseñar. Durante una tarde, parece ganado.
+
+## 17.5 Sus límites
+
+Hasta que te sientas delante de la CLI del cap. 31 y descubras el muro:
+
+1. **No es texto.** No se puede teclear en un terminal, ni pegar en un issue, ni guardar en un fichero de consultas, ni escribir en un log. Una consulta que solo existe como código Rust exige un compilador para existir.
+2. **Congela el *cómo*.** La cadena de llamadas dicta el orden de recorrido: primero el nodo, luego la flecha, luego el filtro. El optimizador del cap. 21 no tiene nada que reordenar — cada consulta *es* su plan. Hemos regalado la promesa declarativa antes de empezar.
+3. **Cada constructo nuevo es un método nuevo.** Añadir `LIMIT` o `ORDER BY` cambia la API pública y recompila a todos los usuarios; en un lenguaje, es una palabra más de la gramática.
+4. **Exige ser programador Rust** para preguntar «¿a quién conoce Ana?».
+
+La conclusión no es que la API sea mala: es que ocupa el otro lado del mostrador. Los motores reales tienen ambas (Neo4j tiene Cypher *y* drivers); pero el producto es el lenguaje. Necesitamos **texto → estructura**, y para eso hay que diseñar el contrato primero.
+
+## 17.6 Solución evolucionada: LiraQL
+
+LiraQL es deliberadamente un mini-Cypher: solo consulta, tres cláusulas, sin `CREATE`/`MERGE`/`DELETE` (eso es DML del cap. 31), sin `WITH`, sin `OPTIONAL MATCH`, sin recursión. La consulta emblema:
+
+```text
+MATCH (p:Persona)-[:CONOCE_A]->(f:Persona)
+WHERE p.nombre = "Ana"
+RETURN f.nombre, p.edad AS edad
+```
+
+### 17.6.1 La gramática primero
+
+Antes de escribir un tipo Rust, escribimos la gramática. Está en el propio fichero, como documentación ejecutable en papel:
+
+```text
+query         ::= match_clause where_clause? return_clause ;
+match_clause  ::= 'MATCH' path_pattern (',' path_pattern)* ;
+path_pattern  ::= node_pattern ( rel_pattern node_pattern )* ;
+node_pattern  ::= '(' [variable] [':' label] ['{' prop_map '}'] ')' ;
+rel_pattern   ::= '-[' [variable] [':' rel_type] ']-' ( '>' | '<' )?
+               |  '<-[' [variable] [':' rel_type] ']-' ;
+prop_map      ::= ident ':' expression (',' ident ':' expression)* ;
+where_clause  ::= 'WHERE' expression ;
+return_clause ::= 'RETURN' return_item (',' return_item)* ;
+return_item   ::= expression (['AS'] alias)? ;
+expression    ::= or_expr ;
+or_expr       ::= and_expr ('OR' and_expr)* ;
+and_expr      ::= not_expr ('AND' not_expr)* ;
+not_expr      ::= 'NOT' not_expr | comparison ;
+comparison    ::= primary ( comp_op primary )? ;
+comp_op       ::= '=' | '<>' | '<' | '<=' | '>' | '>=' ;
+primary       ::= literal | property_access | '(' expression ')' ;
+literal       ::= INTEGER | FLOAT | STRING | 'TRUE' | 'FALSE' | 'NULL' ;
+```
+
+¿Por qué la gramática ANTES del parser? Porque es el **contrato del que el parser se deriva**: en el cap. 18, cada regla se convertirá en una función (`parse_match_clause`, `parse_path_pattern`, `parse_node_pattern`…). Una regla, una función; sin tabla de precedencia, sin magia. Es el mismo principio del trait `Pager` (cap. 12): el contrato antes que el adapter.
+
+Y fíjate en la parte más fina de la gramática, la escalera de `expression`:
+
+```text
+or_expr → and_expr → not_expr → comparison → primary
+```
+
+¿Por qué cinco niveles en vez de una regla plana `expression ::= expression OR expression | expression AND expression | …`? Porque esa regla plana es **ambigua**: `a OR b AND c` tendría dos árboles posibles y dos significados distintos. El escenario de fallo es real: una gramática ambigua devuelve árboles distintos según el día, y nadie puede razonar sobre su lenguaje. Los niveles de precedencia eliminan la ambigüedad *estructuralmente*: `OR` es más flojo que `AND`, que es más flojo que `NOT`, que es más flojo que la comparación. La gramática no dice «resuelve así»: *no puede* resolverse de otra forma. (Nótese también que `comparison` no encadena: `a < b < c` no es LiraQL. Cada recorte es deliberado.)
+
+Para las relaciones, una advertencia de honestidad: la regla `rel_pattern` del comentario es una abreviatura descuidada (ese `( '>' | '<' )?` tras `']-'` sugeriría un `]-<` que no existe). La lectura operativa —la que el parser del cap. 18 implementa y su comentario documenta como «forma canónica»— son tres: `-[:TIPO]->` (saliente), `<-[:TIPO]-` (entrante) y `-[:TIPO]-` (sin dirección), más el `--` desnudo; el AST las captura como `RelDirection::Outgoing | Incoming | Undirected`. Conviene saber que las gramáticas en comentarios también tienen bugs: por eso el contrato se valida con tests.
+
+### 17.6.2 El vocabulario: `TokenKind`
+
+La carta del restaurante: 34 variantes en cuatro grupos — 10 palabras clave (`MATCH`, `WHERE`, `RETURN`, `AS`, `AND`, `OR`, `NOT`, `TRUE`, `FALSE`, `NULL`), 4 categorías léxicas (`Ident`, `Integer`, `Float`, `String`), 13 signos (`(` `)` `[` `]` `{` `}` `,` `:` `.` `->` `<-` `--` `-`) y 6 comparadores (`=` `<>` `<` `<=` `>` `>=`), más `Eof`.
+
+```rust
+pub enum TokenKind {
+    Match, Where, Return, As, And, Or, Not, True, False, Null,   // keywords
+    Ident(String), Integer(i64), Float(f64), String(String),     // léxicos
+    LParen, RParen, LBracket, RBracket, LBrace, RBrace, Comma, Colon, Dot,
+    ArrowRight, ArrowLeft, DashDash, Dash,                       // flechas y guiones
+    Eq, NotEq, Lt, Lte, Gt, Gte,                                 // comparadores
+    Eof,
+}
+```
+
+Cada token viajará con su posición: `Token { kind, span }`.
+
+¿Por qué definir los tokens aquí y no en el cap. 18 con el lexer? Porque el AST (este capítulo) necesita referenciar categorías de tokens sin depender del escáner: `Token` es parte del contrato, no de la implementación. Y aquí una confesión honesta, sacada de la historia real del workspace: el diseño original tenía 33 variantes y le faltaba el guión simple `-`. Nadie lo notó… hasta que el parser del cap. 18 intentó reconocer `-[` y `]-` y no pudo. El fix fue retroactivo y quirúrgico: una variante `Dash`, el lexer la produce, el parser la consume. La lección no es «el diseño fue malo»; es que **el diseño es lo bastante pequeño y está lo bastante aislado para que sus fallos sean locales y baratos**. Si el vocabulario hubiera nacido mezclado con el lexer, ese hueco habría estado esparcido por mil líneas de mecánica.
+
+Un detalle de Rust que muerde aquí: `TokenKind` deriva `PartialEq` pero **no** `Eq`, y no es un descuido. Contiene `Float(f64)`, y `f64` no implementa `Eq` porque `NaN != NaN`: los lexemas flotantes no tienen igualdad total. El compilador lo impide — de hecho, durante el desarrollo real este capítulo derivó `Eq`, no compiló, y la lista de la §21 de `MIGRATION-PATTERN.md` lo registra como bug corregido. Deja que el compilador te diga qué puedes prometer.
+
+### 17.6.3 El AST: la estructura significativa
+
+El texto plano pierde información útil y contiene ruido (¿importan los espacios? ¿los paréntesis redundantes?). El AST es la estructura que **queda** cuando tiras el ruido y añades lo que importa:
+
+```rust
+pub enum AstNode {
+    Match(MatchClause),
+    Where(WhereClause),
+    Return(ReturnClause),
+}
+
+pub struct Query {
+    pub match_clause: MatchClause,          // MATCH (p:Persona)-[:CONOCE_A]->(f)
+    pub where_clause: Option<WhereClause>,  // WHERE … — opcional
+    pub return_clause: ReturnClause,        // RETURN … — siempre presente
+    pub span: Span,
+}
+
+/// El patrón de camino: start + cadena de eslabones (rel, nodo).
+pub struct PathPattern {
+    pub start: NodePattern,                              // (p:Persona)
+    pub chain: Vec<(RelationshipPattern, NodePattern)>,  // [(-[:CONOCE_A]->, (f))]
+    pub span: Span,
+}
+```
+
+El hito del brief pedía ese `AstNode` (con `Where(Expression)`; la versión final envuelve la expresión en un `WhereClause` con span propio — el contrato maduró un paso, como maduran los contratos). ¿Por qué un enum además del struct `Query`? Permite construir **sub-árboles en tests** y da al planner del cap. 19 su unidad de trabajo: operar cláusula a cláusula.
+
+Y cada pieza es opcional por dentro — `(p:Persona {nombre: "Ana"})`, `()`, `(:Persona)`, `(p)` son todas válidas — porque `variable`, `label` y `properties` son `Option`/`Vec`. Las propiedades entre llaves son *inline predicates*: la gramática las admite en el patrón, y el cap. 19 las convertirá en filtros como cualquier condición de WHERE.
+
+Las expresiones de WHERE y RETURN son un árbol recursivo con siete variantes (`Literal`, `Variable`, `PropertyAccess`, `Compare`, `And`, `Or`, `Not`). Fíjate en cuál NO está: no hay aritmética. `p.edad + 1` no es LiraQL. Cada ausencia es una decisión.
+
+### 17.6.4 `Span` en TODO el AST
+
+Aquí está la decisión que más calidad de usuario compra por menos código:
+
+```rust
+pub struct Span {
+    pub start: u32,
+    pub end: u32,
+}
+```
+
+Un rango semiabierto `[start, end)` en bytes UTF-8 desde el inicio de la consulta. Cada nodo del AST lleva el suyo. ¿Para qué? Compara los dos mensajes:
+
+```text
+Error: unexpected token              ← ¿cuál? ¿dónde? el usuario rastrea a ojo
+Error: variable 'x' usada pero no declarada en MATCH (en 47..53)
+                                        ↑ apunta AL carácter exacto
+```
+
+Es la diferencia entre un lenguaje usable y uno frustrante, y es la convención de `rustc`, `miette` y `codespan-reporting`: el `kind` dice *qué* pasó, el `span` dice *dónde*. ¿Por qué en TODO el AST y no solo en tokens? Porque el lexer (cap. 18) produce spans gratis — ya sabe dónde está — y propagarlos con `Span::merge` cuesta poco; en cambio, retroalimentarlos después, cuando el árbol ya no recuerda de dónde vino, es imposible. La información de posición es de las cosas que solo se pueden conservar en el momento.
+
+`Span` trae su aritmética mínima: `at(offset)` para spans vacíos (tokens sintéticos), `new` que normaliza el orden, `merge` que devuelve la unión, `is_empty`, `len`. Veinte líneas que sostienen todos los mensajes del lenguaje.
+
+### 17.6.5 `Literal` envuelve el `Value` del cap. 7
+
+Momento de spacing: cierra los ojos y recuerda el cap. 7. ¿Cuáles eran las seis variantes de `Value`? (`Null`, `Bool`, `Int`, `Float`, `String`, `Bytes` — compruébalo después, no ahora.) La decisión de este capítulo:
+
+```rust
+pub enum Expression {
+    Literal { value: Value, span: Span },   // ← Value del cap. 7, no un enum nuevo
+    ...
+}
+```
+
+`Expression::Literal` **envuelve** el `Value` del capítulo 7 en vez de duplicar un enum `Literal` con `Int/Float/String/…`. ¿Por qué? Porque el modelo de datos ya existe: lo que el lenguaje compara es exactamente lo que el grafo guarda. Duplicar tipos crearía dos universos con conversiones en cada frontera (AST → executor, cap. 20), y los bugs de conversión silenciosa entre Int/Float/String son de los más difíciles de cazar. Un solo modelo, una sola verdad.
+
+¿Y qué pasa con `Bytes`? No tiene literal: `TokenKind` no tiene token para bytes y la gramática no lo contempla (¿cómo escribirías bytes crudos en un lenguaje de texto?). Aun así, `Display` sabe imprimirlo — `0x` + hexadecimal vía un `hex_bytes` propio de 12 líneas, sin crates — porque una consulta canonificada puede venir de datos, no solo de texto. Un detalle cosmético con una lección dentro: el diseño distingue *lo que el usuario puede escribir* de *lo que el sistema puede contener*.
+
+### 17.6.6 `validate()` devuelve `Vec<QueryError>`, no `Result`
+
+Hasta ahora, todos los errores del Vol.II eran `Result`: el pager, el buffer pool, los índices. Este capítulo rompe el patrón, y es deliberado:
+
+```rust
+pub struct QueryError {
+    pub kind: QueryErrorKind,   // QUÉ pasó
+    pub span: Span,             // DÓNDE
+}
+
+impl Query {
+    pub fn validate(&self) -> Vec<QueryError> { ... }
+}
+```
+
+Un humano escribe una consulta con **tres** variables mal escritas. Con `Result`, corrige una, vuelve a validar, corrige la siguiente, vuelve a validar… ciclos de fix-recompila. Con `Vec`, ve los tres errores de golpe. Para una operación de máquina (leer una página, insertar en un índice), abortar en el primer fallo es correcto — no hay humano iterando. Para un lenguaje, reportar todo es la UX. Mismo Rust, capas distintas, decisiones distintas. (El parser del cap. 18 sí elegirá `Result`, y hablaremos de por qué.)
+
+Las seis reglas que `validate()` comprueba, cada una con su error tipado:
+
+| Regla | `QueryErrorKind` |
+|---|---|
+| MATCH con al menos un patrón | `EmptyMatch` |
+| Ningún nodo `()` vacío (sin variable, label ni props) | `EmptyNodePattern` |
+| Ninguna variable duplicada (nodos, aristas, y nodo↔arista) | `DuplicateVariable` |
+| Toda variable de WHERE/RETURN declarada en MATCH | `UnknownVariable` |
+| RETURN con al menos un item | `EmptyReturn` |
+| Ningún alias vacío | `EmptyAlias` |
+
+Nota el alcance: las variables de **arista** también ligan (`-[r:CONOCE_A]->` declara `r` usable en WHERE), y un nombre no puede ser a la vez nodo y arista — si `p` fuese ambos, el executor del cap. 20 tendría dos tipos para un nombre. Y nota también lo que `validate()` **no** comprueba: `1 < "x"` le parece válido. Los tipos de las expresiones son cosa del binder del cap. 19; aquí solo se valida el *alcance*, porque es lo único que se puede saber sin mirar los datos.
+
+### 17.6.7 El `Display` canónico
+
+La última pieza del contrato: el AST sabe reescribirse como texto **canónico**:
+
+```text
+MATCH (p:Persona)-[:CONOCE_A]->(f:Persona) WHERE (p.nombre = "Ana") RETURN f.nombre, p.edad AS edad
+```
+
+¿Observas los paréntesis alrededor de `p.nombre = "Ana"`? No estaban en el original. El `Display` no reproduce el texto fuente — normaliza: paréntesis explícitos por nodo de expresión, comas con un espacio, cláusulas en orden fijo, comillas dobles. ¿Para qué sirve pagar esto?
+
+1. **Tests**: el cap. 18 comparará «lo que esperaba parsear» con «lo que parseó» vía su forma canónica (comparar `Debug` de árboles con spans es frágil; la forma canónica es estable).
+2. **`liradb explain`** (cap. 21): mostrar la consulta normalizada junto al plan es la semilla del explain.
+3. **Round-trip**: `display(parse(display(parse(x)))) == display(parse(x))` — la forma canónica es idempotente. Es la misma promesa del encode/decode de la slotted page (cap. 11): que la representación dual sea fiel, que ida y vuelta no pierdan nada.
+
+## 17.7 Prueba de fuego
+
+La prueba de fuego de un capítulo de diseño es: **¿se puede probar el diseño sin la implementación?** Los 41 tests del módulo `tests_query` responden que sí — construyen los AST **a mano**, con spans fingidos, porque no hay parser:
+
+```rust
+// De tests_query (cap18_lexer_parser.rs:2007): AST sin parser.
+// Los spans son sintéticos — posiciones fingidas, no de un fuente real.
+fn minimal_query() -> Query {
+    let node = person_node("p", "Person", s(7, 18));   // (p:Person)
+    let path = PathPattern { start: node, chain: Vec::new(), span: s(6, 19) };
+    Query {
+        match_clause: MatchClause { patterns: vec![path], span: s(0, 19) },
+        where_clause: None,
+        return_clause: ReturnClause { items: vec![ReturnItem {
+            expr: Expression::prop("p", "name", s(27, 33)), alias: None, span: s(27, 33) }],
+            span: s(20, 33) },
+        span: s(0, 33),
+    }
+}
+```
+
+Batería de tests que cubren las cuatro piezas del contrato: spans (`span_new_normaliza_orden`, `span_merge_cubre_a_ambos`), vocabulario (`token_kind_cubre_todos_los_grupos`), AST (`path_pattern_edge_variables_incluye_rel_var`, `expression_and_or_not_recolecta_recursivo`), validación (`validate_variable_duplicada_entre_nodo_y_arista`, `validate_variable_desconocida_en_where`, `validate_acepta_variable_de_arista_en_where`, `validate_node_pattern_vacio_devuelve_empty_node_pattern`), errores (`query_error_display_incluye_span`, `query_error_implementa_std_error`) y Display (`display_query_completa_round_trip_canonico`, `display_relationship_pattern_direcciones`, `display_value_bytes_canonico`).
+
+¿Y si te saltas este capítulo? El síntoma aparece en el 18: sin contrato, rediseñarás tokens y AST *mientras* escribes el parser, y cada descubrimiento se propagará como refactor en vez de como una línea nueva en la gramática.
+
+## 17.8 Qué hemos sacrificado
+
+Un lenguaje pequeño es una lista larga de «no»:
+
+1. **No hay DML**: nada de crear, borrar ni modificar (cap. 31).
+2. **No hay `WITH`, `OPTIONAL MATCH`, ni recursión** (`*1..3` de Cypher): exigen pipeline de partes y semántica de opcionalidad que aún no tenemos.
+3. **`()` desnudo se rechaza** (`EmptyNodePattern`) aunque Cypher lo permita: un patrón que no liga ni filtra nada es un hoyo pedagógico. (El binder del cap. 19 lo aceptará con variables internas — divergencia documentada.)
+4. **Sin aritmética, sin funciones, sin `IN`, sin `LIMIT`, sin `ORDER BY`** — `LIMIT` será tu ejercicio experto.
+5. **Comparaciones no encadenables** (`a < b < c` fuera), y el parser abortará en el primer error sintáctico (cap. 18) aunque `validate()` reporte todos los semánticos: recovery multi-error es un proyecto entero.
+
+Cada recorte tiene el mismo formato: *no lo necesitamos para aprender lo que sigue, y sin él el diseño cabe en la cabeza*.
+
+## 17.9 Cómo lo hace una BBDD real
+
+- **openCypher** (2016): Neo4j liberó la especificación de Cypher para que RedisGraph, SAP HANA, Memgraph y otros la implementaran. Es la deuda directa de LiraQL: nuestras tres cláusulas y nuestros paréntesis-flechas vienen de ahí. La especificación formal (tcs + BNF) hace por openCypher lo que nuestra EBNF hace por nosotros: contrato antes que implementación.
+- **GQL, ISO/IEC 39075:2024** (publicado el 17 de abril de 2024): el primer lenguaje de consulta de bases de datos estandarizado por ISO desde SQL (1987). Desarrollado por el mismo comité que mantiene SQL, con Cypher como INPUT principal — la sintaxis de dibujar patrones que nació en 2011 acabó en un estándar internacional.
+- **SPARQL** (W3C, 2008/2013): el veterano de los lenguajes de grafos, pero para RDF — triples sujeto-predicado-objeto, no property graph. Su `?x :conoce ?y` con variables prefijadas es la otra gran tradición: básica en web semántica, ajena a nuestro modelo. La comparación enseña que el lenguaje sigue al modelo de datos: no puedes diseñar el primero sin decidir el segundo.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: escribe la EBNF de `match` con DOS patrones separados por coma y explica qué operador lógico implementan (pista: producto).
+- *Intermedio*: en Cypher real, `WHERE` acepta `exists()`, `size()`, matching de prefijos (`startsWith`). ¿Por qué añadir funciones obliga a tocar gramática, AST, validación y Display A LA VEZ? Enumera los cuatro puntos de cambio para una función como `startsWith`.
+- *Experto*: lee la gramática EBNF de openCypher (la tcs) y localiza una regla que nuestra gramática no tenga (p.ej. `variableLength` o `shortestPath`); escribe su EBNF al estilo del capítulo y explica qué nodo AST nuevo exigiría y por qué nuestro `PathPattern` actual no puede contenerlo.
+
+## 17.10 Lo que te llevas
+
+- **Declarativo**: el usuario dice QUÉ; el CÓMO es del optimizador (cap. 21). Es el argumento de Codd (1970) y la razón de ser de SEQUEL/SQL.
+- **La gramática es el contrato**: EBNF primero, parser derivado — una función por regla (cap. 18). La precedencia por niveles elimina la ambigüedad estructuralmente, no por decreto.
+- **`Span` en todo el AST**: errores que apuntan al carácter exacto, estilo rustc. Barato si se conserva desde el principio; imposible de recuperar después.
+- **Un solo modelo de datos**: `Literal` envuelve el `Value` del cap. 7.
+- **`Vec<QueryError>` para humanos, `Result` para máquinas**: reportar todo vs abortar — la UX decide.
+- **`Display` canónico**: tests, semilla de explain, round-trip idempotente.
+
+## 17.11 Ojo, cuidado con…
+
+- **Confundir diseño con implementación**: este capítulo no tokeniza ni parsea nada. Si te pica escribir el lexer, es el cap. 18 llamándote.
+- **Confundir error sintáctico con semántico**: el primero es del parser (cap. 18, aborta); el segundo de `validate()` (reporta todos).
+- **Derivar `Eq` en enums con `f64`**: `TokenKind` no puede — `Float(f64)` → NaN ≠ NaN. Bug real, registrado.
+- **Esperar que `Display` reproduzca el original**: es forma canónica; añade paréntesis, normaliza espacios. El round-trip es idempotencia, no igualdad de texto.
+
+## 17.12 Pin de batalla
+
+> *«Un error que no dice dónde está no es un error: es un acertijo. Y los usuarios de los acertijos se cambian de base de datos.»*
+
+## 17.13 Si solo lees 30 segundos
+
+LiraQL es un mini-Cypher declarativo: `MATCH (patrón)-[:FLECHA]->(patrón) WHERE expr RETURN expr`. Su diseño son cuatro piezas fijadas HOY, antes del código: la **gramática EBNF** (el contrato del que el parser del cap. 18 se deriva, una función por regla), el **vocabulario de tokens** (34 variantes), el **AST con `Span` en cada nodo** (errores que apuntan al carácter exacto) y la **validación semántica + Display canónico** (todos los errores de golpe; forma normalizada para tests y explain). Nada de esto ejecuta nada — y por eso todo lo demás podrá construirse encima sin sorpresas.
+
+## 17.14 Una historia pequeña
+
+La primera versión del módulo compiló a la primera… menos un `#[derive(Eq)]` en `TokenKind` que el compilador rechazó por el `Float(f64)` de dentro. Cinco minutos. Después llegó el cap. 18, y con él la cuenta de resultados del diseño: faltaba el token `-` (el guión simple de `-[` y `]-`) y faltaba la variante `Expression::Variable` para que `RETURN p` —retornar el nodo entero, no una propiedad— existiera. Dos huecos en un contrato de 970 líneas, dos fixes de diez líneas, y ni un solo tipo rediseñado a mitad de implementación. Cuando Ana vio el mensaje `variable 'x' usada pero no declarada en MATCH (en 47..53)` señaló la pantalla con el dedo, clavada en el 47, y dijo: «ah, ese era». Ese gesto — el dedo en el carácter exacto — es todo lo que este capítulo quería comprar.
+
+## Ejercicios resueltos
+
+**1. ¿Por qué `validate()` devuelve `Vec<QueryError>` si el `insert` de la slotted page (cap. 11) devuelve `Option` y el pager (cap. 12) `Result`?**
+
+Porque el consumidor del error es distinto. El pager y la página fallan para una **máquina** (otra capa del motor) que va a abortar o reintentar: un solo error basta y sobra, y `Result`/`Option` fuerzan tratarlo. `validate()` falla para un **humano** que está escribiendo una consulta con el dedo en el teclado: si tiene tres variables mal, quiere ver las tres, no tres ciclos de corrige-y-vuelve-a-probar. Es la misma razón por la que `rustc` reporta varios errores por compilación. La regla que queda: *cuántos errores devuelves depende de quién los lee*.
+
+**2. ¿Qué imprime exactamente el `Display` canónico de la consulta emblema del capítulo?**
+
+`MATCH (p:Persona)-[:CONOCE_A]->(f:Persona) WHERE (p.nombre = "Ana") RETURN f.nombre, p.edad AS edad`. Tres canonicalizaciones visibles: la comparación de WHERE gana paréntesis (`Expression::Compare` imprime `({left} {op} {right})`), las comillas dobles para strings, y el alias con ` AS ` aunque el fuente usara solo espacio (`p.edad edad` es gramática válida; la forma canónica siempre escribe `AS`). Verificable con `display_query_con_where_y_alias` y `display_query_completa_round_trip_canonico`.
+
+## Ejercicios propuestos
+
+**Esencial (retrieval, cap. 7).** Sin mirar nada —ni el cap. 7 ni este capítulo—, lista de memoria las seis variantes de `Value`. Luego responde: ¿cuáles tienen literal en LiraQL y cuál no tiene NI token que la represente? ¿Cómo puede aun así aparecer esa variante en el `Display`? Verifica ejecutando `display_value_bytes_canonico` y `hex_bytes_formatea_correctamente`.
+
+**Intermedio (predicción).** Construye a mano (helpers al estilo de `tests_query`) el AST de `MATCH (p:Persona)-[r:CONOCE_A]->(p:Persona), () RETURN x.nombre` y predice, ANTES de ejecutar: cuántos errores devuelve `validate()`, en qué orden, con qué `QueryErrorKind` y con qué span cada uno. ¿Declara `r` algo que interfiera? Verifica con `validate_variable_duplicada_entre_nodo_y_arista` y `validate_node_pattern_vacio_devuelve_empty_node_pattern` como patrón.
+
+**Experto (diseño puro).** Diseña `LIMIT n` para LiraQL sin escribir una línea de lexer ni parser: (a) regla EBNF — ¿extiende `return_clause` o es cláusula hermana?, y argumenta por qué tu elección no introduce ambigüedad; (b) campo nuevo en el AST con su `Span` y su tipo (¿por qué `i64` y no `Value`?); (c) regla de `validate()`: qué pasa con `LIMIT 0` y `LIMIT -1`, con qué `QueryErrorKind` nuevo y qué span; (d) extensión del `Display` canónico; (e) dos tests con AST construido a mano. El cap. 18 hará el resto: una función nueva por regla nueva.
+
+## Para profundizar
+
+- **Chamberlin & Boyce, «SEQUEL: A Structured English Query Language» (SIGMOD 1974)** — el paper fundacional; el origen de todo lo declarativo en datos.
+- **Codd, «A Relational Model of Data for Large Shared Data Banks» (CACM, 1970)** — el argumento de la navegación automática vs la programada.
+- **Francis et al., «Cypher: An Evolving Query Language for Property Graphs» (SIGMOD 2018)** — la referencia de Cypher/openCypher, con la semántica formal de los patrones.
+- **openCypher (opencypher.org)** — la especificación con gramática BNF completa: compara su tamaño con la nuestra y mide lo que significa «lenguaje pequeño».
+- **GQL, ISO/IEC 39075:2024 (gqlstandards.org)** — el estándar de 2024; lee al menos su índice para ver el territorio completo de un lenguaje de grafos industrial.
+- **Nystrom, «Crafting Interpreters»** y **Wirth, «Compiler Construction»** — los mejores acompañamientos para los caps. 17-18; de Wirth viene la idea «una función por regla» que el cap. 18 ejecutará.
+- **rustc Dev Guide (capítulo de diagnósticos) y `codespan-reporting`** — cómo se diseñan errores con span en compilers reales.
+
+## Mini-diálogo: la cena de diseño
+
+> — Entonces no hemos construido nada. Nombres, reglas en un comentario, structs vacíos de comportamiento. ¿Esto es un capítulo o una reunión?
+>
+> — Es la reunión que te ahorra la obra. Cada regla EBNF que escribiste hoy es una función del parser que mañana escribirás sin decidir nada; cada `Span` que exigiste es un error que apuntará al carácter exacto; cada `QueryErrorKind` es un mensaje que Ana leerá a las tantas de la noche.
+>
+> — Pero el lexer podría haber salido antes, con el diseño «sobre la marcha».
+>
+> — Y entonces `Dash` no habría faltado en un contrato de 34 líneas: habría faltado repartido por mil líneas de escáner. El diseño no elimina los errores — el nuestro tuvo dos. Los concentra en un sitio donde son baratos de encontrar. Eso es diseñar: no adivinar el futuro, sino decidir dónde van a vivir los fallos. Y el camarero ya existe: `validate()` solo dice dos cosas, pero las dice bien — qué plato no está en la carta, y en qué línea del menú lo señalas. La cocina abre en el capítulo 18.
+
+---
+
+*(Próximo capítulo: 18 — Construir el lexer y el parser. El contrato ya está firmado: cada regla de la gramática se convierte en una función, cada token de la carta en un byte reconocido por maximal-munch, y el texto de Ana se convierte, por fin, en un `Query`.)*
+# Capítulo 18 — Construir el lexer y el parser
+
+> *«El lexer ve bytes. El parser ve tokens. El que mezcla las dos cosas paga sus errores en el sitio equivocado.»*
+
+## 18.0 La anécdota de la esquina
+
+En 1986, Alfred Aho, Ravi Sethi y Jeffrey Ullman publicaron *Compilers: Principles, Techniques, and Tools*. La portada muestra un caballero luchando contra un dragón rojo, y ese detalle le dio el nombre con el que todo el mundo conoce al libro: **el libro del dragón**. La imagen no era decorativa: el dragón representa la complejidad del diseño de compiladores, y el caballero la combate blandiendo una lanza etiquetada en la propia portada como *«LALR parser generator»*. (Existen tres dragones: el verde de 1977 —*Principles of Compiler Design*, de Aho y Ullman—, este rojo de 1986 y el púrpura de la segunda edición de 2006, ya con Monica Lam.)
+
+Lo que el libro enseñó a generaciones fue algo más humilde que LALR: **separar el escaneo del parsing**. Antes de pensar en árboles de derivación, un compilador tiene que resolver un problema estúpidamente difícil de hacer bien: cortar un flujo continuo de caracteres en piezas con sentido —tokens— y recordar dónde empieza y dónde acaba cada una. Los tokens liberan al parser de ocuparse de espacios, saltos de línea y del contenido de los strings. Esa separación es la columna vertebral de este capítulo.
+
+Hay una ironía deliciosa: la lanza del caballero es un *generador* de parsers LALR, y nosotros no vamos a usar ninguna. Niklaus Wirth —el padre de Pascal, que compiló sus lenguajes con descendente recursivo en los años 70 y defendió esa técnica durante toda su vida en *Compiler Construction*— demostró que para un lenguaje pequeño y bien diseñado, la mejor herramienta no es una tabla generada: es **una función por regla de la gramática**. Hasta `rustc`, uno de los compiladores más serios del mundo, usa un parser descendente escrito a mano. Hoy construiremos la nuestra.
+
+## 18.1 Objetivo
+
+En el cap. 17 diseñamos LiraQL sobre el papel: tokens, gramática EBNF, AST, errores con posición. Pero las `Query` se construían a mano en los tests. Este capítulo baja un escalón y construye **el código que convierte texto en ese AST**:
+
+1. `Lexer` — el escáner: un cursor sobre bytes que produce `Vec<Token>` con spans exactos.
+2. `Parser` — el descendente recursivo: una función por regla de la EBNF, que produce `Query`.
+3. `LexError` y `ParseError` — las dos culpas, tipadas y con posición.
+
+El hito que abre la Parte IV por dentro: `parse("MATCH (p:Person) RETURN p")` debe devolver una consulta válida.
+
+## 18.2 Problema
+
+Tienes el fuente `"MATCH (p:Person) RETURN p"` — 25 caracteres en un `&str`— y un `Query` con `Expression::Variable` en el RETURN. Entre ambos hay un abismo: el string no tiene estructura, el AST es todo estructura.
+
+El problema se parte en dos, y esa partición es el 80 % de las decisiones del capítulo:
+
+- **¿Cómo corto el texto en piezas?** El texto no trae espacios fiables: `(p:Person)-[:KNOWS]->(f)` es una sola palabra para `split_whitespace`, y `<>` son dos caracteres que significan UN token.
+- **¿Cómo compruebo que las piezas forman una frase válida?** Y cuando no lo son, ¿quién lo dice y señalando a qué byte?
+
+## 18.3 Modelo mental
+
+Piensa en una **oficina de registro con dos funcionarios**:
+
+```
+ "MATCH (p:Person) RETURN p"          EBNF del cap. 17
+        │                                   │
+        ▼                                   │
+┌─────────────────┐                         │
+│  LEXER (oficial)│  corta el rollo de bytes en palabras
+│                 │  y sella cada una: [nace, muere]
+└─────────────────┘                         │
+        │  Vec<Token>                       │
+        ▼                                   ▼
+┌─────────────────┐    ┌──────────────────────────┐
+│ PARSER (gramático)   │  "MATCH ( )" luego "p",
+│                 │    │  luego RETURN... ¿encaja? │
+└─────────────────┘    └──────────────────────────┘
+        │
+        ▼
+      Query
+```
+
+El **lexer** es el oficial que recibe el rollo continuo de papel y lo corta en palabras sueltas, estampando en cada una su certificado de origen: el `Span` con el byte donde nace y el byte donde muere. No opina sobre si la frase tiene sentido; su trabajo es cortar bien y certificar.
+
+El **parser** es el gramático: recibe la bandeja de palabras numeradas y, con la EBNF del cap. 17 bajo el brazo, comprueba que forman frase. Nunca toca un byte crudo.
+
+Y aquí está la lección oscura del modelo: **si el oficial corta mal, el gramático culpa a un inocente**. Un certificado falso no rompe la oficina de registro: rompe la inspección, en otro mostrador. Guarda esa idea para el §18.8.
+
+## 18.4 Primera solución
+
+Lo más simple que parece funcionar: métodos de `str` y buen ojo.
+
+```rust
+// Solución ingenua: trocear por espacios y mirar prefijos.
+for palabra in src.split_whitespace() {
+    if palabra.starts_with('(') { /* empieza nodo... */ }
+    if palabra.contains("->")   { /* flecha... */ }
+}
+```
+
+Con `"MATCH (p) RETURN p.name` — espacios perfectos, sin adornos — hasta avanza. Los tests del happy path pasan. Y durante un rato nadie se queja.
+
+## 18.5 Sus límites
+
+Hasta que llegan consultas reales:
+
+1. **`(p:Person)-[:KNOWS]->(f:Person)`** no tiene espacios entre piezas: `split_whitespace` lo devuelve entero. Necesitarías `starts_with` en cascada… re-inventando el lexer, pero mal.
+2. **`<>`, `<=`, `<-`, `->`, `--`** comparten prefijos: `contains("<")` no distingue menor-que de distinto-de.
+3. **`"Ana García"`** — un string con un espacio — se parte en dos basuras.
+4. **Cero posiciones.** Cuando algo falla, lo único que puedes decir es «consulta inválida». Ni byte, ni línea. Compáralo con rustc señalando el carácter exacto.
+5. **UTF-8.** `p.name = "cañón"` descuadra cualquier aritmética pensada en caracteres: `ñ` ocupa 2 bytes.
+
+## 18.6 Solución evolucionada
+
+El código vive en `liradb-workspace/crates/vol2-liradb/src/cap18_lexer_parser.rs`. Leámoslo por partes, porque cada decisión tiene un porqué.
+
+### El lexer: un cursor y una regla de oro
+
+```rust
+pub struct Lexer<'a> {
+    src: &'a [u8],
+    pos: u32,
+}
+```
+
+Dos campos. El fuente como **bytes** (`&[u8]`, no `chars()`): el `Span` del cap. 17 mide bytes, y el cursor debe avanzar en la misma unidad que el span certifica — si no, los offsets mienten. Es la misma disciplina del cap. 9 con el little-endian: **declara la unidad, no la dejes implícita**. Y `pos: u32` porque ningún fuente didáctico supera 4 GiB.
+
+Sobre ese cursor, el bucle principal es el escaneo canónico: saltar espacios, mirar el primer byte, y según ese byte consumir el resto del token:
+
+```rust
+pub fn lex(mut self) -> Result<Vec<Token>, LexError> {
+    let mut tokens = Vec::new();
+    while !self.is_at_end() {
+        self.skip_whitespace();
+        if self.is_at_end() { break; }
+        tokens.push(self.scan_token()?);
+    }
+    tokens.push(Token::new(TokenKind::Eof, Span::at(self.pos)));
+    Ok(tokens)
+}
+```
+
+Fíjate en el último `push`: **siempre hay un token `Eof` al final**. Gracias a eso, `peek()` en el parser devuelve `&Token`, jamás `Option<Token>`, y «me quedé sin tokens» (`UnexpectedEof`) es distinguible de «encontré lo que no tocaba» (`UnexpectedToken`).
+
+El corazón es `scan_token`, que despacha por el primer byte. Y aquí vive la regla de oro — **maximal-munch**: gana el token más largo posible. Antes de decidir que un byte es un token, prueba si con su vecino forma uno más largo:
+
+```rust
+b'-' => {
+    if self.match_byte(b'>')      { TokenKind::ArrowRight }
+    else if self.match_byte(b'-') { TokenKind::DashDash }
+    else                           { TokenKind::Dash }
+}
+b'<' => {
+    if self.match_byte(b'-')      { TokenKind::ArrowLeft }
+    else if self.match_byte(b'=') { TokenKind::Lte }
+    else if self.match_byte(b'>') { TokenKind::NotEq }
+    else                           { TokenKind::Lt }
+}
+```
+
+¿Por qué maximal-munch y no partir siempre en tokens de un carácter y que el parser pegue? Porque `-` y `>` sueltos en `(p)-[:X]->(f)` obligarían a CADA regla del parser a mirar pares de tokens, duplicando la lógica. Y si el lexer no prueba las combinaciones de dos bytes, `a <> b` llega como `Lt Gt` — exactamente el bug del §18.8. El matching más largo elimina la ambigüedad de raíz. Cada token se sella al salir: `Span::new(start, self.pos)` — nació en `start`, murió donde el cursor quedó. El span se **deriva** del propio escaneo, no se calcula después: deriva, no lleves en la cabeza.
+
+### Palabras clave, números y strings
+
+Los identificadores (`scan_identifier`) consumen `[A-Za-z_][A-Za-z0-9_]*` y se clasifican con un `match` exacto sobre el texto: `MATCH` es `TokenKind::Match`, pero `match` es `Ident("match")` — las palabras clave son **case-sensitive**, por convención de Cypher. Sin estado, sin normalización: el texto tal cual contra la lista.
+
+`scan_number` acumula dígitos con `checked_mul`/`checked_add`: si el literal desborda `i64`, **sigue consumiendo dígitos** (para que el span del error cubra todo el literal) y luego devuelve `IntegerOverflow`. Detalle fino: `12.` sin dígitos tras el punto no es un float roto — es `Integer(12)` seguido de `Dot` (el `peek_next` exige un dígito tras el punto para formar flotante).
+
+`scan_string` es el territorio ciego, y su inmunidad es una decisión de diseño: **dentro de las comillas, el lexer no conoce la sintaxis**. Consume bytes crudos hasta la comilla de cierre, entendiendo solo dos cosas: `\` inicia un escape (`\n \t \r \\ \" \0`; cualquier otra cosa es `InvalidEscape` con el byte culpable en el error) y `"` cierra. ¿Por qué esta ceguera es obligatoria? Porque `WHERE p.name = "Ana-García \"la grande\""` contiene `-`, `{` y comillas escapadas que NO son sintaxis. Si el interior se escaneara con las reglas generales, cualquier descripción con un guión rompería el WHERE. Y un string sin cerrar antes del final del fuente es `UnterminatedString` con el span desde la comilla inicial hasta el EOF.
+
+### El parser: el código ES la gramática
+
+El `Parser` es igual de austero que el `Lexer`: `tokens: Vec<Token>` y `current: usize`. Con cuatro helpers de cursor (`peek`, `check`, `match_kind`, `advance`/`expect`) construimos la correspondencia que organiza todo el módulo — **una función por regla EBNF del cap. 17**:
+
+| Regla EBNF (cap. 17) | Función gemela |
+|---|---|
+| `query ::= match_clause where_clause? return_clause` | `Parser::parse` |
+| `match_clause ::= 'MATCH' path_pattern (',' path_pattern)*` | `parse_match_clause` |
+| `path_pattern ::= node_pattern (rel_pattern node_pattern)*` | `parse_path_pattern` |
+| `node_pattern ::= '(' [variable] [':' label] ['{' prop_map '}'] ')'` | `parse_node_pattern` |
+| `rel_pattern` (tres direcciones) | `parse_relationship_pattern` |
+| `where_clause ::= 'WHERE' expression` | `parse_where_clause` |
+| `return_clause ::= 'RETURN' return_item (',' return_item)*` | `parse_return_clause` |
+| `return_item ::= expression (['AS'] alias)?` | `parse_return_item` |
+
+Se llama **descendente recursivo predictivo**: desciende por la gramática llamando a funciones que se llaman entre sí, y es *predictivo* porque decide qué alternativa tomar mirando UN token de preanálisis (`peek`). ¿Cómo sabe `parse_path_pattern` que el camino sigue? `starts_relation`: si el token actual es `Dash`, `ArrowLeft` o `DashDash`, hay otra relación encadenada.
+
+¿Por qué esta técnica y no las alternativas? Una **tabla LL(1)/LALR** (la lanza del dragón del libro) es compacta y detecta ambigüedades de la gramática al generarla, pero el resultado es una tabla que se depura con autopsia: cuando falla, no hay función donde poner un punto de ruptura. Un **parser Pratt** es magnífico cuando hay decenas de niveles de precedencia con expresiones densas, pero esconde la gramática en una tabla de potencias de enlace. Aquí, con diez reglas, la alternativa ganadora es la legibilidad: cuando `parse` falla, la pila de llamadas ES la derivación gramatical que estaba intentando. Wirth llevaba razón medio siglo: para un lenguaje pequeño, esto es lo que se enseña y lo que se mantiene.
+
+### La precedencia es la pila de llamadas
+
+Las expresiones tienen operadores con distinta fuerza: `AND` ata más que `OR`, `NOT` más que `AND`, la comparación más que todo. Nuestra solución no es una tabla: es **una cadena de funciones**, donde cada nivel consume SU operador y delega hacia abajo el más fuerte:
+
+```rust
+fn parse_or(&mut self) -> Result<Expression, ParseError> {
+    let mut left = self.parse_and()?;
+    while self.match_kind(&TokenKind::Or).is_some() {
+        let right = self.parse_and()?;
+        let span = Span::new(left.span().start, right.span().end);
+        left = Expression::Or { left: Box::new(left), right: Box::new(right), span };
+    }
+    Ok(left)
+}
+```
+
+```
+parse_expression ─► parse_or ─► parse_and ─► parse_not ─► parse_comparison ─► parse_primary
+   (la más floja, OR)                                              (la más fuerte: literal, p.prop, ( ))
+```
+
+El truco: `parse_or` se llama a través de `parse_and`, que se llama a través de `parse_not`… Así, cuando `parse_or` busca sus `OR`, todo lo que cuelgue debajo ya se ha agrupado con precedencia mayor. La prueba:
+
+```text
+WHERE p.x = 1 OR p.y = 2 AND p.z = 3
+       └─ Compare ─┘    └──── And(Compare, Compare) ────┘
+              └────────── Or(Compare, And) ──────────────┘
+```
+
+`a OR b AND c` sale como `a OR (b AND c)` — exactamente lo que verifica `parse_precedencia_or_es_menor_que_and`. Y los paréntesis del fuente (`parse_primary` regla `LParen`) rompen el orden cuando el usuario lo pide. Si quisieras cambiar la precedencia de LiraQL, moverías UNA función de sitio en la cadena: el orden de las funciones ES la precedencia, a la vista. Una tabla de precedencia habría desacoplado la especificación del código; con cuatro niveles, ese desacoplamieno solo añade indirección.
+
+### Dos fases, dos culpas: `LexError` y `ParseError`
+
+Los errores heredan la disciplina de los caps. 12-16 — tipados, con `Display` legible — y añaden la posición:
+
+- **`LexError`** (5 variantes): `UnexpectedChar { byte }`, `UnterminatedString`, `InvalidEscape { byte }`, `IntegerOverflow`, `MalformedNumber`. Cada una describe qué rompió el ESCANEO.
+- **`ParseError`** (la envoltura `Lex(LexError)` + 7 variantes sintácticas): `UnexpectedToken { expected, found }`, `UnexpectedEof`, `MissingMatch`, `MissingReturn`, `PathMustStartWithNode`, `MalformedRelationship`, `TrailingTokens { found }`. Cada una describe qué rompió la ESTRUCTURA.
+
+¿Por qué dos errores y no uno? Porque son **dos fases con dos culpas**: cuando `parse` falla, el mensaje debe decir si el usuario escribió un carácter imposible (léxico) o una frase mal ordenada (sintáctico). Y se unen con el patrón idiomático de Rust:
+
+```rust
+impl From<LexError> for ParseError {
+    fn from(e: LexError) -> Self {
+        let span = e.span;
+        ParseError::new(ParseErrorKind::Lex(e), span)
+    }
+}
+```
+
+Gracias a `From`, el `lex(src)?` dentro de `Parser::new` propaga el error léxico sin una línea extra, y `source()` conserva la cadena causal: el `ParseError` sabe que su causa raíz es un `LexError`. El `Display` de ambos remata con el sufijo de localización — ` (en 0..1)`, o `(en offset 7)` si el span es vacío — al estilo de rustc y miette.
+
+Y la recuperación es minimalista a propósito: **primer error, mensaje claro, abort**. ¿No sería mejor reportarlos todos, como hace `validate()` en el cap. 17? No aquí: detectar el segundo error exige sincronizar (avanzar hasta un `)` o una `,` «punto de reinscripción»), y aun así los errores derivados contaminan. Un `MissingReturn` bien localizado enseña más que una cascada de tres mensajes por un solo olvido. La recuperación completa queda declarada como ejercicio y deuda.
+
+## 18.7 Prueba de fuego
+
+El hito del brief, tal cual, con su test real (`parse_hito_del_brief`):
+
+```rust
+let q = parse("MATCH (p:Person) RETURN p").unwrap();
+assert!(q.is_valid());
+assert!(matches!(q.return_clause.items[0].expr, Expression::Variable { .. }));
+```
+
+Ese `Expression::Variable` tiene historia (§18.8). La batería completa — 73 tests en `tests_lexer_parser` — cubre lo que este capítulo promete, y los nombres son un mapa del territorio: `lex_comparadores` y `lex_flechas_y_guiones` (maximal-munch), `lex_span_de_token_cubre_exactamente_su_texto` (certificados: en `"MATCH (p)"`, `MATCH` es `0..5`, `(` es `6..7`, `p` es `7..8`, `)` es `8..9` — el espacio no cuenta), `lex_whitespace_no_cuenta_en_spans`, `lex_span_es_aware_a_utf8_en_bytes` (`"cañón"`: 7 caracteres, span `0..9` en bytes), `lex_string_con_escapes`, `lex_entero_desborda_i64_es_error`, `parse_where_todos_los_comparadores` (los seis operadores), las tres de precedencia, `round_trip_consulta_minima` (parsear el `Display` del AST reproduce el AST) y `parser_from_tokens_funciona` (el parser acepta tokens sintéticos sin pasar por el lexer — la prueba de que las dos fases están de verdad separadas).
+
+Y el camino de error es parte de la prueba de fuego. La consulta ajena:
+
+```rust
+let err = parse("SELECT * FROM nada").unwrap_err();
+// MissingMatch, span 0..6:
+// "toda consulta LiraQL debe empezar con MATCH (en 0..6)"
+```
+
+No «consulta inválida»: la cláusula culpable, con su byte. Y la cadena rota: imagina un lexer que pierde un byte de `<>` — el token siguiente llega mal certificado y el error explota en el parser, señalando a un testigo. ¿Exageración? Lección 18.8: nos pasó.
+
+## 18.8 Tres bugs reales, tres lecciones (caso de estudio)
+
+El workspace dejó constancia de tres bugs durante la construcción de este capítulo. Los estudiamos porque enseñan más que el happy path.
+
+**Bug 1: el lexer no reconocía `<>` como `NotEq`.** La rama `b'<'` probaba `match_byte(b'-')` y `match_byte(b'=')`… pero faltaba `match_byte(b'>')`. El síntoma fue diabólico: `WHERE p.age <> 30` llegaba al parser como `... Lt Gt Integer(30)`. El `parse_comparison` consumía el `Lt` contento, llamaba a `parse_primary`… y encontraba un `Gt` huérfano: *«se esperaba uno de [literal, variable.propiedad, '('], se encontró '>'»*. Señalando a un `>` que el usuario **nunca escribió como token separado**. Fix: una línea (`else if self.match_byte(b'>') { TokenKind::NotEq }`). **Lección: los errores de lexer se pagan en el parser, con intereses de distancia.** Cuando un parser culpa a un token que nadie escribió, sospecha del oficial de registro, no del gramático.
+
+**Bug 2: `TokenKind::Dash` no existía.** El cap. 17 definió `ArrowRight` (`->`), `ArrowLeft` (`<-`) y `DashDash` (`--`)… y olvidó el guión simple. Consecuencia: los extremos `-[ ... ]-` y `]-` de las relaciones entrantes y sin dirección **no tenían token**: `MATCH (p)<-[:KNOWS]-(f)` era imposible de parsear. Fix retroactivo al vocabulario: añadir `Dash`, que el lexer produce y `parse_relationship_pattern` consume (su cierre `]-` para Incoming, o la apertura `-[` que decide Outgoing vs Undirected). **Lección: el vocabulario de tokens se diseña DESDE la gramática** — recorre las producciones y marca cada símbolo terminal; el que no aparezca en ninguna regla sobra, y el que una regla necesite y no exista, la regla muere.
+
+**Bug 3: `Expression::Variable` no existía.** La EBNF del cap. 17 decía `primary ::= literal | property_access | '(' expression ')'` — sin variable sola. Pero el hito `RETURN p` exige referenciar el nodo completo, y un nodo **no es una propiedad**. Fix: variante nueva `Expression::Variable { name, span }` (con sus actualizaciones de `span()`, `references_var()`, `variables()` y `Display`), y en `parse_primary` la bifurcación: viene `Dot` → `PropertyAccess` (`p.name`); no viene → `Expression::var(variable, ...)` (`p`). La tentación descartada — hacer `PropertyAccess` con propiedad opcional — habría envenenado el executor del cap. 20 con un «¿`.None`?». **Lección: cada constructor sintáctico merece su variante de AST**, aunque parezcan el mismo concepto.
+
+Los tres bugs comparten moraleja: **el diseño de la fase 1 (tokens) y la fase 3 (AST) se audita con la gramática de por medio**. Ninguno era de los difíciles: eran huecos entre capítulos.
+
+## 18.9 Qué hemos sacrificado
+
+1. **Recuperación multi-error**: abortamos en el primero. El coste de sincronizar puntos de reinscripción no paga en un lenguaje didáctico.
+2. **Notación científica** (`1e10`) y **separadores** (`1_000`) en números: recortes declarados en `scan_number`.
+3. **Operadores unarios**: `-3` se lexea como `Dash Integer(3)` y el parser lo rechaza; LiraQL no los tiene en su gramática.
+4. **Comentarios** (`// ...`): trivial de añadir en `skip_whitespace`, y buen ejercicio.
+5. **Palabras clave en minúsculas**: `match` es un identificador válido; la clasificación exacta mantiene el lexer sin estado.
+6. **Rendimiento**: clonamos tokens al consumirlos (`advance` devuelve `Token`, no `&Token`) y el `Vec<Token>` es completo antes de parsear. Para consultas de decenas de tokens, irrelevante; un lexer de producción opera en streaming.
+
+## 18.10 Cómo lo hace una BBDD real
+
+En el ecosistema Rust hay tres caminos industriales, y conocerlos es responder la pregunta «¿cuándo dejar de hacerlo a mano?»:
+
+- **`logos`** — el lexer derivado: declaras `#[derive(Logos)]` en tu `TokenKind` con atributos de regex y la macro genera el escáner (se autodenomina «el lexer más rápido del oeste»). Elimina el boilerplate de `scan_token`… y también su enseñanza: por eso la regla del Vol.II es **primero a mano, luego con crate** — la versión `logos` de LiraQL llegará al apéndice comparativo, cuando ya sepas qué está delegando.
+- **`pest`** — gramática declarativa PEG en un fichero `.pest`, con posiciones y mensajes de serie. Es **scannerless**: gramática y escaneo en una sola especificación. Es exactamente la alternativa que descartamos en la decisión nº 1: elegante, compacta… y el escaneo deja de ser visible. Su recuperación multi-error, sin embargo, es superior a la nuestra.
+- **`LALRPOP`** — el pariente moderno de la lanza del dragón: generador LR(1)/LALR que compila la gramática a tablas Rust. Impresionante para gramáticas grandes y estables; deprimente de depurar cuando la tabla rechaza algo que creías válido.
+
+¿Y las bases de datos de grafos? **Neo4j** generó durante años el parser de Cypher con JavaCC — una gramática `.jj` compilada a parser. **Kùzu** (ahora Ladybug) escribió el suyo a mano: su parser de Cypher es un descendente recursivo en `src/parser/` — la misma técnica que acabas de construir, sosteniendo un lenguaje real. Y la nueva **GQL** (estándar ISO/IEC 39075:2024) se implementa sobre la misma maquinaria de siempre: lexer, parser descendente, AST. El estándar cambia el idioma; la oficina de registro, no. Hasta **rustc** — el argumento de autoridad definitivo — usa un parser descendente recursivo escrito a mano, y sus errores con span exacto son el modelo de nuestra factura de errores.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: añade comentarios de línea `// ...` a LiraQL (pista: es una línea en `skip_whitespace`). ¿Qué test demuestra que `MATCH (p) // amigo\n RETURN p` parsea igual que sin comentario?
+- *Intermedio*: reescribe SOLO el lexer con `logos` (misma `TokenKind`, mismos spans) y deja el parser intacto. ¿Cuántas líneas te ahorras? ¿Qué test de la batería actual te verifica que no rompiste nada?
+- *Experto*: LiraQL ganará `+ - * /` aritméticos en el cap. 22. Implementa esa expresión con un **parser Pratt** real (tabla de potencias de enlace) y compara: ¿qué gana, qué pierde, frente a alargar la cadena de funciones? Escribe ambos y discute en el PR.
+
+## 18.11 Lo que te llevas
+
+- **Dos fases, dos culpas**: el lexer corta bytes y certifica spans; el parser juzga tokens contra la EBNF. Nunca al revés.
+- **Maximal-munch** es la regla de oro del escaneo: `->` antes que `-`, `<>` antes que `<`. Olvidar una combinación rompe el parser lejos del error.
+- **El cursor mide en bytes** porque el span certifica bytes: la unidad explícita es la lección del cap. 9 aplicada al texto.
+- **El código ES la gramática**: una función por regla EBNF; la precedencia es el orden de la cadena `parse_or → parse_and → parse_not → parse_comparison → parse_primary`.
+- **Errores tipados con `From` + `source()` y span en el `Display`**: el usuario ve el byte culpable, no «consulta inválida».
+- **El hito**: `parse("MATCH (p:Person) RETURN p")` funciona — texto dentro, AST fuera. La Parte IV tiene motor de entrada.
+
+## 18.12 Ojo, cuidado con…
+
+- **Consumir en un `peek`**: `peek`, `peek_at`, `peek_next` JAMÁS avanzan `pos`. Si miras avanzando, todos los spans posteriores mienten por un byte — la cadena rota en miniatura.
+- **Medir spans en caracteres**: `cañón` son 7 caracteres y 9 bytes. Los offsets del certificado son bytes UTF-8, siempre.
+- **Igualdad vs discriminante**: `match_kind(&TokenKind::Ident(String::new()))` casa CUALQUIER identificador porque `check` compara `std::mem::discriminant`. Es intencional (para «dame el identificador que sea»), pero sorprende.
+- **Esperar `-3` como literal**: no hay unarios; es `Dash Integer(3)` y el parser lo rechaza con `UnexpectedToken`. Recorte declarado, no bug.
+- **Culpar al parser**: cuando el error señala un token que nadie escribió, el bug casi siempre está un piso abajo, en el lexer.
+
+## 18.13 Pin de batalla
+
+> *«Un byte tragado por el lexer no rompe el lexer: rompe el parser, y en otro sitio.»*
+
+## 18.14 Si solo lees 30 segundos
+
+El lexer es un bucle `while` con un cursor sobre bytes que corta el fuente en tokens, cada uno con su `Span` de nacimiento y muerte — y gana siempre la combinación más larga (`<>` antes que `<`). El parser es descendente recursivo: una función por regla de la EBNF del cap. 17, con la precedencia codificada como cadena de llamadas de la más floja (`parse_or`) a la más fuerte (`parse_primary`). Los errores son tipados por fase (`LexError` → `ParseError` vía `From`), con span en el mensaje. Y el hito ya corre: `parse("MATCH (p:Person) RETURN p")`.
+
+## 18.15 Una historia pequeña
+
+La tarde del bug de `<>`, el test `parse_where_todos_los_comparadores` falló solo en su segundo caso. El mensaje decía *«se encontró '>'»* y señalaba un byte del medio del `WHERE`. Media hora dale que dale al parser: `parse_comparison` parecía correcto, `parse_primary` impecable… hasta que alguien imprimió los tokens de `p.age <> 30` y apareció la secuencia maldita: `Lt`, `Gt`, separados como desconocidos. El oficial de registro había cortado la palabra en dos, y el gramático llevaba toda la tarde declarando culpable a la mitad de al lado. El fix fue una línea; la lección, permanente: cuando el parser acusa a un fantasma, pidele al lexer el manifiesto de tokens y compáralo con lo que escribiste.
+
+## Ejercicios resueltos
+
+**1. Tokeniza a mano `MATCH (p:Person)-[:KNOWS]->(f)` con spans.**
+
+Cuenta bytes: `MATCH` nace en 0 y muere en 5; el espacio (5) no pertenece a nadie; `(` es `6..7`; `p` `7..8`; `:` `8..9`; `Person` `9..15`; `)` `15..16`. Ahora maximal-munch: `-` en 16 prueba con `>` (17) y juntos forman `ArrowRight` `16..18`. `[` `18..19`, `:` `19..20`, `KNOWS` `20..25`, `]` `25..26`, de nuevo `ArrowRight` `26..28`, `(` `28..29`, `f` `29..30`, `)` `30..31`, `Eof` vacío en 31. Quince tokens + Eof. Verifícalo mentalmente contra `lex_span_de_token_cubre_exactamente_su_texto` y sorpréndete con lo que NO hay: ningún token de whitespace.
+
+**2. ¿Qué AST produce `WHERE p.x = 1 OR p.y = 2 AND p.z = 3`?**
+
+`parse_or` arranca pidiendo `parse_and`; ese `parse_and` agrupa primero `p.y = 2 AND p.z = 3` (porque dentro busca sus `AND` llamando a niveles más fuertes); solo entonces `parse_or` encuentra su `OR` y cuelga el `And` como hijo derecho. Resultado: `Or( Compare(p.x,1), And( Compare(p.y,2), Compare(p.z,3) ) )` — es decir, `a OR (b AND c)`. Es exactamente lo que asserts `parse_precedencia_or_es_menor_que_and`.
+
+## Ejercicios propuestos
+
+**Esencial (recordar).** Cierra el libro y el workspace. Escribe de memoria las producciones EBNF de `return_item`, `comparison` y `primary` del cap. 17, y al lado el nombre del método del parser que las implementa. Ábrelo después y contrasta con el comentario EBNF de `cap17_liraql_ast.rs`. Criterio: las tres producciones exactas y sus funciones gemelas correctas.
+
+**Intermedio (analizar).** Predice EN PAPEL la variante exacta de error y el byte inicial de su span para: (a) `MATCH (p:Person RETURN p.name`; (b) `MATCH (p) RETURN`; (c) `MATCH (p) WHERE p.name = "Ana RETURN p`. Verifícalo con tres tests de humo. Pistas graduadas: (1) ¿qué `expect` revienta primero en (a) y qué token encuentra en su lugar?; (2) en (b), ¿qué token mira `parse_return_item` cuando busca una expresión?; (3) en (c), ¿dónde acaba el span de un string que nunca cierra?
+
+**Experto (crear).** Implementa la notación científica en `scan_number`: `1e10`, `2.5e3` y `1.5e-3`. Decisiones que te pide el ejercicio: ¿es un solo token (maximal-munch lo es) o `1e` + `10`? ¿qué variante de `LexError` produce `1e` sin exponente? ¿el signo del exponente exige tocar la gramática del cap. 17 o solo el lexer? Añade tests estilo `lex_flotante` y haz que el span del literal cubra TODO el lexema. Criterio: cero panics, error tipado en `1e`, y `parse` acepta `WHERE p.weight > 1.5e-3`.
+
+## Para profundizar
+
+- **Aho, Sethi, Ullman — *Compilers: Principles, Techniques, and Tools* (1986)**: el dragón rojo. Capítulos 2-4: escaneo, autómatas, parsing. La separación de fases de este capítulo es suya.
+- **Niklaus Wirth — *Compiler Construction* (Addison-Wesley, 1996; rev. 2005)**: un compilador completo de Oberon-0 en descendente recursivo, página a página. La defensa clásica de la técnica que hemos usado.
+- **Robert Nystrom — *Crafting Interpreters*** (craftinginterpreters.com): los capítulos «Scanning» y «Compiling Expressions» son la versión divertida y en Java/C de exactamente este capítulo, incluida la cadena de precedencia.
+- **rustc-dev-guide** (rustc-dev-guide.rust-lang.org): la sección del parser — descendente recursivo escrito a mano, con la discusión de por qué no una tabla.
+- **Documentación de `logos`, `pest` y `LALRPOP`**: los tres caminos industriales del ecosistema Rust, para cuando toque el apéndice comparativo.
+- **ISO/IEC 39075:2024 (GQL)** y la gramática de Cypher de openCypher: cómo se especifica formalmente un lenguaje de grafos real — nuestra EBNF del cap. 17 es su descendiente enana.
+
+## Mini-diálogo: la sala de máquinas
+
+> — Entonces el lexer es un `while` con un puntero, y el parser son funciones que se llaman. ¿Eso es todo? ¿Dónde está la parte difícil?
+
+> — En las fronteras. Que el lexer sea ciego dentro de los strings. Que gane siempre el token más largo. Que el span se derive del propio escaneo. Cada una de esas fronteras mal marcada se convierte en un bug que estalla dos puertas más allá de donde se originó — pregúntale al `<>` aquel.
+
+> — Pero LALR generaba todo esto de una tabla…
+
+> — Y por eso la portada del libro del dragón muestra un caballero peleando. Las tablas son potentes y opacas. Aquí, cuando algo falla, abres el depurador y la pila de llamadas te dice qué regla gramatical estaba intentando cumplirse. Para un lenguaje de diez reglas, verlo todo es la característica, no la limitación. Ya tendrás dragones que matar con generadores — cuando sepas qué hacen por dentro.
+
+---
+
+*(Próximo capítulo: 19 — Del AST al plan lógico. Aquí el texto ya es `Query`; ahora veremos cómo el planner la baja a un árbol de operadores — `NodeScan`, `Expand`, `Filter`, `Project` — y quién decide el orden en que se filtra y se expande.)*
+# Capítulo 19 — Del AST al plan lógico
+
+> *«El AST dice lo que pediste. El plan dice cómo se calcula. Confundirlos es la receta para ejecutar consultas equivocadas con mucho entusiasmo.»*
+
+## 19.0 La anécdota de la esquina
+
+En 1979, en el laboratorio de IBM en San José (California), el equipo de System R —el prototipo del que nacerían SQL/DS y DB2— publicó en SIGMOD un paper de una docena de páginas: *Access Path Selection in a Relational Database Management System*, firmado por Patricia Selinger, Morton Astrahan, Donald Chamberlin, Raymond Lorie y Thomas Price. El problema que abordaban es exactamente el nuestro, escalado: SQL permite decir **qué** quieres, y el motor tiene que decidir **cómo** conseguirlo. ¿Recorro la tabla entera o uso el índice? ¿Uno primero y filtro, o filtro primero? Su respuesta tuvo dos partes, y la segunda cambió la industria para siempre.
+
+La primera parte era casi burocrática: convertir la consulta en una **representación interna** sobre la que se pueda razonar — bloques de consulta, expresiones de álgebra relacional. La segunda fue el primer **optimizador basado en coste**: fórmulas que combinan CPU y E/S, programación dinámica para ordenar joins, «interesting orders» y estimación de selectividad. Medio siglo después, PostgreSQL y DB2 siguen corriendo sobre el esqueleto de aquel paper, y Selinger —que acabó siendo IBM Fellow en 1994 y ACM Fellow— sigue siendo LA referencia cuando alguien pregunta «¿quién inventó el optimizador?».
+
+Una precisión honesta antes de seguir: el paper no usa las palabras «plan lógico» ni «plan físico» — ese vocabulario maduró con Volcano y Cascadas en los años 90 y se popularizó con Catalyst en los 2010s. Habla de *query blocks* y *access paths*. Pero la idea de fondo es de 1979: **entre tu sintaxis y la ejecución hace falta una representación intermedia que un optimizador pueda reescribir sin tocar lo que escribiste**.
+
+Este capítulo construye la primera mitad de esa idea para LiraDB: el `LogicalPlan`, el árbol de operadores que declara qué calcular. La otra mitad —elegir entre planes equivalentes, como Selinger— es el capítulo 21. Hoy sólo preparamos el terreno sobre el que se razonará.
+
+## 19.1 Objetivo
+
+Los capítulos 17 y 18 completaron la cadena `texto → tokens → AST`. Este capítulo da el paso siguiente: convertir ese AST en un **plan lógico** — un árbol de operadores que declara *qué* hay que calcular, sin decidir aún *cómo* ejecutarlo (eso es el motor Volcano del capítulo 20) ni *cómo óptimo* (eso es el optimizador del capítulo 21).
+
+Vas a construir cuatro piezas, todas en `liradb-workspace/crates/vol2-liradb/src/cap19_plan_logico.rs`:
+
+1. `Bindings` — la tabla de variables ligadas (`p → NODE`, `r → EDGE`), que responde la pregunta crítica: ¿cómo se representan las variables de un patrón?
+2. `ScalarExpr` — la versión *resuelta* de `Expression`: sin spans, sin nombres sin ligar, con el tipo de binding incrustado.
+3. `LogicalPlan` — el árbol: `NodeScan`, `Expand`, `Filter`, `Project`, `CartesianProduct` (y `IndexSeek`, que hoy se declara pero no se construye).
+4. `lower()` — el binder que baja cláusula a cláusula un `Query` a su plan, con errores tipados y localizados.
+
+## 19.2 Problema
+
+Tienes el AST de la consulta estrella del libro:
+
+```
+MATCH (p:Person)-[:KNOWS]->(f:Person) WHERE p.name = "Ana" RETURN f.name
+```
+
+El `parse()` del capítulo 18 te dio un `Query` con `Span` en cada nodo. La pregunta suena tonta: ¿por qué no ejecutar ese AST directamente — un intérprete que recorra las cláusulas y consulte el store?
+
+Porque el AST es **sintaxis pura**. Contiene lo que pediste, en el orden en que lo escribiste, con los paréntesis que pusiste. No contiene: qué variables están ligadas en cada punto, qué comparaciones son imposibles, dónde empezaría un índice si lo hubiera, ni cómo se ordena el trabajo. Ejecutarlo directo significa resolver todas esas preguntas *sobre la marcha, en la hot path*, una y otra vez. Y significa que **nadie puede reordenar nada**: el orden de ejecución queda clavado al orden sintáctico — que es exactamente la libertad que Selinger necesitaba para poder optimizar.
+
+El pipeline completo quedaba así, y hoy rellenamos la tercera caja:
+
+```
+  "MATCH (p:Person)-[:KNOWS]->(f:Person) WHERE p.name = \"Ana\" RETURN f.name"
+       │   parse() (cap 18)  │    lower() (ESTE cap)    │  executor (cap 20)
+       └──► Query (AST) ─────┴──►  LogicalPlan ─────────┴──► filas de resultado
+                                 (cap 21 lo REESCRIBE, jamás toca el AST)
+```
+
+Y una advertencia que da título a una sección entera más abajo: un plan puede verse perfecto y estar equivocado. Nosotros mismos lo vivimos — el brief del libro traía un plan de ejemplo para esta consulta que omitía imponer `f:Person`. Se veía bien. Habría devuelto conocidos de cualquier etiqueta. De eso va la mitad de este capítulo.
+
+## 19.3 Modelo mental
+
+Piensa en un restaurante con estaciones.
+
+- El **AST es el pedido manuscrito del cliente**: «lo de siempre, sin cebolla». Es lo que pediste, con tu letra, tus tachones y tu ambigüedad — y con el papel a la vista: cada nodo lleva su `Span`, se puede señalar.
+- El **plan lógico es la comanda interna**: la orden de trabajo que el jefe de sala escribe con estaciones numeradas. *Estación 1: sacar todos los platos `Person`. Estación 2: por cada uno, seguir los enlaces `KNOWS` salientes. Estación 3: quedarse con los que cumplan las condiciones. Estación 4: emplatar `f.name`.* Dice qué produce cada estación y en qué orden alimenta a la siguiente — y **nada** sobre quién lo cocina ni con qué sartén.
+- El **plan físico** (capítulos 20-21) es quién cocina y con qué utensilio: ¿consultamos la alacena ordenada (el índice del capítulo 15) o vaciamos todos los armarios uno a uno (el scan)?
+- El **binder** —el corazón de este capítulo— es el jefe de sala que traduce tu papel a números de estación: cuando pides algo que no está en la carta, no improvisa; te dice «no tenemos `x`» **señalando la línea del folio** (`PlanError { kind, span }`).
+
+Para la consulta estrella, la comanda que produce `lower()` es este árbol — apréndelo, porque es el ejemplo canónico del resto del libro:
+
+```
+Project(f.name)
+  Filter(f:Person AND p.name = "Ana")
+    Expand(p, KNOWS, OUTGOING, f)
+      NodeScan(Person AS p)
+```
+
+Léelo de abajo arriba, como se lee toda comanda: la estación de abajo produce bindings que suben. `NodeScan` liga `p` a cada nodo `Person`; `Expand` recibe cada `p` y liga `f` (y la arista, si tuviera nombre) por cada `KNOWS` saliente; `Filter` descarta las combinaciones que no cumplen; `Project` emplata la columna de salida. El momento ¡ajá! llega al fijarte en una asimetría: `p:Person` alimenta el `NodeScan`, pero `f:Person` vive dentro del `Filter` como predicado. No es capricho — y entender por qué es entender el bug del brief. Antes de eso, veamos qué haría un novato.
+
+## 19.4 Primera solución
+
+La versión que escribiría cualquiera: un intérprete del AST, todo en una función.
+
+```rust
+// Solución ingenua: ejecutar el AST directamente.
+fn ejecutar_ast(q: &Query, store: &dyn GraphStore) -> Vec<Vec<Value>> {
+    let mut filas = Vec::new();
+    for path in &q.match_clause.patterns {
+        // recorrer el patrón recursivamente contra el store...
+        for nodo in store.iter_nodes() { /* ¿y si el label está en el 2º nodo? */
+            for arista in store.edges_of(nodo.id()) { /* ¿dirección? ¿tipo? */
+                // ¿esta variable ya estaba ligada? ¿existe siquiera?
+            }
+        }
+    }
+    // después: WHERE... ¿con qué tabla de símbolos? ¿y si falta una?
+    // después: RETURN... ¿en qué orden salen las columnas?
+    filas
+}
+```
+
+Funciona. Durante un rato. Los tests simples pasan: `(p:Person)` escanea y devuelve. Pero fíjate en los comentarios — cada uno es una pregunta que el intérprete responde *tarde, con el grafo ya a medio recorrer*, y cada una tiene una respuesta correcta que no es «resolverla ahora».
+
+## 19.5 Sus límites
+
+La solución ingenua se rompe de tres formas distintas, y conviene separarlas:
+
+1. **Errores descubiertos tarde.** Ejecuta `MATCH (p:Person) WHERE x.name = "A" RETURN p` con el intérprete: el error (`x` no está ligada por ningún patrón) aparece cuando el WHERE se evalúa, con el scan ya recorrido. El AST tiene el `Span` de `x.name` — pero el intérprete no tiene un lugar donde usarlo *antes* de tocar el store. La detección correcta es estática: antes de ejecutar nada, contra la tabla de variables que el MATCH liga.
+2. **Índices invisibles.** El capítulo 15 construyó un `HashIndex` que responde `name = "Ana"` en O(1). Un intérprete de AST no tiene dónde «ver» eso: no existe árbol que reescribir, así que la única implementación posible es el escaneo completo. Cada optimización futura exigiría tocar sintaxis — la libertad que Selinger pagó su paper por conseguir.
+3. **Resultados equivocados sin error.** La más traicionera: si el intérprete olvida imponer la etiqueta del nodo destino (¡exactamente el resbalón del brief!), la consulta devuelve conocidos de cualquier etiqueta. No crashea. No protesta. **Devuelve filas de más con cara de estar bien.** Ningún test que sólo compruebe «no revienta» lo detectaría.
+
+Lo que necesitamos es una fase separada que *liga* variables, *resuelve* expresiones, *verifica* tipos y *estructura* el trabajo — antes de ejecutar nada. Eso es un binder, y su salida es el plan.
+
+## 19.6 Solución evolucionada
+
+El código completo vive en `cap19_plan_logico.rs` (1.985 líneas, 40 tests). Vamos por piezas, y cada pieza con su porqué.
+
+### Bindings: la tabla de variables ligadas
+
+La pregunta crítica del capítulo —¿cómo se representan las variables de un patrón?— tiene aquí su respuesta: una tabla nombre → clase de elemento:
+
+```rust
+pub struct Bindings {
+    entries: Vec<(String, BindingKind)>,   // en orden de declaración
+}
+pub enum BindingKind { Node, Edge }
+```
+
+`declare()` rechaza duplicados; `get()` consulta. Y la decisión de diseño que más preguntas recibe: **un `Vec` ordenado, no un `HashMap`**. El motivo es determinismo: el mismo AST debe producir exactamente el mismo orden de ligadura en cada ejecución, porque ese orden se filtra a todo el sistema — el `Display` del plan, las columnas de `bound_variables()`, y el orden en que el executor del capítulo 20 materializará las filas. Un `HashMap` no garantiza orden de iteración: tendrías tests intermitentes y un `explain` no reproducible entre ejecuciones. El coste es O(n) por consulta — aceptable cuando n es «variables de un MATCH».
+
+Mientras el binder baja `(p:Person)-[:KNOWS]->(f:Person)`, la tabla crece en silencio: `{}` → `{p:NODE}` → `{p:NODE, f:NODE}`. El `Display` la pinta tal cual (`{p:NODE, r:EDGE}`), y ese texto es el que verás en mensajes y tests.
+
+### Variables internas: los anónimos también ligan
+
+Aquí está la primera misconception seria del capítulo: «`( )` anónimo no liga nada». **Falso.** Un nodo anónimo liga exactamente igual que uno nombrado — el executor necesita *nombrarlo todo* para saber qué hay en cada fila. La diferencia es que el binder le pone un nombre interno:
+
+```rust
+fn fresh_internal_var(&mut self, prefix: &str) -> String {
+    loop {
+        self.next_internal += 1;
+        let candidate = format!("_{prefix}{}", self.next_internal);
+        if !self.bindings.contains(&candidate) {
+            return candidate;          // _n1, _e2, ... saltando ocupados
+        }
+    }
+}
+```
+
+`_n1` para nodos, `_e2` para aristas. El bucle que salta nombres ocupados evita una colisión sutil: un usuario puede escribir `MATCH (_n1:Person)` — y su variable tiene tantos derechos como las internas. La alternativa descartada era `Option<String>` en cada operador: duplicaría los `match` por todo el motor y envenenaría `Expand { to }` para ahorrar un string. (Nota de honestidad: el `validate()` del capítulo 17 rechazaba el `()` desnudo por «inútil»; el binder es deliberadamente más permisivo y lo liga con interna — la divergencia está documentada en test: `lower_dos_patrones_con_anonimos_no_colisionan`.)
+
+### ScalarExpr: la expresión resuelta
+
+El WHERE y el RETURN del AST traen `Expression` — sintaxis con spans. El plan necesita su versión *resuelta*, `ScalarExpr`, y las diferencias son toda una filosofía:
+
+- **Sin `Span`.** El span vive y muere en el frente sintáctico: sirve para señalarte el fuente, y el plan ya no está en el fuente — está camino de ejecución. Cuando `lower()` detecta un error, usa el span *del AST* para el mensaje (fíjate en `build_scalar`: construye el error con `*span` del nodo sintáctico) y el plan resultante no arrastra posiciones. El plan es para siempre; el fuente, sólo al diagnosticar.
+- **`Var { name, kind }` con el tipo de binding incrustado.** En el AST, `p` es un nombre; en el plan, `p` ya sabe que es un NODE. El executor del capítulo 20 jamás re-resolverá nombres: no habrá tabla de símbolos en la hot path. Es la versión miniatura del patrón binder de las bases de datos reales (Kùzu documenta su pipeline como Parser → Binder → Planner por esta razón).
+- **`HasLabel { variable, label }` — una variante que no existe en la sintaxis.** En LiraQL no puedes escribir `f:Person` como expresión suelta: la construye el planner. Guárdala: es la protagonista de la próxima sección.
+
+Además de `and_all()` (la conjunción left-asociativa que apila predicados: `[a, b, c]` → `And(And(a, b), c)`, y `None` si la lista está vacía — sin predicados no hay `Filter`), `ScalarExpr::type_of()` hace la inferencia de tipos de la que hablaremos en dos secciones.
+
+### El bug del brief: el caso de estudio estrella
+
+Vamos a lo prometido. Cuando migramos este capítulo al workspace, el plan de ejemplo del brief original para la consulta estrella era:
+
+```
+Project(f.name)
+  Filter(p.name = "Ana")          ← ¡falta f:Person!
+    Expand(p, KNOWS, OUTGOING, f)
+      NodeScan(Person AS p)
+```
+
+Se ve bien. Es compacto. Y es **semánticamente incompleto**: el patrón pide `(f:Person)` y el plan no impone nada sobre la etiqueta de `f`. Ejecutado tal cual, el `Expand` ligaría `f` a cualquier vecino de una Persona vía `KNOWS` — conocidos con etiqueta `City`, `Paper`, lo que fuera. El WHERE sólo filtra por `p.name`, así que todas esas filas de más pasarían el filtro y llegarían a tu `RETURN f.name`. **Nadie se quejaría: la consulta devolvería más de lo pedido, con pinta de éxito.** Es el modo de fallo favorito de los binder descuidados, porque no produce errores — produce silencio con datos sucios.
+
+¿Por qué lo omitió el brief? Por una asimetría real del diseño: `NodeScan` tiene un campo `label`, y sólo puede absorber la etiqueta de *su* nodo — el inicial del camino. `p:Person` alimenta el scan. Pero `f` no tiene scan propio: nace en el `Expand`. Y la etiqueta de `f` tiene que vivir en algún sitio. La solución del código real:
+
+```rust
+let scan_label = if label_como_predicado {
+    if let Some(label) = &np.label {
+        predicates.push(ScalarExpr::has_label(&variable, label));  // baja al Filter
+    }
+    None                                                            // el scan queda sin label
+} else {
+    np.label.clone()                                                // sólo el nodo inicial
+};
+```
+
+El label del nodo inicial alimenta el `NodeScan` (es el único sitio donde una etiqueta NO es un predicado); el de los nodos de la cadena baja como predicado `HasLabel` y se conjunta en el `Filter` global. Por eso el plan correcto es `Filter(f:Person AND p.name = "Ana")`. Es el mismo patrón que Neo4j usa para los labels hasta que su optimizador reordena.
+
+Y la red de seguridad quedó tejida para siempre: el test canónico compara el texto EXACTO del plan,
+
+```rust
+assert_eq!(plan.to_string(),
+    "Project(f.name)\n  Filter(f:Person AND p.name = \"Ana\")\n    \
+     Expand(p, KNOWS, OUTGOING, f)\n      NodeScan(Person AS p)");
+```
+
+La lección que nos quedamos grabada (MIGRATION-PATTERN §23): *un plan puede ser «correcto de pinta» y semánticamente incompleto; al traducir un plan a código ejecutable, cada restricción del patrón —label, props, dirección, tipo— debe quedar representada en algún operador o predicado.* El test de display es la forma barata de que nada se pierda.
+
+### LogicalType: prometer poco, en un mundo sin esquema
+
+`type_of()` infiere el tipo de cada `ScalarExpr`: `LogicalType` con nueve variantes (`Any`, `Null`, `Bool`, `Int`, `Float`, `String`, `Bytes`, `Node`, `Edge`). La decisión clave es ser **conservadores**:
+
+- Una propiedad (`p.name`) tipa `Any`. No `String`. LiraDB es schemaless desde el capítulo 7: el store no garantiza que `name` exista ni que sea texto. Prometer un tipo que nadie garantiza genera falsos positivos — consultas legales rechazadas.
+- `Any` (y `Null`) son **comodines**: compatibles con todo en igualdad. Así, `p.edad = TRUE` pasa el plan (quizá alguien guarda Bool en `edad`) y se resuelve en ejecución.
+- `TypeMismatch` sólo cuando es **probable, no posible**: `WHERE 3` (un Int como condición), `p = TRUE` con `p` ligada a nodo, `TRUE < FALSE` (los Bool no son ordenables), `1 AND 2`. Concretos contra concretos incompatibles: error. Todo lo demás: adelante, y el capítulo 20 dirá la última palabra.
+
+La frontera entre igualdad y orden es deliberada: `eq_compatible` acepta iguales entre sí, numéricos cruzados (`Int` vs `Float` promociona) y comodines; `order_compatible` sólo numéricos y strings — porque `Node < Node` o `Bool < Bool` no significan nada (¿`TRUE < FALSE`?), mientras que `a = b` entre nodos sí (identidad: ¿es el mismo nodo? — el capítulo 20 lo usará para self-loops).
+
+### LogicalPlan: el árbol de operadores
+
+Con las piezas anteriores, el árbol es casi una declaración:
+
+- **`NodeScan { variable, label }`** — la hoja: liga `variable` a cada nodo con `label` (todos si `None`). Es siempre el punto de partida de un camino.
+- **`Expand { input, from, rel_variable, rel_type, direction, to }`** — un tramo de relación: por cada binding de `from` que le llega, recorre las aristas de `rel_type` (todas si `None`) en `direction` y liga `to` (y la arista, si el patrón la nombra: `-[r:KNOWS]->` liga `r`). Un camino de tres nodos encadena dos `Expand`, como muñecas rusas.
+- **`Filter { input, predicate }`** — se queda con los bindings que cumplen el predicado (WHERE + todo lo inline, conjuntado).
+- **`Project { input, items }`** — el RETURN: una columna por proyección, con alias (`AS nombre`) o nombre derivado (`p.name` se llama `p.name`).
+- **`CartesianProduct { left, right }`** — patrones disjuntos separados por coma: `MATCH (a:Person), (b:City)` produce el producto de sus matches, porque eso ES la coma en Cypher. Correcto pero ingenuo — el capítulo 21 lo reordenará. Que dos patrones *compartan* variables es otro cantar: exige un join, y eso hoy es error (`SharedPatternVariables`, con el mensaje apuntando al capítulo que lo resolverá).
+- **`IndexSeek`** — el operador que *no* construye nadie hoy. Está declarado en el enum con sus `ids: Vec<NodeId>` ya resueltos, porque el plan lógico debe poder **expresar** el uso de índice para que alguien pueda elegirlo; pero elegir es optimizar, no planificar. La regla `index_seek` del capítulo 21 reescribirá `Filter(name = "Ana") + NodeScan` en `IndexSeek(Person.name = "Ana")`. Si lo construyéramos aquí, mezclaríamos capas y el binder tendría que conocer catálogos y estadísticas que no le pertenecen.
+
+El árbol es inmutable y sin magia: los hijos van en `Box` dentro de cada variante, y lo que el `Display` dibuja es exactamente la estructura. `bound_variables()` la recoge en orden de ligadura y sin duplicados — es exactamente la API que el push-down del capítulo 21 necesita: *un predicado sólo puede bajar hasta un operador si sus variables ya están ligadas allí*.
+
+### lower(): tres pasos, cláusula a cláusula
+
+La función pública es `lower(&Query) -> Result<LogicalPlan, PlanError>` (más el atajo `query.lower()`):
+
+1. **MATCH** — un fragmento de plan por patrón (`lower_path` encadena `NodeScan` + `Expand`s); antes de bajar cada patrón, se comprueba que no comparta variables con lo ya ligado (eso exigiría join → `SharedPatternVariables`); los fragmentos se combinan con `reduce` en `CartesianProduct`. Los predicados inline (labels de la cadena, props `{edad: 30}` → `p.edad = 30`) se acumulan.
+2. **WHERE** — `build_scalar` resuelve la expresión contra `Bindings` (aquí muere toda variable sin ligar, con su span del AST); `type_of` exige raíz `Bool` o `Any` (`WHERE 3` → `TypeMismatch { context: "WHERE" }`); el predicado se añade a la lista y `and_all` lo conjunta todo en UN `Filter`.
+3. **RETURN** — cada item se resuelve, se type-checkea (sí: `RETURN NOT 3` se caza aquí, no en ejecución) y forma una `Projection`; el plan se envuelve en `Project`, que es siempre la raíz.
+
+Los errores son `PlanError { kind, span }` — el mismo patrón `{ kind, span }` de `QueryError` y `ParseError`, con `write_span_suffix` para el `(en start..end)` y `std::error::Error` implementado. Siete variantes, cada una con su porqué: `EmptyMatch`/`EmptyReturn` (sólo alcanzables con ASTs construidos a mano — `parse()` ya lo impide; el binder no confía en nadie), `UnknownVariable`, `DuplicateVariable` (declarar dos veces en todo el MATCH), `VariableRebind` (re-ligar *dentro* del mismo patrón — eso es un ciclo, y los ciclos los resuelve el executor del cap. 20, no el plan), `SharedPatternVariables` (el join pendiente) y `TypeMismatch`.
+
+Fíjate en la doble barrera que forma esto con el `validate()` del capítulo 17: `validate()` es UX (reporta todos los errores de golpe, para arreglar la query en una pasada); `lower()` es la puerta de corrección — no confía en que alguien validó antes, porque también llega con ASTs programáticos. Dos capas, la misma invariante: la corrección la garantiza la que no se puede saltar.
+
+### El Display canónico: la cara pública del plan
+
+```text
+Project(f.name)
+  Filter(f:Person AND p.name = "Ana")
+    Expand(p, KNOWS, OUTGOING, f)
+      NodeScan(Person AS p)
+```
+
+Dos espacios por nivel; el tramo de relación se pinta como en Cypher (`r:KNOWS`, `KNOWS`, `r`, o `ANY` si el patrón no restringe); sin etiqueta, `NodeScan(ANY AS p)`. Y dentro de los predicados, **paréntesis mínimos por precedencia** `NOT > AND > OR`: `b:Person AND (a.age > 30 OR b.age > 40)` necesita los paréntesis; `a AND b AND c` no. La sutileza (nos mordió en migración): la misma expresión se envuelve distinto según cuelgue de un `AND`, un `OR` o un `NOT` — son reglas por contexto, no un flag global.
+
+¿Por qué tanto esmero en un pretty-printer? Porque este texto no es decoración: es la base de `liradb explain` (capítulo 21) y el oráculo de los tests de lowering. Ser canónico —idempotente, sin ruido, sin ambigüedad— es lo que permite escribir `assert_eq!(plan.to_string(), "...")` y dormir tranquilos. Fue, literalmente, la red que cazó al bug del brief.
+
+## 19.7 Prueba de fuego
+
+Los 40 tests del módulo ejercitan el capítulo entero. Los que prueban las promesas centrales:
+
+- **El plan correcto, texto y estructura**: `lower_display_ejemplo_canonico_del_brief` y `lower_estructura_del_ejemplo_canonico` (el predicado es exactamente `And(HasLabel(f, Person), p.name = "Ana")`, y el `Filter` queda ENCIMA del `Expand` — sin push-down).
+- **Anónimos e internas**: `lower_nodo_anonimo_genera_variable_interna` (`Expand(p, KNOWS, OUTGOING, _n1)`), `lower_dos_patrones_con_anonimos_no_colisionan`.
+- **Inline y conjunción**: `lower_propiedades_inline_bajan_al_filter`, `lower_where_y_props_inline_se_conjuntan_en_un_filter`, `lower_path_de_tres_nodos_encadena_expands` (`Filter(b:Person AND c:Person)` — dos labels bajando).
+- **Direcciones y relaciones**: `lower_direccion_entrante_y_sin_definir` (`INCOMING`/`UNDIRECTED`), `lower_relacion_con_variable_y_sin_tipo` (`r:KNOWS`, `ANY`).
+- **La coma**: `lower_patrones_disjuntos_cartesian_product` y `lower_patrones_que_comparten_variables_exigen_join`.
+- **Errores localizados**: `lower_where_variable_no_ligada` — y fíjate en el detalle: el span apunta al ACCESO ofensivo (`x.name`), no a toda la cláusula. Detectado aquí, con el fuente aún a mano, no en ejecución. Más `lower_where_no_booleano`, `lower_where_igualdad_imposible`, `lower_where_property_schemaless_pasa` (el caso que NO se rechaza), `lower_return_item_type_checkeado`.
+- **El pipeline entero**: `integracion_parse_lower_plan_pipeline_completo` (parse → validate → lower → `bound_variables()` = `[p, f]`), `plan_display_es_estable_e_idempotente`, `plan_error_display_localiza_y_es_std_error`.
+
+¿Y el segundo escenario de fallo del capítulo —el plan que escanea todo cuando existiría un índice? Está ahí, a propósito, esperándote: con un millón de `Person` y una sola `Ana`, este plan hace que `NodeScan` produzca un millón de filas para que el `Filter` deje una. El `HashIndex` del capítulo 15 sabría responder `name = "Ana"` sin mover un músculo. El operador `IndexSeek` ya existe en el enum... y `lower()` jamás lo construye. Si te hierve la sangre mirando ese `Filter` arriba del árbol: bien. Esa indignación es el programa del capítulo 21. Si te saltas este capítulo, el síntoma es el de siempre: errores de nombres descubiertos tarde (o nunca) y resultados con filas de más y sin diagnóstico.
+
+## 19.8 Qué hemos sacrificado
+
+1. **Sin push-down**: el `Filter` queda arriba del MATCH completo. Correcto, ingenuo, deliberado — el «antes» del capítulo 21.
+2. **Sin join entre patrones**: compartir variables entre comas es error tipado, no join implícito. Mejor un no rotundo que un join a medias.
+3. **Sin ciclos ni re-binding**: `(a)-[:X]->(a)` es `VariableRebind`. Los ciclos son trabajo del executor, no del árbol.
+4. **Inferencia tímida**: casi todo lo que toca una propiedad pasa el plan. El coste: algunos errores de tipos saltan en ejecución (capítulo 20) en vez de aquí. El beneficio: nunca rechazamos una consulta legal.
+5. **`IndexSeek` declarado pero no construido**: el binder no conoce catálogos ni estadísticas — y no debe conocerlos.
+
+## 19.9 Cómo lo hace una BBDD real
+
+- **PostgreSQL** divide la vida de una consulta en parse → rewrite → plan → execute, y su planificador trabaja sobre una representación interna de la consulta. `EXPLAIN (VERBOSE)` te enseña el árbol con el targetlist (las expresiones de salida) de cada nodo: es lo más parecido a «ver el plan lógico» que muestra por defecto — cada nodo de scan, join y sort con sus columnas. La descendencia del DP de Selinger vive ahí dentro.
+- **Catalyst (Spark SQL)** es la encarnación moderna y más pedagógica de la separación: árbol lógico **sin resolver** → *Analyzer* que resuelve referencias contra el catálogo (nuestro binder: `Var { kind }` incrustado es exactamente «resolved») → reglas de optimización lógica (predicate pushdown, column pruning — el capítulo 21) → *physical planning* con estrategias que eligen el operador físico.
+- **Kùzu**, la base de datos de grafos embebida que inspiró parte de la arquitectura de LiraDB, documenta su pipeline como Parser → **Binder** → Planner → Optimizer → Executor. Su binder resuelve expresiones contra el catálogo igual que el nuestro contra `Bindings` — la palabra que dimos a nuestra fase es la palabra del oficio.
+- **Neo4j** muestra con `EXPLAIN` el plan de una consulta Cypher con operadores cuyo parentesco con los nuestros es directly visible: `NodeByLabelScan`, `Expand (All)`, `Filter`, `Projection`, `CartesianProduct`. Los labels que no puede absorber el scan bajan como predicados — el mismo arreglo que curó nuestro bug del brief.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: en Catalyst, ¿qué fase corresponde a nuestro `lower()` y cuál al capítulo 21? ¿Qué nodo de nuestro plan es el «resolved» del que habla la documentación de Spark?
+- *Intermedio*: PostgreSQL tipa las columnas con esquema; LiraDB tipa las propiedades a `Any`. ¿Qué errores puede detectar PostgreSQL en plan que nosotros dejamos para ejecución — y qué consultas legales podría rechazar si prometiéramos tipos como él?
+- *Experto*: el optimizador de Selinger sólo consideraba planes "left-deep" en su DP. Busca por qué (pista: tamaño del espacio de búsqueda) y estima cuántos órdenes hay para 5 relaciones si permites bushy trees.
+
+## 19.10 Lo que te llevas
+
+- **El AST es sintaxis; el plan es álgebra**: qué pediste vs cómo se calcula. Ejecutar el AST directo clava el orden de ejecución al orden sintáctico y mata la optimización.
+- **`Bindings` responde la pregunta crítica**: variables ligadas en orden de declaración, `Node`/`Edge`, deterministas para tests, explain y executor.
+- **Los anónimos también ligan** (`_n1`, `_e2`): el executor necesita nombrarlo todo.
+- **`ScalarExpr` es `Expression` resuelta**: sin span (el span muere en parse), con el `kind` incrustado (nadie re-resuelve nombres después), y con `HasLabel` — una variante que no existe en la sintaxis y que fabrica el planner.
+- **El bug del brief**: un plan puede verse perfecto y estar incompleto; las filas de más no se quejan. Cada restricción del patrón debe aterrizar en un operador o predicado — y el test canónico del display es la red.
+- **Tipado conservador**: `Any` = «no prometido» por schemaless; se rechaza lo PROBABLE, jamás lo meramente posible.
+- **El plan es deliberadamente ingenuo**: `Filter` arriba y `CartesianProduct` son el «antes» que da sentido al capítulo 21. Planificar no es optimizar — la separación es la lección de 1979.
+
+## 19.11 Ojo, cuidado con…
+
+- **Confundir los tres errores de variables**: `DuplicateVariable` (dos veces en todo el MATCH), `VariableRebind` (dos veces en el MISMO patrón — ciclos: capítulo 20), `SharedPatternVariables` (entre patrones con coma — join: capítulo 21). Tres confusiones, tres capítulos.
+- **Buscar `HasLabel` en la gramática**: no está. Es un predicado fabricado — la sintaxis no sabe de predicados, el plan sí.
+- **Esperar optimización del binder**: si te tienta bajar ese `Filter` «ya que estamos», recuerda qué capítulo es este. El binder construye; el optimizador reescribe.
+- **Creer que `p:Person` SIEMPRE baja al `Filter`**: sólo el label del nodo inicial alimenta el `NodeScan`; el resto baja como predicado. Confundirlo es reeditar el bug del brief al revés.
+
+## 19.12 Pin de batalla
+
+> *«Un plan lógico incompleto no lanza errores: devuelve filas de más con cara de éxito. Por eso el test del plan es texto exacto, no vibes.»*
+
+## 19.13 Si solo lees 30 segundos
+
+`lower()` convierte el AST en un árbol de operadores: `NodeScan` liga la variable inicial (y absorbe SU label), `Expand` encadena cada tramo de relación ligando el siguiente nodo, y TODO lo demás —labels de la cadena, propiedades inline, el WHERE— se conjunta en un único `Filter` arriba, deliberadamente ingenuo. `Project` corona el árbol con el RETURN. Las variables viven en `Bindings` (orden de declaración; los anónimos como `_n1`), las expresiones bajan resueltas a `ScalarExpr` (sin spans, con el tipo incrustado), y los errores —variable no ligada, tipos imposibles, re-ligaduras— se detectan aquí, con span, antes de tocar el store. El `Display` del plan es canónico: base de `liradb explain` y red que cazó al bug del brief.
+
+## 19.14 Una historia pequeña
+
+El bug del brief nos enseñó más que cualquier sección limpia de este capítulo. El plan de ejemplo llevaba meses impreso en el documento: cuatro líneas, alineadas, con su `Expand` y su `NodeScan` — y sin `f:Person` por ninguna parte. Había sobrevivido revisiones porque *se leía bien*. El día que lo convertimos en un test con `assert_eq!` sobre el texto exacto del plan, la ausencia saltó a la primera ejecución: el plan real tenía un predicado más que el del brief. ¿Cuál de los dos estaba mal? El que devolvía conocidos con etiqueta `City`, claro — pero nadie lo habría notado sin el test, porque las consultas de prueba nunca mezclaban etiquetas en los vecinos. Desde entonces, en LiraDB, ningún plan de ejemplo entra al libro sin su test canónico de display. La sintaxis se lee; el plan se verifica.
+
+## Ejercicios resueltos
+
+**1. Escribe el `Display` completo del plan de `MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN b` y sus `bound_variables()`.**
+
+De abajo arriba: el nodo inicial `a` alimenta el scan con SU label → `NodeScan(Person AS a)`; el tramo encadena → `Expand(a, KNOWS, OUTGOING, b)`; el label de `b` (nodo de la cadena, ¡lección del brief!) baja como predicado → `Filter(b:Person)`; y el RETURN corona → `Project(b)`. Junto: `Project(b)` / `  Filter(b:Person)` / `    Expand(a, KNOWS, OUTGOING, b)` / `      NodeScan(Person AS a)` (indentación de 2 espacios por nivel). Variables: `["a", "b"]`, en orden de ligadura. Patrón verificable: `lower_path_de_tres_nodos_encadena_expands` muestra el mismo mecanismo con dos tramos.
+
+**2. ¿Por qué `WHERE p.edad = TRUE` pasa el plan, pero `WHERE p = TRUE` no, siendo `p` un nodo?**
+
+`p.edad` es un acceso a propiedad en un motor schemaless (capítulo 7): tipa `Any`, y `Any` es comodín — compatible con cualquier cosa en igualdad. La comparación concreta (¿es Bool? ¿existe?) se resuelve en ejecución. En cambio, `p` tipa `Node`: `Node` vs `Bool` son dos tipos concretos incompatibles, y eso el plan SÍ lo sabe → `TypeMismatch { context: "comparación de igualdad", expected: Bool, got: Node }`, con span de la comparación. La frontera exacta: rechazamos lo PROBABLE, aplazamos lo POSIBLE. Tests: `lower_where_property_schemaless_pasa` (pasa) y `lower_where_igualdad_imposible` (no pasa).
+
+## Ejercicios propuestos
+
+**Esencial (recordar + aplicar — retrieval puro).** Cierra el libro y, DE MEMORIA, dibuja el árbol del plan y escribe su `Display` exacto para `MATCH (a:Person)-[:KNOWS]->(b:Person) WHERE a.age > 30 OR b.age > 40 RETURN a, b`. Atención a los detalles que separan al que sabe del que reconoce: ¿dónde acaba el label de `b`?, ¿el `OR` necesita paréntesis dentro del `AND`... y al revés?, ¿qué pinta `Expand` entre `a` y `b`? Verifica después con el patrón del test `plan_display_es_estable_e_idempotente`. *Pistas* (sólo si te atascas): (1) sólo UN label alimenta un scan; (2) `NOT > AND > OR`, con paréntesis por contexto; (3) `Expand(from, rel, DIRECCIÓN, to)`. *Criterio*: árbol y texto exactos — el `Filter` debe decir `b:Person AND (a.age > 30 OR b.age > 40)`.
+
+**Intermedio (analizar).** Toma la consulta estrella y los dos planes candidatos: el del brief original (sin `f:Person`) y el de `lower()`. (a) Explica con un grafo concreto —dos `Person` y un `City` vecino vía `KNOWS`— qué filas devuelve cada uno. (b) ¿Por qué ningún usuario protestaría en un grafo homogéneo? (c) Escribe el test estructural que cazaría la regresión para siempre: qué `assert_eq!`/`matches!` sobre el predicado del `Filter`. *Pistas*: (1) el `Filter` del plan del brief sólo menciona a `p`; (2) ¿qué etiqueta tiene el vecino del grafo de prueba?; (3) `lower_estructura_del_ejemplo_canonico` ya lo hace — entiende cada línea antes de copiarla. *Criterio*: identificar el predicado ausente, el modo de fallo silencioso y el test como vacuna.
+
+**Experto (crear).** Implementa `RETURN *`: proyectar TODAS las variables ligadas por el MATCH, en orden de declaración (`Project(p, f)` para la consulta estrella). Decide y documenta: ¿proyectas las variables internas `_n1` o las excluyes — y por qué? ¿Qué le pasa al `Display` con alias? Escribe el test de display y uno con un patrón de tres nodos (¿en qué orden salen `a`, `b`, `c`?). *Pistas*: (1) ¿qué estructura conserva el orden de ligadura y qué método lo itera?; (2) mira el paso 3 de `lower()` — ¿dónde viven aún los bindings en ese punto?; (3) `Projection::output_name()` ya sabe derivar nombres de `Var`. *Criterio*: display exacto, orden de declaración, decisión explícita sobre internas, tests verdes con `cargo test -p vol2-liradb`.
+
+## Para profundizar
+
+- **Selinger, Astrahan, Chamberlin, Lorie y Price, «Access Path Selection in a Relational Database Management System» (SIGMOD 1979)** — el paper de la anécdota: el nacimiento de la representación intermedia y del optimizador de coste. Doce páginas legibles que siguen vivas (ACM DL, 10.1145/582095.582099).
+- **Graefe & McKenna, «The Volcano Optimizer Generator» (VLDB 1993)** y **Graefe, «Volcano—An Extensible and Parallel Query Evaluation System» (IEEE TKDE 1994)** — donde el vocabulario lógico/físico y los árboles de transformación se formalizan (y de donde viene el modelo del capítulo 20).
+- **Armbrust et al., «Spark SQL: Relational Data Processing in Spark» (SIGMOD 2015)** — Catalyst: análisis → optimización lógica → plan físico, explicado por sus autores. El paralelo moderno más claro de este capítulo.
+- **Kùzu, documentación de arquitectura** (docs.kuzudb.com) — el pipeline Parser → Binder → Planner → Optimizer de una base de grafos embebida real.
+- **Neo4j Manual, «Execution Plans»** — `NodeByLabelScan`, `Expand (All)`, `Filter`, `Projection`: nuestros operadores con nombre de producción.
+- **PostgreSQL docs, `EXPLAIN (VERBOSE)`** — targetlists por nodo: el plan interno asomando.
+- **Ramakrishnan & Gehrke, «Database Management Systems»**, capítulos de query processing; **CMU 15-445**, lecciones de query execution y optimization.
+
+## Mini-diálogo: la comanda nocturna
+
+> — A ver si lo pillo. El capítulo 18 me dio el AST, y en vez de ejecutarlo… ¿lo he vuelto a convertir en otra cosa? ¿No estábamos haciendo una base de datos y no una fábrica de árboles?
+
+> — Es el último árbol, te lo prometo. Pero fíjate en lo que ha cambiado de manos: el AST tenía tu sintaxis; el plan tiene el trabajo repartido en estaciones. La diferencia se ve el día que quieres cambiar algo — porque el plan se puede reescribir sin tocarte a ti.
+
+> — ¿Y el bug del brief? Un plan que se veía bien y devolvía conocidos de cualquier etiqueta.
+
+> — Ese es el examen de verdad del capítulo. La sintaxis se lee y parece correcta; el plan se ejecuta y miente en silencio. Por eso el test compara el texto exacto: «parecía bien» no es una categoría de ingeniería.
+
+> — Y el `Filter` ahí arriba, escaneando un millón de nodos con un índice al lado…
+
+> — Lo ves, ¿verdad? Esa comezón es el producto real de este capítulo. El 21 viene a rascar justo ahí.
+
+---
+
+*(Próximo capítulo: 20 — El motor de ejecución Volcano. El plan ya declara qué calcular; ahora alguien tiene que recorrerlo operador a operador, fila a fila — y descubrir qué vale `p.edad` cuando no existe.)*
+# Capítulo 20 — El motor de ejecución (modelo Volcano)
+
+> *«Una consulta no se calcula. Se va pidiendo.»*
+
+## 20.0 La anécdota de la esquina
+
+En 1994, Goetz Graefe publicó en *IEEE Transactions on Knowledge and Data Engineering* un sistema de investigación llamado **Volcano** («Volcano — An Extensible and Parallel Query Evaluation System»). No fue el primer motor de consultas, ni el más rápido, ni el que más gente usó. Pero dejó una idea tan limpia que, treinta años después, casi todos los motores que existen la implementan: **cada operador de un plan es un iterador con tres métodos — `open`, `next`, `close` — y el resultado se construye pidiendo una fila cada vez**. El consumidor tira de la cadena; nadie calcula nada que no se haya pedido.
+
+La genealogía de Graefe es la columna vertebral de los motores modernos: su sistema anterior (EXODUS) y Volcano engendraron el framework de optimización **Cascades** (1995), que es literalmente el optimizador con el que Microsoft construyó **SQL Server**. Y el modelo de ejecución de Volcano —el «iterator model» que los apuntes de CMU 15-445 describen como «el más común, usado por casi todos los DBMS orientados a fila»— es el que siguen PostgreSQL, MySQL, Neo4j y el nuestro. Cuando en este capítulo escribas `fn next(&mut self) -> Result<Option<Row>, ExecError>`, estarás escribiendo la misma firma conceptual que Graefe describió en 1994. Bienvenido al club.
+
+## 20.1 Objetivo
+
+Al terminar este capítulo habrás **cerrado el círculo**: texto → tokens → AST → plan lógico → **filas**. Los caps. 17-19 construyeron la mitad izquierda de esa cadena; aquí construimos la mitad que falta y ejecutamos consultas completas desde una cadena de texto.
+
+En concreto, vas a construir:
+
+1. `PhysicalOperator` — el trait con la tríada Volcano (`open`/`next`/`close`) más observabilidad (`name`, `rows_produced`, `collect_metrics`).
+2. Ocho operadores — `NodeScanOp`, `IndexSeekOp`, `ExpandOp`, `FilterOp`, `ProjectOp`, `CartesianProductOp`, `LimitOp`, `DistinctOp`.
+3. `Row` y `Cell` — la fila que circula por el pipeline: variables ligadas a nodos, aristas o escalares.
+4. `eval_scalar` — evaluación de `ScalarExpr` con semántica NULL de SQL/Cypher y lógica trivalente con cortocircuito real.
+5. `Executor` + `run(src, store)` — el ciclo completo y el hito del libro.
+
+## 20.2 Problema
+
+Tienes un `LogicalPlan` (cap. 19): un árbol bonito como
+
+```
+Project(f.name)
+  Filter(p.name = "Ana")
+    Expand(p, KNOWS, OUTGOING, f)
+      NodeScan(Person AS p)
+```
+
+¿Qué significa «ejecutarlo»? La pregunta esconde cuatro decisiones incómodas:
+
+- **¿Cuándo se calculan las filas?** ¿Todas de golpe, o una a una? (Veremos que esta decisión lo cambia todo.)
+- **¿Qué ES una fila aquí?** Abajo del `Project` las filas son *variables ligadas a elementos del grafo* (`p` → un nodo, `r` → una arista); arriba son *columnas de resultado*. Y `RETURN p` exige poder devolver un nodo entero, no un `Value`.
+- **¿Qué significa `WHERE` cuando una propiedad no existe?** Nuestro grafo es schemaless (cap. 7): `p.nick` puede no estar. ¿Eso es false? ¿Un error?
+- **¿Quién limpia si algo falla a mitad?** Si el `Filter` revienta en la fila 3 de un millón, ¿quién cierra los cursores del scan?
+
+Este capítulo responde las cuatro con un solo modelo.
+
+## 20.3 Modelo mental
+
+Piensa en una **cadena de montaje** al revés de lo que sueles imaginar: aquí **cada estación pide la pieza a la anterior solo cuando la necesita**. Nadie apila el almacén entero en la primera estación esperando a que la última empiece a trabajar.
+
+```
+        (el cliente: tu terminal)
+              ▲
+        ┌─────┴─────┐
+        │  Project  │  "dame la siguiente fila"
+        └─────┬─────┘
+         next ▲ │ Row
+        ┌─────┴─────┐
+        │  Filter   │  "pásame otra; la evalúo y decide"
+        └─────┬─────┘
+         next ▲ │ Row
+        ┌─────┴─────┐
+        │  Expand   │  "por esta fila, sus aristas, una a una"
+        └─────┬─────┘
+         next ▲ │ Row
+        ┌─────┴─────┐
+        │ NodeScan  │  "el siguiente nodo del almacén (GraphStore)"
+        └───────────┘
+```
+
+La consulta se evalúa en **pull** (Graefe lo llamaba *demand-driven*): la petición baja, la fila sube. Dos consecuencias inmediatas:
+
+1. **La primera fila sale sin esperar a la última.** El `Project` ya puede imprimir mientras el `NodeScan` sigue recorriendo el grafo.
+2. **Si la raíz deja de pedir, la cadena entera se detiene.** Eso ES un `Limit`: cuando ha emitido sus `max` filas, devuelve `None`, y nadie vuelve a pedirle nada al árbol de abajo.
+
+El momento ¡ajá! de este capítulo: **una consulta no es un cálculo, es una negociación de peticiones**. «¿Tienes otra fila?» — «Sí, toma» — «¿Tienes otra?» — «No: agotado».
+
+## 20.4 Primera solución
+
+El novato escribe un intérprete recursivo que materializa cada operador en un `Vec`:
+
+```rust
+// Solución ingenua: cada operador produce TODAS sus filas de golpe.
+fn eval_plan(plan: &LogicalPlan, store: &dyn GraphStore) -> Vec<Row> {
+    match plan {
+        LogicalPlan::NodeScan { .. } => /* iterar TODOS los nodos → Vec */,
+        LogicalPlan::Filter { input, predicate } => {
+            let rows = eval_plan(input, store);      // materializo la entrada
+            rows.into_iter()                         // …y luego filtro
+                .filter(|r| evalua(predicate, r))
+                .collect()
+        }
+        /* …etc… */
+    }
+}
+```
+
+Sobre nuestro grafo demo (6 nodos, 6 aristas) funciona. Los tests pasan. Y durante un rato nadie se queja.
+
+## 20.5 Sus límites
+
+Hasta que el grafo tiene un millón de nodos y alguien escribe «dame una persona». Con el modelo materializador:
+
+1. **`LIMIT 1` sobre 1M de filas calcula el millón.** El `NodeScan` llena un `Vec` con 1.000.000 de filas, el `Filter` produce otro `Vec`, el `Project` otro… y al final alguien se queda con la primera y tira 999.999. La latencia de la primera fila es igual al trabajo total.
+2. **Memoria O(n) por operador intermedio.** Cada nivel del árbol duplica el resultado en memoria.
+3. **Un error a mitad deja basura construida.** Si el `Filter` revienta en la fila 3, los `Vec` gigantes ya existen; y nadie «cierra» nada, porque no hay nada que cerrar: el ciclo de vida no existe.
+4. **`RETURN p` no cabe.** `Vec<Vec<Value>>` no puede contener un *nodo entero*; necesitamos que la celda de una fila sea un escalar, un nodo o una arista.
+
+La raíz del problema es la misma de siempre: **mezclar dos decisiones que deben ir separadas** — *qué* produce cada operador (semántica) y *cuándo* lo produce (estrategia). El modelo Volcano las separa de raíz.
+
+## 20.6 Solución evolucionada
+
+### El contrato: el trait `PhysicalOperator`
+
+```rust
+pub trait PhysicalOperator {
+    fn open(&mut self) -> Result<(), ExecError>;
+    fn next(&mut self) -> Result<Option<Row>, ExecError>;
+    fn close(&mut self) -> Result<(), ExecError>;
+    fn name(&self) -> &'static str;
+    fn rows_produced(&self) -> u64;
+    fn collect_metrics(&self) -> Vec<(&'static str, u64)> { /*…*/ }
+}
+```
+
+¿Por qué la tríada y no solo `next`? **`open`** prepara y resetea: posiciona el cursor del scan, materializa lo imprescindible (veremos el caso del cartesiano), y deja el operador listo para re-ejecutarse tras un `close` (testeado: `nodescan_ciclo_open_close_reopen`). **`close`** libera y se propaga a los hijos, y es idempotente. Y lo más importante: el `Executor` cierra **siempre**, también tras error — como un `defer`. Si el consumidor aborta en la fila 3, quien limpia es el `close` del ciclo, no la suerte.
+
+### La moneda común: `Row` y `Cell`
+
+```rust
+pub enum Cell {
+    Scalar(Value),   // reutiliza el Value del cap. 7
+    Node(Node),      // RETURN p → el nodo entero
+    Edge(Edge),      // RETURN r → la arista entera
+}
+
+pub struct Row { entries: Vec<(String, Cell)> }
+```
+
+`Row` es la materialización en ejecución de los `Bindings` del cap. 19: el scan **liga** (`row.bind("p", Cell::Node(nodo))`), el `Expand` **extiende** (clona la fila y liga relación y destino), el `CartesianProduct` **concatena** dos filas de patrones disjuntos (`merge`), y el `Project` produce la fila de salida re-ligando cada `Projection` a su `output_name()`. ¿Por qué un `Vec<(String, Cell)>` y no un array posicional? Porque el nombre viaja con la celda: el binder del cap. 19 ya validó las variables, y aquí solo buscamos por nombre (`row.get("p")`); además `RETURN p, p` produce dos columnas con el mismo nombre y ambas se conservan. Con un único tipo de fila, el trait queda uniforme — no hacen falta dos jerarquías (filas de bindings vs filas de salida).
+
+### Los ocho operadores, cada uno con su porqué
+
+- **`NodeScanOp`** — la hoja: su cursor es un iterador perezoso sobre `GraphStore::iter_nodes` (cap. 8) que se posiciona en `open()`. El orden es el del store: determinista, requisito para tests. Un detalle fino de Rust: en `open()` copiamos la referencia (`let store = self.store;`) antes de guardar el iterador, para que el préstamo del cursor viva tanto como el store y no como el `&mut self` del método.
+- **`IndexSeekOp`** — liga exactamente los `NodeId` que recibe. La gracia es NO escanear; pero **la selección del índice no es cosa suya**: quien lo construye ya resolvió la búsqueda (con un índice del cap. 15). Elegir este operador en vez del scan es trabajo del optimizador (cap. 21). Si un ID no existe, el índice está desactualizado: `ExecError::UnknownNode`.
+- **`ExpandOp`** — el bucle anidado clásico: por cada fila del input (bucle externo), recorre sus aristas candidatas por dirección (bucle interno) usando `out_edges`/`in_edges` como índice de adyacencia. UNDIRECTED recorre out+in y cuenta el self-loop UNA vez (Dani→Dani aparece una sola vez).
+- **`FilterOp`** — deja pasar las filas cuyo predicado evalúa a TRUE. **FALSE y NULL se descartan** — y aquí está la diferencia sutil: NULL no es false, es *desconocido*. Por eso `WHERE p.missing > 30` saca 0 filas… y `WHERE NOT p.missing > 30` también. Además, un predicado no booleano (`WHERE p.age` con `age` INT) es un `TypeMismatch` **en ejecución**: el plan del cap. 19 solo pudo tiparlo como `Any` (schemaless); aquí se concreta.
+- **`ProjectOp`** — la única operación que cambia de forma: evalúa cada item del RETURN sobre la fila interna y produce la fila de salida.
+- **`CartesianProductOp`** — cada fila izquierda × cada fila derecha. Y aquí, la lección más honesta del capítulo: **materializa el lado derecho completo en `open()`**. Volcano es monotónico: un operador no puede «rebobinar» su input, y el producto necesita re-leer el lado derecho por cada fila de la izquierda. Ese coste (memoria + filas de más antes de cualquier filtro) es exactamente el «antes» que el optimizador del cap. 21 eliminará reordenando el punto de partida. No lo escondemos: lo numeramos con métricas.
+- **`LimitOp`** — emite como máximo `max` filas y se agota. En un pipeline pull esto corta la ejecución **de verdad**: si es la raíz, nadie pide más filas al árbol de abajo.
+- **`DistinctOp`** — descarta repetidas con búsqueda lineal en un `Vec` (deliberadamente simple: las celdas contienen `f64`, no hasheables; una versión real usaría una firma hasheable por fila).
+
+`LimitOp` y `DistinctOp` son operadores de pleno derecho aunque la gramática LiraQL (caps. 17-18) aún no exponga las keywords: se componen programáticamente hasta que el lenguaje las admita.
+
+### `eval_scalar`: SQL/Cypher, no Rust
+
+Las reglas son las del estándar de facto (SQL ISO y openCypher), por una razón simple: es la semántica que cualquier usuario de bases de datos espera, y en schemaless la propiedad ausente **tiene que** ser NULL, no false ni un error:
+
+- `p.name` ausente → `Value::Null`; `f:Person` sobre una arista → `Null` (las aristas no tienen labels: desconocido, no falso).
+- **NULL domina las comparaciones**: `Null = x` → `Null`; `p.missing > 30` → `Null`.
+- Igualdad numérica Int/Float con promoción (`1 = 1.0` → true); tipos distintos no son iguales (`1 = "1"` → false, estilo Cypher) pero **sin orden** (`1 < "a"` → Null); solo números y cadenas se ordenan — espejo de `order_compatible` del cap. 19.
+- **Igualdad de nodos por IDENTIDAD de id**: `WHERE a = b` es el predicado «mismo nodo». Con igualdad de valor (comparar propiedades) dos nodos distintos con las mismas props serían «iguales»: mentir. Con identidad, `(a)-[:KNOWS]->(b) WHERE a = b` encuentra self-loops — exactamente el test `hito_self_loop_con_igualdad_de_nodos`, que devuelve a Dani.
+- **AND/OR/NOT trivalentes con cortocircuito real**: `FALSE AND x` devuelve FALSE sin evaluar `x`; `TRUE OR x` devuelve TRUE sin evaluar `x`. ¿Y cómo sabemos que la rama elidida de verdad no se evalúa? Porque es **observable**: `TRUE AND p.age` (con `age` INT) da `TypeMismatch`, pero `FALSE AND p.age` devuelve FALSE sin error. La rama que habría errado, no se ejecutó. Test: `eval_cortocircuito_real`. Es la promesa de los caps. 17 y 19, cumplida y verificada.
+
+### `compile`, `Executor` y el hito
+
+`compile(plan, store)` traduce el `LogicalPlan` a su árbol de operadores **1:1, sin reescrituras** — deliberado: el cap. 21 insertará ahí el push-down de filtros, la conversión `NodeScan`→`IndexSeek` y la reordenación. El `Filter` alto que produce `lower()` se ejecuta tal cual, y las métricas dejan ver su ineficiencia: el mejor anuncio del optimizador.
+
+El `Executor` impone el ciclo sagrado:
+
+```rust
+pub fn execute(&mut self) -> Result<ResultSet, ExecError> {
+    self.root.open()?;
+    let drained = loop {
+        match self.root.next() {
+            Ok(Some(row)) => rows.push(row.cells()),
+            Ok(None) => break Ok(()),
+            Err(e) => break Err(e),
+        }
+    };
+    self.root.close()?;   // close SIEMPRE (incluso tras error): como un defer
+    drained?;
+    /* … ResultSet … */
+}
+```
+
+Fíjate en el orden: el error se **guarda** (`drained`), se cierra, y solo después se propaga. Y fíjate en `Executor::new`: exige un `Project` raíz (`NotAProjection` si no), porque las columnas del `ResultSet` salen de sus `Projection::output_name()` — la invariante que `lower()` ya garantizaba.
+
+Todo el motor va contra `&dyn GraphStore` — el puerto hexagonal del cap. 8. Hoy enchufas un `MemoryStore`; mañana, el store en disco de la Parte III **sin tocar una línea del motor**.
+
+## 20.7 Código completo ejecutable
+
+El código vive en `liradb-workspace/crates/vol2-liradb/src/cap20_volcano.rs` (2.446 líneas, 37 tests en `tests_executor`). Las piezas que acabas de leer son esas; aquí solo el desenlace. La API pública tiene tres niveles:
+
+```rust
+// Nivel 1: operadores programáticos (componer a mano, como los tests de Limit).
+let op = LimitOp::new(compile(&plan, &store)?, 2);
+
+// Nivel 2: el Executor con su ciclo y sus métricas.
+let mut exec = Executor::new(&plan, &store)?;
+let rs = exec.execute()?;
+let m = exec.metrics();   // ExecMetrics en pre-orden: raíz → hojas
+
+// Nivel 3: EL HITO — texto a filas.
+let rs = run("MATCH (p:Person)-[:KNOWS]->(f:Person) \
+              WHERE p.name = \"Ana\" RETURN f.name", &store)?;
+```
+
+`run(src, store)` es `parse` (cap. 18) + `Query::execute` (lower + Executor). Y el grafo de las demos es `demo_graph()`: Ana(36), Bo(41), Carla(29), Dani(36), Madrid y Lisboa; KNOWS en triángulo + el self-loop de Dani, y LIVES_IN — el mismo fixture de los tests, promovido a API pública para que la CLI no duplique el dato.
+
+## 20.8 Prueba de fuego — el hito
+
+Este es el momento que llevamos nueve capítulos construyendo. Ejecuta:
+
+```
+$ cargo run -p liradb-cli -- query "MATCH (p:Person) WHERE p.age < 40 RETURN p.name, p.age"
+p.name  | p.age
+"Ana"   | 36
+"Carla" | 29
+"Dani"  | 36
+```
+
+Una cadena de texto entró; una tabla salió. Sin escribir Rust. (La CLI mínima del hito ADR-005 corre sobre `demo_graph()`; en el workspace final `Query::execute` pasa además por el optimizador del cap. 21 — llega en el próximo capítulo, y los resultados son equivalentes.)
+
+Y con `liradb demo`, la consulta canónica del brief muestra el pipeline entero con sus métricas reales:
+
+```
+LiraQL: MATCH (p:Person)-[r:KNOWS]->(f:Person) WHERE p.name = "Ana" RETURN f.name, r.since
+Plan lógico:
+Project(f.name, r.since)
+  Filter(f:Person AND p.name = "Ana")
+    Expand(p, r:KNOWS, OUTGOING, f)
+      NodeScan(Person AS p)
+Resultado:
+f.name | r.since
+"Bo"   | 2020
+Métricas: Project: 1 filas
+Filter: 1 filas
+Expand: 4 filas
+NodeScan: 4 filas
+filas devueltas: 1
+```
+
+Detente en las métricas: **NodeScan produjo 4 filas y Expand 4 para que el Filter devolviera 1**. Nadie mintió: contamos lo que de verdad fluyó. Esa es la semilla del `explain` del cap. 21 — el eco del `hit_ratio` del cap. 13: métricas que observan mientras el sistema trabaja, no suposiciones. Los 37 tests del módulo (de `row_bind_get_merge_y_display` a `result_set_display_tabla_y_column`) cubren desde las tablas trivalentes hasta el camino de dos tramos con anónimo intermedio; si te saltaras este capítulo, tu síntoma sería evidente: tendrías planes bonitos que no producen ninguna fila, y WHEREs con propiedades ausentes devolviendo resultados falsos.
+
+## 20.9 Qué hemos sacrificado
+
+1. **El cartesiano materializa el lado derecho.** Precio del modelo monotónico; el cap. 21 lo evita reordenando, no lo esconde.
+2. **Una fila cada llamada (tuple-at-a-time).** El modelo Volcano clásico paga overhead de llamada por fila; los motores vectorizados (cap. 38) procesan lotes. Lo mantenemos así porque la claridad didáctica del iterador puro es el objetivo aquí.
+3. **`DistinctOp` es O(n²) en filas vistas** (búsqueda lineal; las celdas con `f64` no son hasheables tal cual).
+4. **Sin paralelismo.** El `exchange` de Volcano'89 y los morsels de DuckDB quedan nombrados; nuestro motor es single-threaded.
+5. **Sin ORDER BY, el orden de las filas no es parte del contrato** — y desde que el cap. 21 reordene planes, no podrás depender de él. Los tests comparan ordenado cuando toca.
+
+## 20.10 Cómo lo hace una BBDD real
+
+- **PostgreSQL** ejecuta árboles de `PlanState` con el ciclo `ExecutorStart`/`ExecutorRun`/`ExecutorEnd`: pull fila a fila, el mismo modelo con otros nombres.
+- **SQL Server** desciende de Graefe en las dos mitades: ejecución iteradora (Volcano) y optimizador (Cascades, su framework de 1995).
+- **MonetDB/X100** (Boncz, Zukowski, Nes; CIDR 2005) midió el costo de tuple-at-a-time y lo resolvió con **ejecución vectorizada**: cada `next` devuelve un lote (vector) de columnas. Es el puente directo al cap. 38.
+- **Kùzu** combina almacenamiento columnar con operadores vectorizados y pipelines morsel-driven: el modelo Volcano «por lotes» y en paralelo.
+- **DuckDB** empuja (push-based) los datos por pipelines con morsel-driven parallelism (Leis et al., CIDR 2014): cuando la raíz es un agregado, empujar evita llamadas de función equivalentes al pull.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: en `liradb demo`, ¿qué operador produce filas que nadie consume en la consulta canónica? ¿Cuántas?
+- *Intermedio*: implementa `OffsetOp { skip }` al estilo de `LimitOp`, con `collect_metrics`, y predice sus métricas antes de ejecutarlo.
+- *Experto*: escribe `run_materializando(plan, store)` (el intérprete de §20.4) y demuestra la equivalencia con el `Executor` en 4 consultas; luego mide, con métricas, `Limit(1)` sobre un grafo de 1.000 personas: Volcano escanea 1, el materializador 1.000.
+
+## 20.11 Lo que te llevas
+
+- **Pull, no cálculo**: la consulta se va pidiendo; `Limit` corto-circuita el pipeline de raíz.
+- **La tríada `open`/`next`/`close`**, con `close` SIEMPRE — incluso en error. Quien aborta no limpia: limpia el ciclo.
+- **Un trait, ocho structs componibles**: el plan del cap. 19 se traduce 1:1 a un árbol que se enchufa.
+- **`Row = Vec<(String, Cell)>`**: los `Bindings` del cap. 19 materializados; `Cell` resuelve `RETURN p` sin magia.
+- **NULL SQL/Cypher con lógica trivalente y cortocircuito observable**; igualdad de nodos por identidad.
+- **El cartesiano materializa porque Volcano no rebobina** — el coste que motiva el cap. 21.
+- **Métricas reales por operador**: `NodeScan: 4 | Filter: 1` es evidencia, no opinión.
+- **El hito**: `run(src, store)` y `liradb query` ejecutan consultas completas desde texto.
+
+## 20.12 Ojo, cuidado con…
+
+- **Llamar `next` antes de `open` (o tras `close`)**: el contrato dice «agotado en silencio», no «reabre». Re-ejecutar es `open` de nuevo.
+- **Tratar NULL como false**: en `Filter` ambos quedan fuera, pero `NOT NULL` es NULL. «Desconocido» no es «falso».
+- **Esperar rebobinar**: un operador agotado está agotado. Si necesitas releer, materializa (como el cartesiano) o re-abre.
+- **Comparar nodos por valor**: la igualdad es identidad de id. Dos Anas distintas son dos nodos.
+
+## 20.13 Pin de batalla
+
+> *«Si tu motor calcula la respuesta antes de que nadie la haya pedido, no tienes un motor de consultas: tienes un generador de resultados que ignora cuánta respuesta se necesita.»*
+
+## 20.14 Si solo lees 30 segundos
+
+Cada operador es un iterador con `open`/`next`/`close`; la consulta se evalúa en pull (la raíz pide, la cadena responde) de modo que `Limit` corta de raíz y la primera fila sale sin esperar a la última. Las filas son variables ligadas a `Cell`s (escalar, nodo o arista); WHERE usa lógica trivalente (NULL se descarta, pero no es false) con cortocircuito real. El cartesiano materializa su lado derecho porque nadie rebobina. Y `run(texto, store)` ejecuta consultas completas: el hito del libro.
+
+## 20.15 Una historia pequeña
+
+La primera versión del executor de LiraDB no tenía `close`. Funcionaba, pasa los tests, fin. Hasta que una consulta con `WHERE p.age` (INT usado como booleano) reventó a mitad del pipeline en un script largo, y el cursor del `NodeScanOp` —un iterador que pide prestado el store— quedó vivo junto con media ejecución huérfana. El borrow checker no dijo nada: el préstamo era legítimo. Lo que faltaba no era memoria, era **protocolo**. El `close` SIEMPRE del `Executor` nació esa tarde: el error se guarda, se cierra, y solo entonces se propaga. Desde entonces, ejecutar una consulta que falla y otra que no deja el motor exactamente igual de limpio. Lo que no se cierra, se filtra.
+
+## Ejercicios resueltos
+
+**1. `LIMIT 1` sobre un scan de 1M de filas: ¿cuántas produce el `NodeScan` en cada modelo?**
+
+En Volcano, **1**. El `LimitOp` pide una fila al `Project`, que pide al input… la fila llega, el `Limit` la emite, y como ya alcanzó su máximo, su siguiente `next` devuelve `None` sin pedir nada más a nadie: el pull se cortó de raíz. En el materializador, **1.000.000**: el scan llena su `Vec` entero antes de que exista ningún consumidor. Puedes ver la versión pequeña en el test `limit_corta_el_pipeline`: con `LimitOp::new(scan, 2)`, las métricas dicen `("Limit", 2), ("Project", 2), ("NodeScan", 2)` — el scan solo produjo lo pedido.
+
+**2. Nadie tiene la propiedad `nick`. ¿Qué devuelven `WHERE p.nick = "anita"` y `WHERE NOT p.nick = "anita"`?**
+
+Ambas devuelven **0 filas**. La primera: `p.nick` es NULL (propiedad ausente en schemaless), `NULL = "anita"` es NULL, y el `Filter` solo pasa TRUE. La segunda: `NOT NULL` sigue siendo NULL — negar un desconocido no lo convierte en conocido. Es la diferencia entre trivalente y booleano a secas, y está testeada en `hito_where_con_null_no_pasa_nada`.
+
+## Ejercicios propuestos
+
+**Esencial (retrieval).** Cierra el libro y el editor. De memoria: escribe el trait `PhysicalOperator` completo (las cinco firmas) y responde: si el consumidor aborta con error tras un `next`, ¿quién limpia y por qué? Luego ábrelo y corrige. Verifica tu respuesta compilando un test que drene un `NodeScanOp` con el ciclo completo y lo re-ejecute tras `close`.
+
+**Intermedio (spacing + interleaving).** Implementa `OffsetOp { skip: usize }` (salta `skip` filas, luego emite el resto) componiéndolo a mano sobre `compile()`, como hacen los tests de `LimitOp`. Antes de ejecutarlo, **predice por escrito** sus `collect_metrics` para `MATCH (p:Person) RETURN p.name` con `skip = 2` sobre el grafo demo. ¿Por qué tu operador NO aparece en `compile()`? (Pista: ¿qué capítulo decide qué operadores físicos existen?)
+
+**Experto (crear).** Escribe `run_materializando(plan, store) -> ResultSet`: el intérprete recursivo de §20.4, sin el trait, materializando cada operador. Demuestra con un test que devuelve lo mismo que el `Executor` (columnas y filas ordenadas) en 4 consultas del grafo demo. Luego genera un store con 1.000 `Person`, envuelve ambas rutas con un límite de 1 fila, y compara las filas escaneadas. Explica por qué en TU versión el cartesiano no necesita materializar el lado derecho.
+
+## Para profundizar
+
+- **Graefe, «Volcano — An Extensible and Parallel Query Evaluation System» (IEEE TKDE, 1994)** — el paper original del modelo que acabas de implementar.
+- **Graefe, «Encapsulation of Parallelism in the Volcano Query Processing System» (SIGMOD 1989)** — el operador `exchange`: paralelismo detrás de la misma interfaz iteradora.
+- **Graefe, «The Cascades Framework for Query Optimization» (IEEE DE Bulletin, 1995)** — la otra mitad de la herencia: el optimizador de SQL Server.
+- **CMU 15-445, notas de Query Execution I** — el iterator model frente a materialization y vectorization, con la terminología que usarás en el cap. 38.
+- **Boncz, Zukowski, Nes, «MonetDB/X100: Hyper-Pipelining Query Execution» (CIDR 2005)** — por qué tuple-at-a-time duele y cómo se vectoriza.
+- **Raasveldt y Mierle, «DuckDB: an Embeddable Analytical Database» (SIGMOD 2020)** — pipelines push-based y morsel-driven parallelism.
+
+## Mini-diálogo: en guardia nocturna
+
+> — Entonces el motor entero es… ¿un montón de structs con el mismo trait de tres métodos?
+>
+> — Y una disciplina: quien abre, cierra. Aunque la consulta reviente a mitad.
+>
+> — Pero si materializar todo funciona en el grafo de seis nodos…
+>
+> — Todo funciona con seis nodos. El modelo se elige para el día en que son un millón y alguien pide una sola fila. Ese día, el pull te salva y la materialización te hunde. Y ojo: el cartesiano ya te mostró el precio de no poder rebobinar.
+>
+> — ¿Y las métricas esas de «NodeScan: 4 filas»?
+>
+> — La prueba de que el motor te cuenta la verdad. El próximo capítulo las usará para no escanear 4 cuando basta 1. Hoy ejecutamos; mañana, ejecutamos bien.
+
+---
+
+*(Próximo capítulo: 21 — Un optimizador pequeño pero real. Las métricas de este capítulo numeraron el problema (4 filas escaneadas para devolver 1); ahora construiremos quién lo arregla: `optimize` con estadísticas y reglas, visible en `liradb explain`.)*
+# Capítulo 21 — Un optimizador pequeño pero real (`liradb explain`)
+
+> *«El usuario dice QUÉ quiere. El motor decide CÓMO conseguirlo. Esa frontera tiene nombre: optimizador.»*
+
+## 21.0 La anécdota de la esquina
+
+En 1979, en el laboratorio de IBM de San José, Patricia Selinger y su equipo (Astrahan, Chamberlin, Lorie y Price) publicaron en SIGMOD un paper con un título tan sobrio como su contenido era revolucionario: «Access Path Selection in a Relational Database Management System». Describe la pieza que le faltaba a System R —la base de datos que estaba definiendo cómo sería SQL— para no ser un juguete lento: **el primer optimizador basado en coste**.
+
+El paper es famoso por la enumeración dinámica de órdenes de joins. Pero dos detalles suyos te van a sonar muchísimo dentro de unas páginas. Primero: cuando no había estadísticas, System R asumía que una igualdad (`col = valor`) deja pasar **una décima parte** de las filas y un rango (`col < valor`), **un tercio**. Exactamente los `0.1` y `1/3` que usarás hoy en LiraDB. Segundo: entre sus heurísticas explícitas estaba «anidar los predicados lo más profundamente posible en el árbol de consulta» — lo que hoy llamamos **predicate pushdown**. Cuarenta y tantos años después, esa sigue siendo la regla número 1 del optimizador de cualquier motor que puedas nombrar, del PostgreSQL de tu servidor al Catalyst de Spark.
+
+Y la herramienta para VERLO también tiene historia: `EXPLAIN` existe desde los orígenes de PostgreSQL en Berkeley, y la variante que además ejecuta la consulta para contrastar —`EXPLAIN ANALYZE`, «que muestra tiempos y recuentos de filas», según las notas de la 7.2.0, febrero de 2002— es el antepasado directo del `liradb explain` que construiremos hoy: plan ANTES, plan DESPUÉS, y las filas reales al final para comprobar cuánto mienten las estimaciones.
+
+## 21.1 Objetivo
+
+Al terminar este capítulo sabrás **por qué un motor que ya parsea, planifica y ejecuta (caps. 17-20) todavía deja la mitad del trabajo en la mesa**, y habrás construido la pieza que lo reclama: un **optimizador** — un programa que reescribe el plan lógico antes de ejecutarlo para que haga el mismo trabajo con menos esfuerzo.
+
+Tres piezas, las tres en `cap21_optimizador.rs`:
+
+1. **El catálogo** (`Catalog`) — estadísticas recolectadas del `GraphStore`: nodos por etiqueta, grados medios out/in, aristas por tipo, y un índice de igualdad.
+2. **La estimación de cardinalidad** (`estimate`) — heurísticas simples y documentadas para adivinar cuántas filas producirá cada operador.
+3. **Las cinco reglas** (`optimize`) — reescrituras en orden fijo que transforman el plan ingenuo del cap. 19 en el plan que ejecuta el Volcano del cap. 20.
+
+Y el hito: `liradb explain "..."`, que enseña el antes y el después con estimaciones y filas reales.
+
+## 21.2 Problema
+
+Ejecuta el demo del capítulo anterior y mira la última consulta, la canónica del brief:
+
+```text
+LiraQL: MATCH (p:Person)-[r:KNOWS]->(f:Person) WHERE p.name = "Ana" RETURN f.name, r.since
+Plan lógico:
+Project(f.name, r.since)
+  Filter(f:Person AND p.name = "Ana")
+    Expand(p, r:KNOWS, OUTGOING, f)
+      NodeScan(Person AS p)
+Métricas: Project: 1 filas
+Filter: 1 filas
+Expand: 4 filas
+NodeScan: 4 filas
+filas devueltas: 1
+```
+
+Lee las métricas de abajo arriba: el escaneo produce 4 filas, la expansión produce 4, y el filtro… devuelve 1. **Escaneamos 4 para devolver 1.** Con 6 nodos en el grafo demo eso es una anécdota; con 10 millones de personas es un delito. Y lo peor: el plan ni se inmuta, porque es exactamente lo que `lower()` (cap. 19) le pidió — pusimos el `Filter` encima de todo y el cap. 20 lo ejecutó fielmente. Las métricas del cap. 20 ya numeraban esta ineficiencia a propósito: son el mejor anuncio del optimizador.
+
+La pregunta del capítulo: ¿quién decide que, en vez de escanear todas las personas y filtrar Ana al final, empieces directamente POR Ana?
+
+## 21.3 Modelo mental
+
+Piensa en el **planificador de rutas de un GPS**. Tú dictas el destino: «de mi casa al aeropuerto». Eso es la consulta — intocable. El GPS elige el ORDEN de las calles: hoy la M-30 está colapsada (lo sabe porque MIRA el tráfico), así que va por la alternativa. Mismo destino, misma llegada, distinto camino. Y si mañana el tráfico cambia, el camino cambia — pero tu destino no.
+
+Traduce: la consulta del usuario es el destino; el plan lógico es la lista de calles; las estadísticas del catálogo son el tráfico; y el optimizador es el planificador. Tres consecuencias que vertebran todo el capítulo:
+
+1. **El GPS nunca te cambia el destino** — el optimizador nunca cambia los resultados (lo probaremos con tests de equivalencia).
+2. **El GPS necesita mirar el tráfico** — sin estadísticas del grafo no hay decisión posible, sólo manías.
+3. **Convenir un orden de cálculo fijo** — el GPS evalúa primero autopistas, luego avenidas, luego calles: reglas en orden conocido, mismo input → mismo output.
+
+```
+        consulta (destino, del usuario)
+                   │
+        ┌──────────▼──────────┐
+        │   OPTIMIZADOR       │  mira el catálogo (tráfico):
+        │  5 reglas fijas     │  Person: 4 · out 1.50 / in 1.00
+        │  R1..R5             │  KNOWS: 4 de 6 aristas
+        └──────────┬──────────┘
+     plan ANTES ──►│──► plan DESPUÉS   (mismo resultado, menos trabajo)
+```
+
+El momento ¡ajá!: hasta ahora, el plan lógico decía QUÉ hacer y el motor lo obedecía al pie de la letra. Hoy descubres que un mismo QUÉ admite muchos órdenes de cálculo equivalentes, y que elegir bien entre ellos exige **mirar los datos**.
+
+## 21.4 Primera solución
+
+La versión ingenua ya la tienes: es no tener optimizador. El plan de `lower` baja tal cual a `compile` (cap. 20, que a propósito era 1:1) y se ejecuta como llegó. Si el usuario quiere velocidad, que escriba mejor la consulta — o que el código que llama al motor construya el plan a mano y use `IndexSeek` directamente, que el operador existe desde el cap. 20.
+
+Y una segunda versión ingenua, más tentadora: «pues que el motor reescriba la CONSULTA» — que detecte `WHERE p.name = "Ana"` y la convierta en otra consulta mejor escrita antes de planificarla.
+
+## 21.5 Sus límites
+
+Ambas se rompen en cuanto te alejas del juguete:
+
+1. **El AST es del usuario.** Reescribir su consulta rompe el contrato de fidelidad texto→AST que construimos en los caps. 17-18: los errores dejan de apuntar a SUS palabras, y cualquier reescritura del texto exige re-parsear, re-ligar y re-verificar. El plan, en cambio, es nuestra representación interna: reordenar ligaduras ahí es invisible para él. Optimizamos el plan, no la consulta.
+2. **La combinatoria se come la búsqueda exhaustiva.** Elegir «el mejor plan» enumerando todos es caro: con n joins hay n! órdenes (10 joins = 3.628.800). System R ya lo sabía: por eso enumeraba con programación dinámica y además recortaba a árboles left-deep. Nosotros, con reglas totales en orden fijo, pagamos cero combinatoria.
+3. **El 4-para-1 escala linealmente.** Extrapolalo: si escaneas 4 filas para devolver 1 en un grafo de 40 millones de nodos con ese ratio, mueves ~160 millones de filas para responder con 40. El plan ingenuo no empeora con los datos — empeora CONTIGO, multiplicando tu muestreo.
+4. **El caller con `IndexSeek` a mano no tiene datos.** ¿Merece la pena el índice? Depende de cuántos ids devuelva frente a cuántas filas escanea el `NodeScan` — información que vive en el grafo, no en quien llama.
+
+La conclusión: necesitamos una pieza nueva que (a) reescriba planes, no consultas; (b) mire el grafo antes de decidir; (c) garantice los mismos resultados. Ese es el optimizador.
+
+## 21.6 Solución evolucionada, parte 1: el catálogo (o mirar el tráfico)
+
+Antes de elegir ruta hay que saber cómo está el tráfico. `Catalog::collect(&dyn GraphStore)` hace UNA pasada por el store y recolecta: nodos totales, nodos por etiqueta, aristas por tipo, grados saliente/entrante acumulados por etiqueta de los extremos, y un índice de igualdad `(etiqueta, propiedad, valor) → ids`:
+
+```text
+Catálogo (estadísticas del store): 6 nodos · 6 aristas
+  Person: 4 nodos · grado medio out 1.50 / in 1.00
+  City: 2 nodos · grado medio out 0.00 / in 1.00
+  aristas por tipo: KNOWS 4, LIVES_IN 2
+```
+
+Eso no es una salida inventada: es literalmente lo que imprime `liradb explain` sobre el grafo demo. Y fíjate en el porqué de cada número:
+
+- **¿Por qué grados medios POR ETIQUETA y no globales?** Porque el coste de un `Expand` desde `f` depende de cómo son las Person, no de cómo es el grafo en general. Una etiqueta hub (grado 500) y una hoja (grado 1) no pueden compartir media.
+- **¿Por qué un índice de igualdad si el cap. 15 ya construyó índices?** El `HashIndex`/`BPlusTree` del cap. 15 viven en el fichero en disco; este catálogo es su primo en memoria, reconstruido por consulta. En un sistema real el catálogo persistiría y se mantendría incrementalmente (esa es exactamente la infraestructura natural del cap. 15); aquí reconstruirlo cuesta un escaneo y nos da un catálogo obviamente correcto del que razonar. Los índices del cap. 15, por fin, tienen alguien que decide cuándo usarlos.
+- **¿Por qué constantes NO mágicas?** Porque sin mirar el grafo no hay decisión posible: la regla R1 compara costes reales (1.50 de grado out de Person, fracción 4/6 de KNOWS). Con constantes a ciegas, «optimizador» sería un nombre bonito para una manía.
+
+## 21.7 Solución evolucionada, parte 2: estimar cardinalidad (la sección de estadísticas)
+
+El catálogo dice cómo es el grafo; la **estimación** traduce eso a «cuántas filas producirá este operador». La función `estimate` es un pequeño `match` recursivo con fórmulas que caben en una servilleta:
+
+```text
+  NodeScan         → nodos con la etiqueta (todos si ANY)
+  IndexSeek        → ids resueltos (exacto)
+  Filter           → entrada × selectividad del predicado
+  Expand           → entrada × grado medio de la dirección × fracción del tipo
+  Project          → lo que produce su entrada
+  CartesianProduct → izquierda × derecha
+```
+
+Y la **selectividad** de un predicado (la fracción de filas que se espera que sobrevivan) usa los defaults de 1979 cuando no hay estadística, y la estadística cuando la hay:
+
+```rust
+pub const SEL_EQ: f64 = 0.1;        // igualdad sin estadística (System R)
+pub const SEL_RANGE: f64 = 1.0 / 3.0; // rango <, <=, >, >= (System R)
+pub const SEL_NOT_EQ: f64 = 0.9;
+pub const SEL_UNKNOWN: f64 = 0.5;
+```
+
+Con `AND` se multiplican (independencia), `OR` usa inclusión-exclusión, `NOT` complementa. Y el caso estrella: si el predicado es `v.prop = literal` y el índice de igualdad del catálogo conoce esa clave, la selectividad es EXACTA — `ids / nodos de la etiqueta`. Si el valor no ocurre (buscas a «Zoe» y no existe), la selectividad es 0.0: no filtras, aniquilas.
+
+Apliquémoslo al plan ANTES del problema del §21.2, con el catálogo real:
+
+```text
+NodeScan(Person AS p)        → 4                      (hay 4 Persons)
+Expand(p, KNOWS, OUT, f)     → 4 × 1.5 × (4/6) = 4    (grado × fracción de tipo)
+Filter(f:Person ∧ f.age<40)  → 4 × 1.0 × 1/3 = 1.33   → est. 1
+```
+
+**¿Por qué heurísticas simples y no muestreo?** Porque la estimación sólo necesita **ordenar planes**, no prometer costes: para elegir entre empezar por `p` o por `f` basta saber cuál es más barato, con error del 50 % incluido. Un histograma o un muestreo serían infraestructura desproporcionada para comparar dos candidatos — y nos robarían el momento pedagógico de ver, con números, cuánto mienten las heurísticas. Porque mienten: en el demo, 3 de 4 personas tienen `age < 40` (selectividad real 0.75, no 1/3). Ya volveremos a ello: esa discrepancia es contenido, no bug.
+
+## 21.8 Solución evolucionada, parte 3: las cinco reglas
+
+`optimize(plan, &catalog)` aplica cinco reescrituras **en orden fijo**:
+
+| # | Regla | Qué hace |
+|---|---|---|
+| R1 | `rule_selective_start` | Elige la variable más selectiva como punto inicial y reordena la cadena de `Expand` (los tramos a su izquierda se recorren con la dirección invertida). Es el «join ordering» de los grafos. |
+| R2 | `rule_predicate_pushdown` | Parte los `AND` en átomos y baja cada átomo lo más profundo posible — sin cruzar variables que aún no están ligadas. |
+| R3 | `rule_absorb_label` | El `HasLabel` del nodo escaneado se integra en la etiqueta del `NodeScan` (que filtra al escanear). |
+| R4 | `rule_index_seek` | `Filter(v.prop = literal) + NodeScan` → `IndexSeek` con los ids del catálogo — **sólo si ahorra**: si el índice devolviera tantas filas como el escaneo, se queda el scan. |
+| R5 | `rule_prune_projections` | Elimina proyecciones de identidad redundantes. |
+
+**¿Por qué R2 —el predicate pushdown— es LA regla reina?** Números: en el demo pagamos 4 filas escaneadas para devolver 1. El `Filter` de la edad está ENCIMA del `Expand`, así que el motor expande cada candidata y luego la tira. Bájalo al escaneo y las filas que no cumplen `age < 40` ni siquiera entran al pipeline: no se expanden, no se filtran, no existen. Filtrar antes de expandir convierte trabajo proporcional al grafo en trabajo proporcional al resultado. Es la misma regla que Selinger escribió en 1979 y que hoy ejecuta tu PostgreSQL cada vez que lanza una query.
+
+**¿Por qué respetando bindings?** Esta es la trampa. Bajar un átomo que menciona una variable que ahí abajo aún NO está ligada no optimiza: cambia la semántica (el runtime evaluaría la propiedad contra otra fila, o no la encontraría). La implementación lo respeta con la misma herramienta del cap. 19: `sink` consulta `bound_variables()` del subárbol y sólo hunde lo que menciona variables ya ligadas. Un `Filter(p.age > 30)` sobre un `Expand(f → p)` se queda donde está: `p` la liga la expansión. Un optimizador que cambia resultados no es un optimizador: es un bug con buen marketing.
+
+**¿Por qué orden fijo y documentado?** Determinismo didáctico: mismo input → mismo output, siempre. R1 corre primero porque decide la FORMA de la cadena (por dónde empezar a ligar); R2 cuelga los predicados del plan resultante; R3 y R4 pulen el escaneo que quedó abajo; R5 barre. Con reglas iteradas hasta fijación o en orden arbitrario, los planes serían irreproducibles — imposibles de enseñar, de testear y de explicar en un `explain`. El test `optimizar_es_idempotente_y_conservador` además verifica que las reglas convergen: optimizar dos veces da lo mismo que una.
+
+## 21.9 El hito: `liradb explain`
+
+Todo junto, ejecutado de verdad en el workspace:
+
+```console
+$ cargo run -q -p liradb-cli -- explain \
+    "MATCH (p:Person)-[:KNOWS]->(f:Person) WHERE f.age < 40 RETURN p.name, f.name"
+
+liradb explain — optimizador (cap. 21)
+Consulta: MATCH (p:Person)-[:KNOWS]->(f:Person) WHERE f.age < 40 RETURN p.name, f.name
+
+Catálogo (estadísticas del store): 6 nodos · 6 aristas
+  Person: 4 nodos · grado medio out 1.50 / in 1.00
+  City: 2 nodos · grado medio out 0.00 / in 1.00
+  aristas por tipo: KNOWS 4, LIVES_IN 2
+
+Plan ANTES (lower, cap. 19):
+Project(p.name, f.name)            est. 1 filas
+  Filter(f:Person AND f.age < 40)  est. 1 filas
+    Expand(p, KNOWS, OUTGOING, f)  est. 4 filas
+      NodeScan(Person AS p)        est. 4 filas
+
+Plan DESPUÉS (optimize, cap. 21):
+Project(p.name, f.name)          est. 1 filas
+  Expand(f, KNOWS, INCOMING, p)  est. 1 filas
+    Filter(f.age < 40)           est. 1 filas
+      NodeScan(Person AS f)      est. 4 filas
+
+Filas reales al ejecutar el plan optimizado: 3 (raíz estimada: 1)
+```
+
+Lee el DESPUÉS con calma, porque en cuatro líneas están las cinco reglas:
+
+1. **R1**: la cadena ya no empieza por `p` sino por `f` — el coste estimado de empezar por f (`4 × 1/3 × 1.0 × 4/6 ≈ 0.89`) gana al de empezar por p (`4 × 1.5 × 4/6 = 4`). El tramo KNOWS se recorre en sentido INCOMING: dar la vuelta a la flecha es gratis, la semántica es la misma.
+2. **R2**: el AND se partió — `f.age < 40` bajó y quedó PEGADO al escaneo de f.
+3. **R3**: `f:Person` desapareció como filtro: se absorbió en `NodeScan(Person AS f)`.
+4. **R4**/**R5**: aquí no aplican (no hay igualdad ni proyecciones sobrantes) — y el explain de la canónica del brief te muestra la R4 en acción: `Filter(p.name = "Ana") + NodeScan` se convierte en `IndexSeek(Person.name = "Ana")` que lee UN nodo en vez de cuatro.
+
+Y la última línea es la lección más honesta del capítulo: **la raíz estimada era 1 y las filas reales son 3**. La heurística de rango (1/3) subestimó la selectividad real (3/4: Ana 36, Carla 29 y Dani 36 pasan; Bo 41 no). ¿Es un bug? No: la estimación cumplió SU trabajo — ordenar candidatos (f era más barato que p, y sigue siéndolo con 0.75) — y falló el que NO tenía (predecir filas). PostgreSQL vive de la misma tensión: por eso su `EXPLAIN ANALYZE` (7.2.0, 2002) muestra, como nosotros, estimadas y reales lado a lado. Cuando la discrepancia importa, se refinan las estadísticas (histogramas); cuando no, se agradece el orden correcto.
+
+Fíjate también en qué NO cambió: las columnas y las filas. Tres antes, tres después, las mismas. Eso no es suerte: es un contrato testeado.
+
+## 21.10 Prueba de fuego: equivalencia, o el GPS nunca te cambia el destino
+
+La prueba de fuego de un optimizador no es «va más rápido»: es **«va más rápido Y devuelve exactamente lo mismo»**. El test `equivalencia_antes_y_despues_sobre_bateria_de_consultas` ejecuta 12 consultas (la canónica, filtros en ambos lados, dirección entrante, sin dirección, caminos de tres nodos, anónimos intermedios, cartesiano con filtros, propiedades inline y de arista, self-loops, etiqueta inexistente, OR) por los DOS caminos — plan ingenuo de `lower` y plan optimizado de `optimize` — y compara:
+
+- **columnas**: idénticas;
+- **filas**: idénticas como multiconjunto ORDENADO.
+
+¿Por qué ordenadas? Porque sin `ORDER BY` (que LiraQL aún no tiene) el orden de las filas no es parte del contrato — exactamente como en SQL, y exactamente porque un optimizador que reordena ligaduras puede producir las filas en otro orden. Lo que se promete es el contenido, no la secuencia.
+
+¿Y qué pasaría si ROMPIÉRAMOS la equivalencia? Imagina el pushdown mal hecho del §21.8: `f.age < 40` empujado por debajo del `Expand` que liga `f`. En el plan, el filtro se evaluaría para cada `p` contra una `f` que aún no existe. Síntoma: filas de menos (o de más) SIN error — la peor clase de bug, porque la consulta «funciona». Los tests de equivalencia son el detector: `ingenuo ≠ optimizado` en cualquier consulta es un fallo del test, no una curiosidad.
+
+Desde este capítulo, `run()` y `Query::execute` pasan SIEMPRE por el optimizador (`lower` → `Catalog::collect` → `optimize` → `Executor`): el usuario escribe la consulta; el motor elige la ruta.
+
+## 21.11 Repaso de la Parte IV: la cadena completa
+
+Este capítulo cierra la Parte IV. Reconstruyamos la cadena que ya sabes construir, de izquierda a derecha:
+
+```
+ texto LiraQL ──parse──► AST ──lower──► LogicalPlan ──optimize──► LogicalPlan' ──compile──► operadores ──open/next/close──► filas
+   (cap. 17:      (cap. 18:       (cap. 19: binder     (cap. 21: catálogo       (cap. 20: 1:1            (cap. 20:
+   qué es          tokens +        + plan lógico;      + estimaciones +          al árbol                modelo
+   LiraQL)         errores con     el QUÉ sin el       5 reglas; el             físico)                 Volcano)
+                  byte y línea)    CÓMO)               CÓMO barato)
+```
+
+Cada capa dejó una garantía que las siguientes heredan: el **lenguaje** (17) fijó MATCH-WHERE-RETURN sin prometer orden; el **parser** (18) garantiza que el AST es fiel al texto o señala el byte exacto; el **lowerer** (19) garantiza variables únicas y ligadas (`bound_variables()` — la herramienta con la que R2 respeta bindings); el **Volcano** (20) garantiza el ciclo open/next/close y NUMERA lo que fluye (sus métricas destaparon el 4-para-1); y el **optimizador** (21) garantiza mismos resultados con menos trabajo. Quita cualquier eslabón y la cadena se rompe en un sitio previsible: sin parser no hay feedback de errores; sin binder no hay pushdown seguro; sin métricas no sabrías que había nada que optimizar; sin optimizador, los índices del cap. 15 siguen siendo un órgano sin función.
+
+## 21.12 Qué hemos sacrificado
+
+1. **Estimaciones honestas, no precisas.** 1/3 para todo rango subestima el 0.75 del demo. El precio de la simplicidad; el premio: ver la discrepancia en cada explain.
+2. **Búsqueda por coste real.** Nuestras reglas reordenan CADENAS simples; los cartesianos múltiples y los grafos cíclicos con backtracking quedan como están. Un optimizador de coste enumeraría más espacio.
+3. **Catálogo no persistente.** Recalcular por consulta cuesta un escaneo completo: impensable en producción, perfecto para razonar sin dudar de la frescura de los números.
+4. **Orden de filas no garantizado.** Consecuencia necesaria de reordenar ligaduras; llegará `ORDER BY` y con él la obligación.
+5. **Igualdad exacta en el índice del catálogo.** `p.age = 36.0` no encuentra el `36` almacenado (sin la promoción Int/Float del runtime). Las estadísticas estiman; la ejecución decide.
+
+## 21.13 Cómo lo hace una BBDD real
+
+- **System R / Selinger (1979)**: el origen de todo. Coste = páginas leídas + CPU, selectividades por defecto (1/10, 1/3), enumeración dinámica de joins con poda a árboles left-deep y la heurística de hundir predicados que hoy es nuestra R2.
+- **PostgreSQL**: planificador de coste con estadísticas mantenidas por `ANALYZE` (histogramas, distinct values, MCV). Su `EXPLAIN` imprime el árbol con `rows` estimadas; `EXPLAIN ANALYZE` (7.2.0, 2002) además lo ejecuta y muestra `actual rows` y tiempos por nodo — el molde exacto de nuestro «est. N filas» contra «filas reales».
+- **Catalyst (Spark)**: optimizador funcional por reglas + coste: parseo → plan lógico sin resolver → resolver → reescrituras (pushdown de filtros y proyecciones incluidas) → planificación física eligiendo estrategias. Nuestro pipeline ANTES/DESPUÉS es la misma película en miniatura.
+- **Kùzu (grafos)**: optimizador de grafo con reordenación de joins por coste, filtro pushdown hacia los escaneos y uso del catálogo de estadísticas del grafo — punto por punto, las tres piezas de este capítulo, a escala industrial.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: en la consulta del §21.9, ¿por qué el `Expand` del DESPUÉS estima 1 si el grado in de Person es 1.00 y la fracción de KNOWS 4/6?
+- *Intermedio*: ¿qué pasa —plan y filas— si el WHERE fuera `f.age < 100`? ¿Cambia R1? ¿Debería?
+- *Experto*: diseña `rule_pushdown_limit` para un hipotético `Limit` encima de un `Filter`: ¿cuándo es seguro bajarlo? ¿Y sobre un `Expand` (pista: top-k)?
+
+## 21.14 Lo que te llevas
+
+- El **optimizador** reescribe el PLAN (nuestra IR), nunca la consulta (suya): mismo destino, otra ruta.
+- El **catálogo** mira el grafo: nodos por etiqueta, grados medios, tipos, índice de igualdad. Sin datos no hay decisión, hay manía.
+- **Estimar** con heurísticas (System R: 0.1 / 1/3) basta para ORDENAR planes; la discrepancia con lo real (est. 1 vs 3) es contenido, no bug.
+- **Predicate pushdown** (R2) es la regla reina: filtrar antes de expandir convierte 4-para-1 en 1-para-1 — de 1979 a hoy.
+- **IndexSeek lo elige el optimizador** con la única información que lo hace seguro: cuántos ids devuelve frente a cuántos escanea.
+- **Equivalencia testada**: un optimizador que cambia resultados es un bug; sin ORDER BY, el multiconjunto sí, el orden no.
+
+## 21.15 Ojo, cuidado con…
+
+- **Bajar predicados sin mirar bindings**: la trampa nº 1. `sink` usa `bound_variables()`; tú, usa `sink`.
+- **Confundir selectividad con cardinalidad**: la primera es una fracción (0.25), la segunda un número de filas (4 × 0.25 = 1). El explain muestra la segunda.
+- **IndexSeek siempre**: si el índice devuelve tantas filas como el escaneo, no ahorra; R4 sólo aplica si `ids.len() < scan_rows`.
+- **Leer `est. 1 filas` como una promesa**: es un argumento de comparación, no una respuesta. La respuesta son las filas reales de abajo.
+- **Catálogo vs índice**: el catálogo AYUDA A DECIDIR; el índice RESUELVE la búsqueda. Uno informa reglas; el otro ejecuta lecturas.
+
+## 21.16 Pin de batalla
+
+> *«Un optimizador que devuelve resultados distintos no está optimizando: está mintiendo más rápido.»*
+
+## 21.17 Si solo lees 30 segundos
+
+El plan que sale de `lower` es correcto pero ingenuo: filtra al final, escanea de más. El optimizador lo reescribe en cinco pasos fijos — elegir el punto inicial más selectivo, bajar los predicados, absorber etiquetas, convertir igualdades en `IndexSeek`, podar proyecciones — usando estadísticas del grafo (cuántos nodos por etiqueta, qué grados medios) para comparar candidatos. Los resultados NO cambian: se testea la equivalencia antes y después. `liradb explain` te enseña el ANTES, el DESPUÉS, las filas estimadas y las reales — y la diferencia entre ellas es la lección.
+
+## 21.18 Una historia pequeña
+
+Cuando conectamos el optimizador por primera vez, `liradb query` dejó de devolver filas en una consulta del demo. Pánico: habíamos roto el motor. Media hora después, el culpable: un pushdown demasiado entusiasta empujaba `f.age < 40` por debajo del `Expand` que liga `f` — el filtro evaluaba la edad de una variable que aún no existía. El fix fue una línea: preguntarle al subárbol sus `bound_variables()`. La moraleja se nos quedó grabada: el optimizador trabaja sobre el contrato del binder del cap. 19; quien reescribe planes sin saber qué variables están ligadas no está optimizando, está apostando.
+
+## Ejercicios resueltos
+
+**1. En la salida real del §21.9, ¿por qué el plan ANTES estima 4 en el `Expand` y 1 en el `Filter`?**
+
+`NodeScan(Person AS p)` estima 4 porque el catálogo cuenta 4 Person. El `Expand` multiplica su entrada por el grado medio OUT de Person (1.50 — seis aristas salen de personas: Ana 2, Bo 2, Carla 1, Dani 1, sobre 4 nodos) y por la fracción de aristas KNOWS (4/6): 4 × 1.5 × 0.667 = 4. El `Filter` multiplica por la selectividad de `f:Person ∧ f.age < 40`: la etiqueta ya está declarada por el patrón (1.0) y el rango usa SEL_RANGE (1/3): 4 × 1/3 = 1.33, que al mostrarse se redondea a 1. Verificación: `estimacion_scan_filter_expand` calcula estas mismas cifras contra el plan real.
+
+**2. ¿Por qué en la canónica del brief (`WHERE p.name = "Ana"`) el átomo `f:Person` NO baja hasta el escaneo, si el pushdown baja predicados?**
+
+Porque el pushdown baja átomos, no árdenes: `f:Person` menciona a `f`, y en el plan tras R1 `f` la liga el `Expand` — no hay NINGÚN sitio por debajo donde `f` ya esté ligada. La frontera del `Expand` es exactamente eso: lo que menciona variables ligadas por debajo baja; lo que menciona `to` se queda arriba. El plan queda `Filter(f:Person)` sobre `Expand(p, KNOWS, OUTGOING, f)` sobre `IndexSeek(Person.name = "Ana")` — verificado por `pushdown_canonico_del_brief_con_index_seek`.
+
+## Ejercicios propuestos
+
+**Esencial (recordar/aplicar).** Sin ejecutar nada, predice el plan DESPUÉS de `MATCH (a:Person), (c:City) WHERE a.age > 35 AND c.name = "Madrid" RETURN a.name, c.name`: cómo se parte el AND, dónde acaba cada átomo, cuál se convierte en `IndexSeek` y por qué el otro no. Verifícate con `cargo run -q -p liradb-cli -- explain "..."` y con el test `pushdown_reparte_el_cartesiano_y_busca_indices`. *Pistas*: (1) ¿qué variables liga cada lado del cartesiano? (2) ¿qué forma exacta exige R4? (3) ¿cuántos "Madrid" hay bajo City? *Criterio*: acertar la partición del AND y el IndexSeek exacto.
+
+**Intermedio (analizar).** La raíz del §21.9 estima 1 y devuelve 3. (a) Calcula la selectividad real de `age < 40` sobre las Person del fixture y compara con SEL_RANGE. (b) ¿Podría esa discrepancia llegar a cambiar el plan elegido por R1? Construye un WHERE donde sí (pista: filtros a ambos lados con heurísticas que mientan en direcciones opuestas). (c) ¿Qué estadística mínima —sin histogramas completos— afinaría el rango? Verifícate con `explain_la_consulta_del_reordenado` y `estimacion_scan_filter_expand`. *Criterio*: separar «ordenar planes» de «acertar filas».
+
+**Experto (crear — cierre de Parte IV, retrieval puro).** Primera parte, de memoria (sin mirar los caps. 17-20): reconstruye la cadena `texto → parse → lower → optimize → compile → open/next/close → filas` y escribe, para cada eslabón, qué capa la añade y qué invariante garantiza. Segunda parte: extiende `Catalog` con min/max por (etiqueta, propiedad) — acumúlalos en `collect` — y úsalos en `compare_selectivity` para estimar rangos por interpolación ((max − x)/(max − min)) en lugar de 1/3. Comprueba que el explain del §21.9 pasa de `est. 1` a algo cercano a 3 en la raíz y que el PLAN elegido no cambia (R1 sigue empezando por f). *Pistas*: (1) ¿dónde del bucle de nodos tocaría acumular el par?, (2) ¿qué rama del `match op` es la de los rangos?, (3) ¿por qué el plan ganador no debe moverse? *Criterio*: estimación mejorada + mismo plan + la batería de equivalencia (`equivalencia_antes_y_despues_sobre_bateria_de_consultas`) sigue verde.
+
+## Para profundizar
+
+- **P. G. Selinger et al., «Access Path Selection in a Relational Database Management System» (SIGMOD 1979)** — el paper fundacional: selectividades por defecto, dinámica de joins, y el pushdown como heurística. Nuestros 0.1 y 1/3 salen de aquí.
+- **PostgreSQL, «Using EXPLAIN» (docs oficiales) y release notes 7.2.0** — el formato plan + rows estimadas + actual rows que hemos imitado.
+- **Alex Petrov, «Database Internals» (O'Reilly, 2019)** — capítulo de ejecución y optimización como pieza del motor completo.
+- **CMU 15-445, lecciones de query optimization** — la taxonomía heurística vs coste, con Cascades como horizonte.
+- **Armbrust et al., «Spark SQL: Relational Data Processing in Spark» (SIGMOD 2015)** — Catalyst: reglas + estrategias sobre árboles de planes, en producción a escala enorme.
+
+## Mini-diálogo: en la boca del túnel
+
+> — Entonces el optimizador es… ¿un montón de ifs que cambian mi plan?
+>
+> — Es un montón de ifs con TASTE. Cada uno encarna una decisión que alguien tomó mirando datos: qué lado es más barato, qué predicado baja, qué índice ahorra. Selinger los escribió en 1979 y siguen ahí.
+>
+> — ¿Y si se equivoca? Mi estimación decía 1 y eran 3.
+>
+> — Se equivocó en la cifra y acertó en la decisión: f seguía siendo el mejor punto de partida. Las estimaciones no tienen que acertar; tienen que ORDENAR bien. El día que ordenen mal, no cambias el plan: cambias las estadísticas.
+>
+> — ¿Y nada puede romper mis resultados?
+>
+> — Todo puede romper tus resultados. Por eso no confiamos en que no: lo testeamos. Doce consultas, dos caminos, mismas filas. El optimizador no pide fe; pide evidence.
+
+---
+
+*(Próximo capítulo: 22 — Caminos mínimos ponderados. El optimizador eligió la ruta más barata para LIGAR un patrón; ahora la pregunta cambia: ¿cuál es el camino más corto de Ana a Carla cuando las aristas pesan? Dijkstra entra en escena — y abre la Parte V.)*
 # Apéndice 0 — Manual de estilo unificado
 
 > *Borrador inicial — se completará en la Fase 2.*

@@ -7,6 +7,11 @@ cap-13-el-buffer-pool-lru-clock-metricas.md
 cap-14-como-almacenar-adyacencias-csr-segmentos.md
 cap-15-indices-para-encontrar-datos-hash-b-tree.md
 cap-16-compactacion-y-mantenimiento-inspect-check-compact.md
+cap-17-disenar-un-lenguaje-pequeno-match-where-return.md
+cap-18-construir-el-lexer-y-el-parser.md
+cap-19-del-ast-al-plan-logico.md
+cap-20-el-motor-de-ejecucion-modelo-volcano.md
+cap-21-un-optimizador-pequeno-pero-real-liradb-explain.md
 apendice-0-manual-de-estilo-unificado.md
 epilogo.md
 colofon.md
