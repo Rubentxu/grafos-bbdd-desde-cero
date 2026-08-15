@@ -336,6 +336,109 @@ explícitas, lecturas sucias, lost updates, modelo «múltiples lectores / un
 
 ---
 
+## 33. Vol.II — Cap 28 (Write-ahead log; Parte VI)
+
+**Estado**: ALL_GREEN (658 → 685 tests workspace: +26 del cap 28 + 1 doctest).
+**Módulo**: `cap28_wal.rs` (~2.180 líneas). Sin crates externas. Un único
+toque quirúrgico al cap 27: `validar_buffer` pasa a `pub(crate)` (misma
+función, misma semántica — el cap 28 reutiliza la validación en vez de
+duplicarla).
+
+**Contexto**: el brief manda «el cambio se escribe en el WAL antes que en la
+página de datos», con LSNs, begin/commit/rollback, registros redo, flush,
+group commit, checksums y log truncation. Hito: simular un fallo durante una
+escritura y recuperar la base — aquí la recuperación es el replay A MANO (el
+arranque automático + reopen + undo/ARIES es el cap. 29, como exige el
+alcance).
+
+**Decisiones**:
+1. **El formato del registro reutiliza tres capítulos**: `WalRecord {lsn,
+   tx_id, cuerpo}` con `CuerpoWal = Begin | Operacion(Operacion) | Commit |
+   Rollback` — la `Operacion` es la MISMA del cap 27 (la semilla del
+   `RecordKind` del cap 10 era deliberada), serializada con el encoding del
+   cap 9 (strings/values; props ORDENADAS por clave porque la iteración de
+   un HashMap no es determinista y el mismo registro debe producir los
+   mismos bytes y el mismo CRC) bajo el framing del cap 10
+   (`[record_len u32][lsn u64][tx_id u64][tag u8][payload][crc32]` con
+   `crc32_simple`). Sólo se añade u64 LE como helper local. LSN: u64
+   monótono, consecutivo, asignado por el `Wal` — NUNCA se reutiliza ni
+   tras truncar.
+2. **Commit en dos fases con el marker ANTES del apply (roll-forward)**:
+   `WalTransaccion::commit` = re-validar → `log_write` de cada operación
+   (write-AHEAD; sync según política) → registro Commit + `sync` (EL punto
+   de durabilidad) → apply al store. DECISIÓN CLAVE del capítulo: si el
+   apply falla a mitad (el `StoreQueFalla` del cap 27), el commit YA es
+   durable → `replay_wal` COMPLETA la transacción. La alternativa (marker
+   al final del apply) dejaría el apply a medias SIN commit y rescatarlo
+   exigiría UNDO — ARIES, cap 29. El error `ApplyFallido` mantiene la
+   forma del cap 27 pero su Display cambia de «sin log no hay vuelta
+   atrás» a «replay_wal COMPLETA la transacción».
+3. **Redo idempotente en dos pasadas**: `replay_wal` colecciona las txs
+   con Commit (pasada 1) y re-aplica sus operaciones en orden de LSN
+   (pasada 2) con `aplicar_para_redo` tolerante: put idéntico = no-op
+   (por eso re-replay no duplica), put divergente = overwrite (el log
+   manda), delete de lo ausente = no-op. `InformeReplay` cuenta
+   confirmadas/descartadas/reaplicadas. Las txs sin Commit (rollback,
+   abandono por drop, commit truncado) se ignoran: nunca ocurrieron — y no
+   pueden haber tocado el store, porque el staging del cap 27 sigue vivo y
+   sólo se aplica tras escribir el Commit.
+4. **Corrupción = parada limpia en el modo recuperación, grito en el modo
+   estricto**: `WalIterator` termina ante el primer registro truncado, con
+   CRC roto o con LSN no consecutivo (se confía en el prefijo íntegro —
+   por eso el framing lleva length-prefix); `decodificar_wal` devuelve
+   `CrcInvalido{lsn aparente}` / `RegistroTruncado` / `LsnInvalido{hueco}`
+   para que los tests afirmen la detección. El commit record a medias por
+   corte de luz → la tx queda NO confirmada: la durabilidad exige el
+   registro Commit COMPLETO + sync.
+5. **Truncado con contrato**: `truncar_hasta_lsn(lsn)` descarta el prefijo
+   del log BAJO CONTRATO del llamador («sólo se trunca lo YA durable en el
+   store»). Los LSNs no se reinician. La deuda del contrato roto es TEST
+   ejecutable: replay sobre store vacío pierde lo truncado, y dependencias
+   rotas (arista cuyo nodo se truncó) → `RedoFallido{lsn}` ruidoso. El
+   checkpoint que decide «hasta dónde» automáticamente y la rotación por
+   tamaño: deuda documentada para cap 29.
+6. **Flush y group commit medibles, no prometidos**: `PoliticaFlush` =
+   `CadaEscritura` (por defecto: la regla de oro literal — 3 ops + commit
+   = 4 syncs) vs `SoloCommit` (UN sync por transacción; correcto porque
+   las páginas de datos no se van a disco antes del commit — mismo replay
+   testeado). `Wal::sync()` es un CONTADOR: en RAM no hay disco que
+   sincronizar; lo verificable es que se LLAME cuando el protocolo lo
+   exige (la fsync real es `FilePager::sync`, cap 12). El group commit
+   REAL (varias txs concurrentes compartiendo un fsync) exige
+   concurrencia: semilla plantada, cap 30.
+7. **La honestidad ACID continúa**: `informe_acid_post_wal()` re-valora
+   con los MISMOS tipos del cap 27 (que queda intacto como informe de su
+   capítulo): D sube de Ninguna a Parcial (commit durable EN EL LOG; el
+   store sigue en RAM — reopen cap 29) y A sigue Parcial pero pasa a
+   cerrarse en el 29 (el roll-forward funciona, falta ejecutarlo al
+   arranque). Test que verifica las transiciones contra `informe_acid()`.
+
+**Bugs propios corregidos durante la calibración** (lecciones):
+| Síntoma | Causa | Fix |
+|---|---|---|
+| E0716 en el test de roundtrip | `decode_wal_record(&encode_wal_record(rec))` devuelve un slice prestado del temporal | binding `let codificado` antes de decodificar |
+| clippy `doc_list_item_without_indentation` (12 errores en lib.rs) | una línea de la viñeta empezaba por `+ CRC32…` y CommonMark la parseaba como NUEVO ítem de lista | reescribir «y CRC32» (ojo: nunca empezar una línea de continuación de bullet con `+`, `*` o `-`) |
+| clippy `collapsible_if` ×3 | `if let … { if … }` anidados | let-chains de edition 2024 (`if let … && …`) |
+| `#[derive(Default)]` en `Wal` no compilaba | `PoliticaFlush` no implementa Default | `Default` manual que fija `CadaEscritura` (la decisión por defecto es CONTENIDO, no azar) |
+| test de truncado contaba mal el LSN del redo fallido | tras truncar lsns 1-4, la arista huérfana queda en lsn 6 (no 5) | recontar con la tabla de registros del test |
+
+**Lecciones**:
+1. Invertir una regresión es el mejor final de capítulo: los dos tests del
+   cap 27 que AFIRMABAN el store a medias se replican aquí paso a paso y
+   terminan al revés («cap 27: node_count()==2 y nadie recuerda; cap 28:
+   el log SÍ recuerda → replay → 4»). La prueba de que el capítulo sirve
+   es que vuelve falsa la afirmación del anterior.
+2. El orden commit-marker/apply ES la decisión de diseño del capítulo:
+   marker-antes-del-apply da roll-forward (redo-only); marker-al-final
+   exigiría undo. Ninguna de las dos es «la correcta» en abstracto — la
+   que matches el motor de recuperación que posees.
+3. La idempotencia del redo no es un adorno: es lo que hace que «re-aplicar
+   sin saber qué sobrevivió» sea correcto. Sin ella, el replay necesitaría
+   saber el estado exacto del store al fallar (eso es la fase Analysis de
+   ARIES, cap 29).
+
+---
+
 ## 13. Métricas de la Fase M3c-batch-5 (parcial)
 
 | Métrica | Valor |

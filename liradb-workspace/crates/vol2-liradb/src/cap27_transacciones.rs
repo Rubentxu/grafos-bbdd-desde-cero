@@ -747,7 +747,10 @@ impl Simulacion {
 /// * `DeleteNode`/`DeleteEdge`: debe existir en la vista simulada. Borrar
 ///   un nodo arrastra sus aristas (las del store y las del buffer): una
 ///   operación posterior que toque una arista arrastrada es error.
-fn validar_buffer(store: &dyn GraphStore, buffer: &[Operacion]) -> Result<(), TransaccionError> {
+pub(crate) fn validar_buffer(
+    store: &dyn GraphStore,
+    buffer: &[Operacion],
+) -> Result<(), TransaccionError> {
     let mut sim = Simulacion::default();
 
     for (indice, op) in buffer.iter().enumerate() {

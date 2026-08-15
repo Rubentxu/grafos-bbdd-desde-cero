@@ -167,6 +167,26 @@
 //!   propia transacción). El WAL real es cap. 28, la recuperación cap. 29
 //!   y el aislamiento MVCC/2PL cap. 30 — aquí se sientan las palabras y
 //!   el esqueleto.
+//! - [`WalRecord`] / [`CuerpoWal`] / [`Lsn`] / [`TxId`] / [`Wal`] /
+//!   [`WalTransaccion`] / [`replay_wal`] / [`PoliticaFlush`] /
+//!   [`InformeReplay`] / [`WalError`] / [`informe_acid_post_wal`] —
+//!   **Write-ahead log** (cap 28, Parte VI): la regla «el cambio se
+//!   escribe en el WAL antes que en la página de datos» hecha protocolo.
+//!   El [`WalRecord`] (LSN u64 monótono + TxId + Begin/Operacion/
+//!   Commit/Rollback) reutiliza la `Operacion` del cap. 27 y el framing
+//!   y CRC32 del cap. 10 (encoding del cap. 9 para strings/values). El
+//!   commit de [`WalTransaccion`] escribe TODAS las operaciones al log,
+//!   el registro Commit y hace `sync` (la durabilidad, CONTADA en tests,
+//!   con [`PoliticaFlush`] CadaEscritura/SoloCommit — semilla del group
+//!   commit) ANTES de aplicar al store: un apply a medias se completa
+//!   con [`replay_wal`] (redo idempotente de lo confirmado en orden de
+//!   LSN) — el test-tesis que INVIERTE la regresión del cap. 27:
+//!   StoreQueFalla + replay = transacción COMPLETA. Parada limpia ante
+//!   CRC/cola truncada, truncado con contrato firmado por el llamador
+//!   (`truncar_hasta_lsn`), errores tipados y la re-valoración honesta
+//!   de ACID tras el WAL ([`informe_acid_post_wal`]: D de Ninguna a
+//!   Parcial). La recuperación al arranque (reopen + replay automático)
+//!   es cap. 29.
 //!
 //! Organización del crate: cada capítulo vive en su propio módulo de origen —
 //! `cap07_modelo`, `cap08_graph_store`, `cap09_encoding`, `cap10_append_only`,
@@ -174,8 +194,8 @@
 //! `cap15_indices`, `cap16_mantenimiento`, `cap17_liraql_ast`,
 //! `cap18_lexer_parser`, `cap19_plan_logico`, `cap20_volcano`,
 //! `cap21_optimizador`, `cap22_caminos_minimos`, `cap23_a_estrella`,
-//! `cap24_centralidad`, `cap25_comunidades`, `cap26_proyeccion` y
-//! `cap27_transacciones` — y este
+//! `cap24_centralidad`, `cap25_comunidades`, `cap26_proyeccion`,
+//! `cap27_transacciones` y `cap28_wal` — y este
 //! `lib.rs` es sólo el punto de entrada: declara los módulos y los re-exporta
 //! con `pub use capNN::*` para mantener una API pública plana
 //! (`vol2_liradb::Node`, `vol2_liradb::run`, ...). Cada módulo viaja con sus
@@ -202,6 +222,7 @@ mod cap24_centralidad;
 mod cap25_comunidades;
 mod cap26_proyeccion;
 mod cap27_transacciones;
+mod cap28_wal;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -224,3 +245,4 @@ pub use cap24_centralidad::*;
 pub use cap25_comunidades::*;
 pub use cap26_proyeccion::*;
 pub use cap27_transacciones::*;
+pub use cap28_wal::*;
