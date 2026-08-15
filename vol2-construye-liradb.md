@@ -3983,6 +3983,1560 @@ Porque el pushdown baja átomos, no árdenes: `f:Person` menciona a `f`, y en el
 ---
 
 *(Próximo capítulo: 22 — Caminos mínimos ponderados. El optimizador eligió la ruta más barata para LIGAR un patrón; ahora la pregunta cambia: ¿cuál es el camino más corto de Ana a Carla cuando las aristas pesan? Dijkstra entra en escena — y abre la Parte V.)*
+# Capítulo 22 — Caminos mínimos ponderados (Dijkstra y Bellman-Ford)
+
+> *«Un camino puede tener más saltos y costar menos. El día que tus aristas pesan, "cerca" deja de significar "pocos saltos" y empieza a significar "barato".»*
+
+## 22.0 La anécdota de la esquina
+
+Según contaba el propio Dijkstra, en 1956 hizo «dos cosas importantes»: terminó su carrera y asistió a la inauguración oficial del ARMAC, el computador del Mathematisch Centrum de Ámsterdam. Para la inauguración necesitaba una demostración que los no-informáticos entendieran —y su respuesta también—, así que preparó un programa que hallara la ruta más corta entre dos ciudades de Holanda sobre un mapa reducido de 64 ciudades (seis bits bastaban para identificar una). La pregunta que se hizo era de una sencillez insultante: ¿cuál es el camino más corto de Rotterdam a Groningen?
+
+Y aquí la parte que ha contado mil veces quien firma el algoritmo: «Una mañana estaba de compras en Ámsterdam con mi joven prometida, y cansados, nos sentamos en la terraza de un café a tomar un café, y yo estaba pensando si sería capaz de hacerlo, y entonces diseñé el algoritmo del camino mínimo. Como he dicho, fue una invención de veinte minutos». Después remataba: «de hecho, se publicó en el 59, tres años tarde». Y un detalle que es puro Dijkstra: «una de las razones de que [el paper] sea tan agradable es que lo diseñé sin lápiz ni papel. Sin lápiz ni papel estás casi obligado a evitar toda complejidad evitable».
+
+Ese algoritmo nacido en una servilleta que nunca existió se publicó como «A Note on Two Problems in Connexion with Graphs» (Numerische Mathematik 1, 1959, págs. 269-271), dos páginas y media; en los años sesenta ya aparecía en un libro alemán de investigación operativa como «Das Dijkstra'sche Verfahren», y hoy vive en cada GPS: como le gustaba decir al entrevistador que acababa de consultar una ruta, «esta mañana ha usado usted mi algoritmo». Nosotros vamos a instalarlo donde nunca ha estado tan a gusto: sobre un grafo persistente cuyo peso es una PROPIEDAD escrita por un usuario que puede, tranquilamente, haberse equivocado. (Fuente: entrevista de Philip L. Frana a E. W. Dijkstra, historia oral del Charles Babbage Institute, 2001, publicada en Communications of the ACM 53(8), agosto de 2010.)
+
+## 22.1 Objetivo
+
+Al terminar este capítulo sabrás **por qué "el camino con menos saltos" deja de ser la respuesta correcta en cuanto las aristas pesan**, y habrás ejecutado los dos algoritmos clásicos de caminos mínimos SOBRE el grafo persistente de LiraDB — con los pesos leídos de las propiedades de las aristas, no de una matriz preparada a mano como en el Vol.I (cap. 4).
+
+Cuatro piezas, todas en `cap22_caminos_minimos.rs`:
+
+1. **La fuente de pesos** (`WeightSource`) — de dónde sale el peso de una arista: una propiedad (`WEIGHT relationship.distance`, la consulta del brief) o una constante.
+2. **La extracción estricta** (`edge_weight`) — semántica tipada para el dato sucio: ausente, no numérico, no finito.
+3. **Dijkstra** (`dijkstra` / `dijkstra_path`) — min-heap de std, borrado perezoso, finalización anticipada.
+4. **Bellman-Ford** (`bellman_ford` / `bellman_ford_path`) — pesos negativos legítimos y detección del ciclo negativo que contamina.
+
+Este capítulo abre la Parte V: algoritmos que ya no recorren el motor (Parte IV), sino el grafo.
+
+## 22.2 Problema
+
+La consulta que abre esta parte existe en el brief desde el principio:
+
+```text
+SHORTEST PATH FROM node:1 TO node:42 WEIGHT relationship.distance
+```
+
+Fíjate en lo que exige: el peso no lo pone quien consulta, lo pone QUIÉN GUARDÓ el dato. `relationship.distance` es una propiedad de arista (cap. 7): un `Value` dentro de `Edge.props`. Y un grafo de propiedades es schemaless — nadie garantiza que la propiedad exista en todas las aristas, ni que sea numérica donde exista.
+
+Compruébalo con nuestro propio `demo_graph` (cap. 20): las tres `KNOWS` «de verdad» llevan `since` (2020, 2021, 2022), pero el self-loop de Dani (edge 3) no lleva ninguna, y las dos `LIVES_IN` tampoco. Pregunta por `SHORTEST ... WEIGHT relationship.since` y el grafo te responde: no puedo, hay tramos sin precio. El problema del capítulo no es el algoritmo — ya lo conoces del Vol.I — sino el CONTRACTO entre el algoritmo y un dato que nadie validó al escribirlo.
+
+Y hay un segundo problema, más silencioso. Hasta hoy, «camino» en LiraDB ha querido decir saltos: el `Expand` del cap. 20 encadena relaciones y cuenta. Pero con pesos, el directo caro pierde contra el rodeo barato:
+
+```text
+        2.0        3.0
+    0 ────► 1 ────► 2        coste por arriba: 5.0
+    └──────────────────►      coste por abajo: 10.0 (una arista sola)
+             10.0
+```
+
+El camino de dos saltos cuesta 5; el de un salto, 10. Menos aristas no es más barato. Todo lo que sigue existe para responder a esa obviedad con rigor.
+
+## 22.3 Modelo mental
+
+Piensa en una **red de tramos con tarifa**: nodos = estaciones; aristas = tramos; pegado a cada tramo, su precio (la propiedad). El coste de un viaje es la suma de los precios de los tramos que cruzas. Sobre esa misma red, dos formas de organizarse:
+
+- **Dijkstra es la ventanilla que llama por tarifa.** Cada estación espera su turno con un número provisional; la ventanilla llama SIEMPRE al más barato pendiente. Cuando te llama, tu tarifa queda lacrada: es definitiva, porque todo el que sigue en la cola pagó ya igual o más para llegar hasta ahí. Eso es `settled`. Y si tú sólo esperabas a UNA estación (tu destino), cuando la llaman te levantas y te vas: **finalización anticipada**.
+- **Bellman-Ford es el tablón de anuncios por rondas.** Cada tarde (cada pasada), todos los viajeros releen el tablón completo de tarifas y pegan su mejora. No hay orden de llamada, nada se lacra — pero tolera descuentos (pesos negativos) y, si en el pueblo hay una rueda de descuento infinita que alguien puede alcanzar, la última pasada la delata.
+
+```
+ DIJKSTRA (ventanilla)                    BELLMAN-FORD (tablón)
+ heap: [(0,A)]                            ronda 1: releer TODAS las aristas
+ llama a A (0.0)  ── lacrado              ronda 2: releer TODAS las aristas
+ heap: [(1,B),(4,C)]                      ...hasta que una ronda no pega nada
+ llama a B (1.0)  ── lacrado              pasada extra de verificación:
+ llama a C (3.0)  ── lacrado                ¿algo aún mejora? → ciclo negativo
+ (todo lo que quede pesa ≥ que lo
+  ya llamado: por eso lacre = verdad)
+```
+
+El momento ¡ajá!: **el orden de llamada no es un truco de implementación, es la corrección misma**. Puedo lacrar a B porque ningún tramo futuro puede rebajar lo ya pagado — y eso es exactamente lo que un precio negativo rompe. Dijkstra rechaza negativos porque su prueba de corrección los usa; Bellman-Ford paga V-1 pasadas para recuperar el derecho a tenerlos.
+
+## 22.4 Primera solución
+
+La versión ingenua ya la tienes funcionando: encadenar `Expand` (cap. 20) y contar saltos. De hecho es TAN legítima que la hicimos oficial: `WeightSource::Constant(1.0)` es el `Default` — con todos los tramos a precio 1, el camino mínimo ponderado degenera en el camino con menos saltos, que es lo que el motor llevaba haciendo sin saberlo.
+
+Y la versión ingenua «ponderada» que escribiría cualquiera: leer `edge.props["distance"]` y, si no está, usar 1.0 «para no romper la consulta».
+
+## 22.5 Sus límites
+
+1. **El default amable miente.** Con `1.0` donde falta el dato, un import a medias produce caminos con precios inventados — y nadie lo sabe. Un grafo schemaless debe VER su dato sucio; una base de datos que rellena el hueco no está siendo amable, está mintiendo con buena letra.
+2. **El NULL no es cero ni es uno.** En el cap. 20 decidimos que la propiedad ausente SE VE como NULL; hoy decidimos la simetría: el NULL SE TRATA como ausencia. «Sin precio pegado» es un único concepto con un único error (`MissingWeight`).
+3. **Un NaN suelto revienta el heap.** `BinaryHeap` exige `Ord`; `f64` no lo implementa precisamente porque el NaN no tiene orden total. Sin validación previa, el día que alguien importe un `distance: NaN`, tu consulta muere de panic a mitad de cálculo — o peor, ordena «a medias».
+4. **El infinito ya está ocupado.** Usamos `f64::INFINITY` como centinela de «inalcanzable». Si un coste real desborda a infinito (1e308 + 1e308), se colaría en el disfraz de inalcanzable: un camino que existe reportado como «no hay camino».
+
+## 22.6 Solución evolucionada, parte 1: la fuente de pesos (o el precio pegado al tramo)
+
+Primera pieza: decir DE DÓNDE sale el peso. Dos historias, un enum:
+
+```rust
+pub enum WeightSource {
+    Property(String),   // WEIGHT relationship.distance — el caso del brief
+    Constant(f64),      // todas igual; Default = 1.0 = contar saltos
+}
+```
+
+Y la extracción, con semántica estricta y errores tipados (`edge_weight`):
+
+| El dato que hay en `props[name]` | Resultado |
+|---|---|
+| nada, o `Value::Null` | `MissingWeight { edge, prop }` |
+| `Bool`, `String`, `Bytes` | `InvalidWeight { edge, prop, found }` (con `Value::type_name`) |
+| `Int(i)` | `i as f64` — promoción Int→Float |
+| `Float` NaN o ±∞ | `NonFiniteWeight { edge, weight }` |
+
+Los tres errores hablan en cristiano, con arista y propiedad — esto es su `Display` REAL:
+
+```text
+edge 3 has no weight property 'since' (missing or NULL)    ← MissingWeight
+edge 3: weight property 'cost' is String, not a number     ← InvalidWeight
+edge 3: non-finite weight NaN                              ← NonFiniteWeight
+```
+
+**¿Por qué tan estrictos, si un default sería tan cómodo?** Porque las tres filas de esa tabla son preguntas distintas que el usuario necesita oír por separado: «no guardaste el peso» (corríjase el import), «guardaste texto donde iba un número» (corríjase el ETL), «guardaste algo que no es representable» (corríjase el origen). Un `1.0` silencioso fusiona las tres en una respuesta limpia sobre un dato roto. El test `demo_graph_con_pesos_reales_y_calidad_de_dato` lo documenta con nuestro propio grafo: con `WeightSource::property("since")`, la primera arista sin el dato —el self-loop de Dani, edge 3— es la que salta, ANTES de calcular nada.
+
+**¿Por qué promoción Int→Float y no aritmética entera?** Porque los pesos nacen del `Value` del cap. 7, que ya mezcla `Int` y `Float`, y porque el coste de un camino es una suma que se quiere uniforme. Tiene un precio documentado y testeado: f64 representa enteros exactos sólo hasta 2^53, así que `9.007.199.254.740.993` (2^53+1) se promueve a `9.007.199.254.740.992` — el test `pesos_int_se_promocionan_a_float_con_perdida_documentada` lo clava con números, y con valores razonables la suma es exacta.
+
+**¿Por qué `Constant` por defecto?** Lo menos sorprendente cuando nadie ha dicho qué propiedad es el peso: contar saltos, la semántica que el motor ya tenía. Y deja explícita una idea que vale el capítulo entero: «no ponderado» no es otro problema — es el caso particular en que todos los tramos valen 1. El test `la_fuente_de_pesos_cambia_la_respuesta` ejecuta el MISMO grafo con las dos fuentes y gana un camino distinto: ponderado, el rodeo (5.0); a saltos, el directo (1.0).
+
+## 22.7 Solución evolucionada, parte 2: Dijkstra sobre el store (la ventanilla)
+
+El corazón es literalmente el del Vol.I, cap. 4 — pero leyendo aristas del puerto del cap. 8:
+
+```rust
+let mut heap: BinaryHeap<Reverse<(Cost, NodeId)>> = BinaryHeap::new();
+while let Some(Reverse((Cost(d), u))) = heap.pop() {
+    if settled[u] { continue; }          // entrada obsoleta: borrado perezoso
+    settled[u] = true;                   // lacre: dist[u] es definitiva
+    if target == Some(u) { break; }      // finalización anticipada
+    for eid in store.out_edges(u) {
+        // ... relajar: new = d + w; si new < dist[v] { push }
+    }
+}
+```
+
+Cada línea tiene su porqué:
+
+**¿Por qué sobre `&dyn GraphStore` y no sobre el CSR del cap. 14?** Porque los pesos viven en `Edge.props`, y EdgeId→Edge es exactamente el acceso que da el trait; el CSR persiste SÓLO topología (offsets + targets, sin ids de arista), así que no puede responder «¿cuánto pesa esta arista?». Podríamos proyectar un CSR con pesos… y esa es exactamente la proyección que el cap. 26 generalizará. Deuda explícita, no omisión. De regalo, trabajar contra el trait mantiene el algoritmo agnóstico al backend: `MemoryStore` hoy, disco mañana.
+
+**¿Por qué `Reverse`?** El `BinaryHeap` de std es un max-heap: sin `Reverse`, llama primero al PEOR candidato. La clave `(Cost, NodeId)` ordena por coste y desempata por id — mismas entradas, mismo orden de salida, siempre.
+
+**¿Por qué borrado perezoso y no decrease-key?** Porque std no tiene decrease-key (no hay forma de «bajar» la prioridad de un elemento ya insertado). El patrón: cuando `dist[v]` mejora, se INSERTA una entrada nueva y la vieja se descarta al salir, detectada por `settled[u]`. Coste: O(log n) por push y algunos pops muertos (que `PathStats.popped` cuenta honestamente). La alternativa —una cola indexada con decrease-key— existe en crates externas; la descartamos por el mismo criterio del Vol.I: std y nada más que std.
+
+**¿Por qué `Cost` como newtype?** `f64` no implementa `Ord` (culpa del NaN) y el heap lo exige. `Cost` envuelve el f64 y le da orden total; su `expect` es un unreachable documentado —todo lo que entra en el heap es finito porque `edge_weight` ya lo garantizó y los desbordes se reportan como `CostOverflow` antes de tocar el centinela.
+
+**¿Por qué finalización anticipada?** No es una micro-optimización: es el invariante codicioso hecho código. Cuando tu destino sale del heap, su distancia es definitiva (todo lo pendiente pesa igual o más). El test `dijkstra_finalizacion_anticipada_extrae_menos_nodos` lo mide: en una cadena 0→1→…→5, preguntar por 1 asienta {0, 1} y se va; la tabla completa asienta los seis.
+
+**¿Y los negativos?** Aquí está la decisión más discutida del capítulo: `validate_edge_weights` recorre TODAS las aristas ANTES de correr y rechaza cualquier negativo con `PathError::NegativeWeight` — aunque la consulta no fuera a pisar esa zona. ¿No es exagerado? Piensa qué significa la alternativa: consultas que a veces aciertan y a veces devuelven números plausibles pero malos, según qué zona del grafo tocaron. Una base de datos prefiere FALLAR RUIDOSAMENTE a contestar casi-bien; el día que importes pesos negativos, querrás enterarte en todas tus consultas, y el propio mensaje te dice la salida: `use bellman_ford`.
+
+### Dijkstra en marcha: la vida de una entrada del heap
+
+Merece la pena seguir una ejecución completa. El diamante del Vol.I — `0→1 (e0, w1)`, `1→3 (e1, w2)`, `0→2 (e2, w4)`, `2→3 (e3, w3)` — con destino 3:
+
+| Paso | Pop | Acción | Heap tras el paso |
+|---|---|---|---|
+| 0 | — | `dist[0]=0`, push (0, 0) | `[(0,0)]` |
+| 1 | (0, 0) | asienta 0; relaja e0: `dist[1]=1` (push); relaja e2: `dist[2]=4` (push) | `[(1,1), (4,2)]` |
+| 2 | (1, 1) | asienta 1; relaja e1: `dist[3]=3` (push, con su `PathStep`) | `[(3,3), (4,2)]` |
+| 3 | (3, 3) | asienta 3 = **destino → break**. La (4, 2) ni se mira | (queda (4,2), ignorada) |
+
+Tres pops, tres expandidos, cuatro intentos de relajación, tres que mejoraron. La entrada `(4, 2)` sobrevive en el heap sin importar nada: ahí está el borrado perezoso en acción — si el bucle continuara (variante tabla completa), saldría, asentaría el 2 con `dist[2]=4` definitivo, y relajaría e3 (`4+3=7 > 3`: intento fallido, no mejora). El momento en que un pop descubre `settled[u] == true` y hace `continue` es la firma del patrón: esa entrada nació de una promesa que otra mejora dejó obsoleta. Y la relajación que sí mejora es literalmente:
+
+```rust
+if new < dist[v] {
+    dist[v] = new;
+    pred[v] = Some(PathStep { edge: eid, from: u, to: v, weight: w });
+    heap.push(Reverse((Cost(new), v)));   // la entrada vieja quedará obsoleta
+}
+```
+
+Nota lo que NO hay: ningún «buscar en el heap y bajar la prioridad». Se inserta y se abandona. El coste de esa comodidad —pops muertos— queda anotado en `stats.popped`, no escondido.
+
+## 22.8 Solución evolucionada, parte 3: Bellman-Ford (el tablón que admite descuentos)
+
+Bellman-Ford compra con sus V-1 pasadas el derecho que Dijkstra no puede pagar: pesos negativos LEGÍTIMOS (una arista de -4 es una respuesta, no un error — test `bellman_ford_explota_un_peso_negativo_que_dijkstra_rechaza`: la ruta 3 + (−4) = −1 gana al directo 1). Míralo en rondas sobre ese mismo grafo — aristas en orden de id: `e0: 0→2 (w3)`, `e1: 2→3 (w−4)`, `e2: 0→3 (w1)`:
+
+| Ronda | Lo que pasa al releer el tablón | dist tras la ronda |
+|---|---|---|
+| 1 | e0: `dist[2]=3` (mejora); e1: `3−4=−1` → `dist[3]=−1` (¡mejora!); e2: `0+1=1 < −1`? No | `[0, ∞, 3, −1]` |
+| 2 | nada mejora | `[0, ∞, 3, −1]` → `changed=false`, BREAK |
+
+`rounds == 2`, no las V−1 = 3 posibles: la parada temprana trabajó. Fíjate en la ronda 1: BF procesó `e1` ANTES que `e2` por pura casualidad de orden de lista — con otro orden, `dist[3]` habría bajado primero a 1 y a −1 en la ronda 2. El RESULTADO converge igual (−1); el camino que recorre cada ronda, no. Dijkstra no tiene esa tolerancia al azar: su heap impone un orden que ES su prueba de corrección.
+
+Tres decisiones más de la implementación:
+
+**La lista de relajación se materializa UNA vez.** Antes de las pasadas, `bellman_ford` recolecta `(source, target, edge_id, weight)` de todas las aristas en un `Vec`. ¿Por qué? Porque los pesos se leen de las props, y releerlas en cada ronda serían V-1 búsquedas hash por arista para el MISMO valor. Y si el store viviera en disco (caps. 11-13): V-1 lecturas de página por arista. El capítulo del buffer pool se cobra aquí su moraleja: cada lectura que puedas no repetir, no la repitas.
+
+**Parada temprana de pasadas, sí; del destino, no.** Si una pasada no mejora nada, el tablón ha convergido: otra vuelta no cambiaría nada, `if !changed { break; }` — una cadena de 4 saltos converge en 2 rondas, no en las V-1=4 posibles (test `bellman_ford_para_temprano_cuando_nada_cambia`, `rounds == 2`). Pero NO hay early-exit «cuando el destino ya tiene distancia», y la ausencia es deliberada: con negativos, un camino más LARGO puede ganar DESPUÉS. Lacrar el destino exigiría el invariante codicioso, y BF existe precisamente porque renunció a él.
+
+**La pasada de verificación distingue el ciclo que contamina.** Tras las V-1 pasadas, una vuelta extra: si alguna arista con `dist[u]` finito TODAVÍA relaja, hay un ciclo negativo ALCANZABLE desde el origen → `PathError::NegativeCycle` señalando ESA arista. ¿Por qué reachable y no «exista»? Aguas abajo de un ciclo alcanzable las distancias tienden a −∞: devolver media tabla válida sería mentir. Pero un ciclo en una componente que NADIE alcanza desde el origen no contamina la respuesta — el test `bellman_ford_ciclo_negativo_inalcanzable_no_contamina` tiene los dos casos en el mismo archivo: la isla rota responde con normalidad, y el mismo ciclo conectado al origen sí es error. Fíjate en la condición exacta: `dist[u] != f64::INFINITY && dist[u] + w < dist[v]` — la primera mitad ES la distinción alcanzable/inalcanzable.
+
+Y una garantía silenciosa que agradece el lector: sin negativos, BF y Dijkstra dan LA MISMA tabla, distancia a distancia (test `bellman_ford_coincide_con_dijkstra_sin_negativos`). Dos algoritmos, un contrato de resultado.
+
+## 22.9 Prueba de fuego
+
+Los tests no verifican «devuelve un número»: verifican que el camino es VÁLIDO contra el store — continuidad, aristas existentes, coste = suma de pesos (`assert_camino_valido`). Tres pruebas destacadas:
+
+**El oráculo CSR.** El cap. 14 nos dio una proyección topológica del grafo; hoy le pedimos que actúe de testigo (`proyeccion_csr_consistente_con_lo_alcanzado_por_dijkstra`): la alcanzabilidad por BFS sobre el CSR debe coincidir EXACTO con `sp.reached()` de Dijkstra. Topología y algoritmo cuentan la misma historia — y cuando el cap. 26 añada pesos al CSR, este test es el molde del oráculo definitivo.
+
+**El grafo demo con calidad de dato.** `dijkstra_path(&demo, 0, 2, &Default::default())` → coste 2.0 por 0 -KNOWS-> 1 -KNOWS-> 2; con `property("since")` → `MissingWeight { edge: 3 }` (el self-loop de Dani); y Dani inalcanzable → `Ok(None)`, que no es error: es una respuesta. Es el doctest del módulo, ejecutado por `cargo test --doc` en cada build:
+
+```rust
+let store = demo_graph();
+let sp = dijkstra(&store, 0, &Default::default()).unwrap(); // pesos = 1.0 (saltos)
+assert_eq!(sp.distance(2), Some(2.0)); // 0 -KNOWS-> 1 -KNOWS-> 2
+assert_eq!(sp.distance(5), Some(2.0)); // 0 -KNOWS-> 1 -LIVES_IN-> 5 (Lisboa)
+assert_eq!(sp.distance(3), None);      // Dani (sólo self-loop) es inalcanzable
+```
+
+Tres líneas, tres lecciones: los saltos son `Constant(1.0)`; un camino puede cruzar tipos de arista (KNOWS + LIVES_IN) si la fuente de pesos no discrimina; y `None` es parte del contrato, no un fallo.
+
+**La respuesta con formato.** `Path` implementa `Display` estilo Cypher — `(n0)-[e4 w=1.5]->(n1)-[e7 w=2]->(n2) cost=3.5` — porque el `PathStep` guarda arista, extremos y peso de cada salto. ¿Por qué el predecesor es el paso COMPLETO y no un `NodeId`? Para que `path_to` reconstruya sin volver a tocar el store: cada `get_edge` que te ahorras es una página que no pides al pager (cap. 12). En memoria no se nota; en disco, es la diferencia entre una reconstrucción gratis y E lecturas.
+
+¿Y si te saltas este capítulo? Tus caminos «ponderados» siguen siendo BFS con otro nombre, los pesos ausentes se rellenan en silencio y nadie puede explicar por qué la misma consulta responde distinto tras un import sucio. Síntoma exacto: números plausibles, cero contrato.
+
+## 22.10 Qué miden las PathStats
+
+`PathStats` es la métrica del cap. 20 aplicada al algoritmo — el «cuánto cuesta calcular»:
+
+- **`relax_attempts` vs `relax_updates`**: aristas consideradas vs relajaciones que MEJORARON una distancia. El ratio es un diagnóstico del grafo: si intentas 1.000 veces y mejoras 12, el grafo «no mejora» — casi todo tu trabajo fue mirar aristas que ya no podían ganar. Un camino óptimo en un grafo hostil es, sobre todo, una colección de intentos fallidos.
+- **`popped`** (Dijkstra): extracciones del heap, entradas obsoletas INCLUIDAS. Es el precio visible del borrado perezoso: pops muertos que existen porque std no tiene decrease-key.
+- **`rounds`** (Bellman-Ford): pasadas ejecutadas — la convergencia real frente a las V-1 teóricas.
+- **`expanded`**: pops VIVOS (sin obsoletos). Aparece numerado YA, pero es del cap. 23: será la vara para medir cuánto ahorra A* frente a Dijkstra. Hoy coincide con los pops útiles; mañana, la comparación.
+
+## 22.11 Qué hemos sacrificado
+
+1. **Velocidad frente a un CSR con pesos**: cada relajación pasa por `out_edges` + `get_edge` del trait. El cap. 26 pagará esa deuda con la proyección.
+2. **Decrease-key real**: el perezoso gasta memoria en entradas duplicadas y pops muertos. Medido en `popped`; aceptado por no depender de crates.
+3. **Aritmética exacta**: la promoción Int→Float pierde más allá de 2^53. Documentada y testeada; para pesos físicos, irrelevante; para bitcoins, ya sabes dónde mirar.
+4. **Dijkstra «híbrido» que validara sólo lo que pisa**: sería más rápido en grafos parcialmente sucios — y una inconsistencia entre consultas. Preferimos el fail ruidoso.
+5. **Recuperar distancias parciales tras un ciclo negativo**: cuando BF detecta el ciclo, tira TODA la respuesta. Devolver «la parte buena» invitaría a leerla como completa.
+
+## 22.12 Cómo lo hace una BBDD real
+
+- **Neo4j (Cypher clásico)**: la función `shortestPath()` cuenta RELACIONES, no pesos — exactamente nuestro `Constant(1.0)` como ciudadano de primera clase.
+- **Neo4j GDS**: `gds.shortestPath.dijkstra.stream(..., { relationshipWeightProperty: 'distance' })` — el mismo parámetro conceptual que nuestro `WeightSource::Property`, y el mismo contrato: la documentación exige pesos POSITIVOS y, si no especificas propiedad, corre «unweighted» (nuestro `Constant`).
+- **Kùzu**: la sintaxis `SHORTEST k` sobre relaciones de longitud variable (`MATCH (a)-[:Follows* SHORTEST 1..10]->(b)`) se resuelve con un recursive join tipo BFS — saltos, otra vez — y la variante ponderada llegó con función de coste explícita. Detalle delicioso: un PR de 2025 añadió al weighted shortest path un chequeo de pesos negativos que ERRA en vez de ignorarlos — la industria llegando, por su cuenta, a nuestra misma decisión del §22.7.
+- **pgRouting**: `pgr_dijkstra(edges_sql, start, end)` — y una política opuesta a la nuestra que vale oro como contraste: «un valor negativo en la columna cost se interpreta como que la arista NO EXISTE». Ellos BORRAN silenciosamente; nosotros gritamos `NegativeWeight`. Para negativos legítimos tienen `pgr_bellmanFord` (experimental), con Bellman (1958) y Ford (1956) en el nombre.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: en el grafo del §22.2, ¿qué camino gana con `Constant(2.5)` y cuál es su coste? ¿Cambia el ganador respecto a `Constant(1.0)`?
+- *Intermedio*: pgRouting trata el coste negativo como arista inexistente; nosotros devolvemos `NegativeWeight`. Construye un caso donde esa diferencia cambie la RESPUESTA (no sólo el error).
+- *Experto*: ¿qué le pasaría a `Cost::cmp` si relajáramos un NaN hasta el heap a pesar de la validación? Describe el modo de fallo exacto y por qué lo llamamos «unreachable documentado».
+
+## 22.13 Lo que te llevas
+
+- **El peso es un dato, no un parámetro**: vive en `Edge.props`, llega por `WeightSource::Property` y su ausencia es `MissingWeight`, nunca un default.
+- **Semántica estricta en tres errores tipados**: ausente/NULL, tipo no numérico, no finito — un grafo schemaless debe VER su dato sucio.
+- **`settled` + heap con `Reverse`**: el lacre del invariante codicioso; el borrado perezoso es el precio de no tener decrease-key en std.
+- **Early-exit al destino en Dijkstra, NUNCA en Bellman-Ford**: uno lo autoriza el invariante; el otro renunció a él para admitir negativos.
+- **Ciclo negativo: sólo el ALCANZABLE contamina** — y la arista señalada es la que aún relaja.
+- **`CostOverflow` existe para que el infinito real no se disfraze de inalcanzable.**
+- **`PathStats` numera el trabajo**: attempts vs updates, popped con muertos, rounds de convergencia.
+
+## 22.14 Ojo, cuidado con…
+
+- **Confundir menos saltos con más barato**: la trampa nº 1. Cura: ejecutar `la_fuente_de_pesos_cambia_la_respuesta` y mirar cómo gana un camino distinto por fuente.
+- **Peso vs coste**: el peso es de UNA arista; el coste, del camino entero. `PathStep.weight` y `Path.cost` están a un lado y otro de esa frontera.
+- **Inalcanzable vs desbordado**: ambos dan «infinito» en f64, pero uno es `Ok(None)` y el otro es `CostOverflow`. El centinela sólo significa lo primero.
+- **Esperar symetría de early-exits**: BF tiene parada temprana (pasadas), no finalización anticipada (destino). No son lo mismo ni sirven para lo mismo.
+- **Tratar NaN como «un número raro»**: es un ladrón de orden total. Todo lo que entra en un heap debe poder compararse SIEMPRE.
+
+## 22.15 Pin de batalla
+
+> *«Una base de datos que rellena el peso ausente con un 1.0 no está siendo amable: está mintiendo con buena letra.»*
+
+## 22.16 Si solo lees 30 segundos
+
+Los caminos mínimos ponderados leen el peso de las PROPIEDADES de las aristas (`WeightSource`), y como el grafo es schemaless, la extracción es estricta: peso ausente o NULL, tipo no numérico, o NaN/±∞ son errores tipados — nunca defaults. Dijkstra corre sobre `&dyn GraphStore` con un heap binario (`Reverse` + borrado perezoso, porque std no tiene decrease-key), lacra nodos al asentarlos y corta cuando el destino sale del heap; valida TODOS los pesos ANTES de empezar y rechaza negativos aunque no los pise, porque contestar casi-bien es lo peor que puede hacer una BD. Bellman-Ford admite negativos (V-1 pasadas sobre una lista materializada una vez, con parada temprana), y su pasada de verificación convierte el ciclo negativo ALCANZABLE en un error que señala la arista — el inalcanzable no contamina. Ambos devuelven lo mismo: tabla `ShortestPaths` y `Path` con pasos, coste y estadísticas.
+
+## 22.17 Una historia pequeña
+
+La primera vez que ejecutamos `dijkstra` con `WeightSource::property("since")` sobre el grafo demo, el resultado fue un error: `MissingWeight { edge: 3 }`. Reunión exprés: «ponle un default de 1.0 y listo, así no rompemos las consultas de nadie». Lo estuvimos mirando un rato hasta que alguien hizo la cuenta en voz alta: con el default, el self-loop de Dani costaría 1 — un precio que nadie escribió jamás — y las `LIVES_IN` también, y la consulta habría respondido un camino «barato» por tramos sin etiquetar. Decidimos esa tarde que el error era la respuesta correcta. Meses después, al leer la documentación de pgRouting, encontramos que ellos eligieron lo contrario (el coste sospechoso borra la arista, en silencio) — y nos alegramos dos veces: de nuestra decisión, y de tener un contraejemplo industrial con el que explicarla.
+
+## Ejercicios resueltos
+
+**1. Sobre `demo_graph`, ¿por qué `dijkstra(&s, 0, &WeightSource::property("since"))` falla con `MissingWeight { edge: 3 }` y no con una de las `LIVES_IN`, si ambas carecen de `since`?**
+
+Porque la validación es EAGER y recorre `iter_edges()` en orden de id: las aristas 0, 1 y 2 (las KNOWS reales) llevan `since`; la primera que no lo lleva es la 3 —el self-loop de Dani— y ahí se detiene el mundo. Las `LIVES_IN` (ids 4 y 5) también están sucias, pero el error informa de la PRIMERA ofensora. Y fallar es correcto aunque la consulta fuera 0→5 y jamás pisara el self-loop: la respuesta de una BD no debe depender de qué zona del grafo llegó a tocar la búsqueda. Verificación: `demo_graph_con_pesos_reales_y_calidad_de_dato`.
+
+**2. En el diamante del Vol.I (0→1 peso 1, 1→3 peso 2, 0→2 peso 4, 2→3 peso 3), ¿qué guarda `pred[3]` y cómo reconstruye `path_to` sin tocar el store?**
+
+Gana 0→1→3 (coste 3.0 contra 7.0 por arriba): la última relajación que fijó `dist[3]` fue la arista 1 con `PathStep { edge: 1, from: 1, to: 3, weight: 2.0 }` — y eso es exactamente `pred[3]`. `path_to(3)` sigue la cadena hacia atrás (3 → 1 → 0 se corta en `pred[0] = None`), da la vuelta, y devuelve `nodes() = [0, 1, 3]` con `cost = 3.0` SIN una sola lectura del store: cada paso ya lleva su arista y su peso. Los predecesores no pueden ciclar: un ciclo en la cadena exigiría distancias estrictamente decrecientes al rodearlo — un ciclo negativo, que BF ya habría rechazado. Verificación: `dijkstra_camino_clasico_del_diamante` con `assert_camino_valido`.
+
+## Ejercicios propuestos
+
+**Esencial (recordar/aplicar).** Sobre el grafo del §22.2 (0→1 peso 2, 1→2 peso 3, 0→2 peso 10), predice SIN ejecutar: camino y coste con `Constant(1.0)`, con `property("weight")`, y con `Constant(2.5)`; y la variante EXACTA del error (con su arista) si el peso viniera de `"distance"`. Verifícate con `la_fuente_de_pesos_cambia_la_respuesta` y `peso_ausente_o_null_es_missing`. *Pistas*: (1) ¿qué lee un `Constant` de las aristas — y qué cuenta entonces?; (2) ¿la validación eager mira el camino o el grafo?; (3) ¿en qué orden entrega `iter_edges` las ofensoras? *Criterio*: los tres costes exactos y la variante del error con arista y propiedad.
+
+**Intermedio (analizar — con los caps. 11-14 en la mano).** (a) Explica por qué `bellman_ford` materializa la lista de relajación una sola vez, y qué coste tendría releer `Edge.props` en cada pasada si el store viviera en disco (cada `get_edge` puede costar una página: ¿cuántas rondas × aristas releería una cadena de 4 saltos?). (b) ¿Qué rompería exactamente un NaN que llegara al heap a pesar de todo — qué exige `BinaryHeap` de sus elementos y qué devuelve `partial_cmp` con NaN? (c) ¿Por qué `pred` guarda el `PathStep` completo en vez de sólo el `NodeId`? Verifícate con `bellman_ford_para_temprano_cuando_nada_cambia` y `peso_nan_o_infinito_es_no_finito`. *Pistas*: (1) cuenta las rondas del test; (2) mira el `expect` de `Cost::cmp`; (3) cuenta las lecturas de `get_edge` en una reconstrucción. *Criterio*: razonar en lecturas/páginas, no sólo en O-grandes.
+
+**Experto (crear).** Primera parte, de memoria (sin mirar el capítulo): escribe la vida de una entrada del heap de Dijkstra — cuándo nace (push), cuándo queda obsoleta, cuándo la descartan y qué contador la cuenta — y enuncia el invariante que autoriza el `break` del early-exit. Segunda parte: escribe el test `ciclo_negativo_inalcanzable_se_vuelve_error_al_conectarlo` — parte del grafo de `bellman_ford_ciclo_negativo_inalcanzable_no_contamina` y añade UNA arista desde el origen hacia el ciclo; exige `NegativeCycle` señalando una arista concreta, y que `bellman_ford_path` también falle. *Pistas*: (1) ¿qué convierte «inalcanzable» en «alcanzable» con una sola arista?; (2) ¿qué arista tiene que seguir relajando tras V-1 pasadas?; (3) ¿qué condición sobre `dist[u]` pone la pasada de verificación? *Criterio*: test verde con `cargo test -p vol2-liradb` y saber explicar por qué ESA arista y no otra.
+
+## Para profundizar
+
+- **E. W. Dijkstra, «A Note on Two Problems in Connexion with Graphs» (Numerische Mathematik 1, 1959, 269-271)** — las dos páginas y media originales: camino mínimo y árbol generador mínimo, tal como salieron de la terraza del café.
+- **Philip L. Frana, «An Interview with Edsger W. Dijkstra» (CACM 53(8), agosto 2010; historia oral del Charles Babbage Institute, 2001)** — el propio Dijkstra contando los veinte minutos, la falta de lápiz y papel, y «evitar toda complejidad evitable».
+- **Cormen, Leiserson, Rivest y Stein, «Introduction to Algorithms», 3ª ed., cap. 24** — la prueba del invariante codicioso (§24.3) y el teorema de detección de ciclos negativos alcanzables (§24.1): el rigor detrás de cada decisión de este capítulo.
+- **Docs de Neo4j GDS («Dijkstra Source-Target Shortest Path») y de pgRouting (`pgr_dijkstra`, `pgr_bellmanFord`)** — los dos contractos de pesos de producción, con el contraste silencio-vs-error comentado en §22.12.
+- **Blog de Kùzu (release 0.0.4, «Shortest path queries»)** — cómo sintaxis Cypher (`SHORTEST k`), BFS y recursive joins conviven en un motor embebido real.
+
+## Mini-diálogo: en la ventanilla
+
+> — Entonces Dijkstra es un BFS con precios.
+>
+> — Es un BFS que aprendió a callarse hasta que sabe. BFS contesta por niveles de saltos; Dijkstra espera y llama por tarifas, y sólo cuando te llama tu número es definitivo. Esa paciencia ES la corrección.
+>
+> — ¿Y por qué tanto drama con un peso negativo? Total, un descuento.
+>
+> — Porque el lacre entero depende de que nadie pueda rebajar lo ya pagado. Un descuento rompe esa promesa: el que ya fue llamado podría mejorar. Bellman-Ford es el que acepta vivir sin lacre — y por eso paga V-1 pasadas y vigila la rueda de descuento infinita.
+>
+> — ¿Y si falta el precio de un tramo?
+>
+> — La ventanilla se cierra. Un `1.0` inventado te daría un viaje barato por tramos que nadie tasó. Preferimos que el grafo pase vergüenza una vez a que mienta para siempre.
+
+---
+
+*(Próximo capítulo: 23 — A*, heurísticas y búsquedas dirigidas. Dijkstra explora en círculos crecientes alrededor del origen; el destino podría estar al otro lado del grafo, esperando a que el círculo llegue. ¿Se puede tirar del hilo sin romper la optimalidad? La respuesta exige una propiedad nueva — admisibilidad — y `PathStats.expanded`, el contador que dejamos encendido hoy, medirá cuánto ahorra.)*
+# Capítulo 23 — A*, heurísticas y búsquedas dirigidas
+
+> *«Dijkstra sabe perfectamente cuánto ha caminado. No tiene ni idea de hacia dónde va. Esa diferencia es este capítulo.»*
+
+## 23.0 La anécdota de la esquina
+
+En 1966, en el Stanford Research Institute de Menlo Park, un robot llamado **Shakey** («temblón», por cómo le vibraba el chasis al arrancar) intentaba hacer algo que hoy suena trivial y entonces no lo era: moverse por una habitación llena de cajas sin chocar. Shakey no llevaba cerebro dentro: una cámara de TV y un telémetro láser enviaban las imágenes por radio a un DEC PDP-10 y un PDP-15 que ocupaban una habitación entera al lado, y el ordenador le devolvía por radio las órdenes. Todo ese viaje de ida y vuelta costaba tanto que Shakey se movía a paso de tortuga meditabunda (puedes verlo en las películas del SRI que conserva el Computer History Museum; el propio Peter Hart lo cuenta en el artículo de Wired de 2013).
+
+Para que un robot que apenas se movía no perdiera además la vida planeando rutas, tres investigadores del proyecto — **Peter Hart, Nils Nilsson y Bertram Raphael** — escribieron en 1968 el paper «A Formal Basis for the Heuristic Determination of Minimum Cost Paths» (*IEEE Transactions on Systems Science and Cybernetics*, SSC-4(2)): el algoritmo **A\***. La idea no era explorar mejor que Dijkstra, sino explorar *menos*: si el robot sabe HACIA DÓNDE queda el destino, no necesita mirar en todas direcciones. Cuenta Hart que en el laboratorio iban nombrando versiones del algoritmo con letras —A, A1, A2— y al ganador le pusieron un asterisco, la estrella, para señalar que ése era el bueno. En 1972 los mismos tres autores publicaron una corrección en el SIGART Newsletter que bautizaba dos palabras que usaremos todo el capítulo: **admisible** y **consistente**. Casi sesenta años después, A\* sigue siendo el algoritmo que lleva tu GPS, los NPC de los videojuegos y el planificador de rutas de las bases de datos de grafos.
+
+En el Vol.I ya programaste A\* sobre un grafo en memoria (cap. 9) y lo viste en robótica (cap. 29). Este capítulo lo hace correr **sobre el grafo del store** de LiraDB, y ahí aparece una pregunta que el Vol.I no necesitaba responder: ¿de dónde sale la heurística cuando los datos viven en una base de datos? Respuesta: de las **props de los nodos** — y de un trait.
+
+## 23.1 Objetivo
+
+Al terminar este capítulo sabrás **por qué Dijkstra explora «en círculo» y cómo dirigir la búsqueda hacia el destino sin perder la garantía de optimalidad**, y habrás usado (no reescrito: *usado*) cuatro piezas sobre la maquinaria del capítulo 22:
+
+1. El trait `Heuristic` — el contrato «¿cuánto queda para llegar?».
+2. `ZeroHeuristic` — h≡0, que convierte A\* en Dijkstra *exactamente* (y por eso es un test).
+3. `EuclideanHeuristic` — la distancia recta leyendo las props `x`/`y` de los nodos.
+4. `check_consistency` — el diagnóstico O(E) que delata la arista que rompe tu heurística.
+
+Y una métrica nueva, `PathStats::expanded`, para **medir** el ahorro en vez de creerlo.
+
+## 23.2 Problema
+
+Piensa en el grafo-trampa del test `euclidea_mismo_coste_con_menos_expansiones`: diez ciudades en línea sobre el eje X (tramos de 1 km) y una **trampa**: tres nodos colgados al norte, a 100, 200 y 300 km del destino, unidos por aristas baratísimas de 0.5. Quieres ir de la ciudad 0 a la ciudad 9.
+
+Dijkstra —tu `dijkstra_path` del cap. 22, con su finalización anticipada— expande **los 13 nodos**: la cadena y la trampa entera. No es un bug: Dijkstra ordena el heap por el coste acumulado `g`, y esos 0.5 son *objetivamente* más baratos que cualquier tramo de la cadena. Para quien sólo mira `g`, la trampa es irresistible. El radar no tiene brújula.
+
+El problema no es de eficacia sino de *información*: el algoritmo sabe dónde has estado (`g`) y no sabe hacia dónde vas. La red de ciudades del hito cuenta la misma historia en grande: para ir de Madrid a Barcelona, Dijkstra asienta **las 7 ciudades** del mapa —incluidas Sevilla y Bilbao, que están en dirección *contraria*— antes de que Barcelona salga del heap. En un grafo de millones de nodos, ese círculo que crece desde el origen es la diferencia entre milisegundos y minutos.
+
+## 23.3 Modelo mental
+
+Dos imágenes, un contraste:
+
+```
+      DIJKSTRA (radar)                     A* (GPS)
+      ordena el heap por g                 ordena el heap por f = g + h
+      ondas circulares                     frente sesgado hacia el destino
+
+  destino ●                                destino ●
+          |  ____                                 /__
+          | /    \                               /    ↗ ¡voy hacia allí!
+      ____|/      \                          ___/↗
+     /    |        \                        /  ↗ ← h(n) dice "queda poco"
+    | ____ |         \                      | ↗
+    |/    \|          ● origen              ● origen
+      ondas: "lo más barato primero"        g (andado) + h (que queda)
+```
+
+- **Dijkstra es un radar omnidireccional**: emite desde el origen y asienta lo más cercano en coste, sin importar la dirección. Óptimo, sí; y ciego al destino.
+- **A\* es un GPS**: cada nodo lleva una brújula `h(n)` que responde «¿cuánto queda hasta el destino?», y el heap ordena por la suma `f(n) = g(n) + h(n)`. Avanzar (`g`) y acercarse (`h`) puntúan juntos. La trampa del norte tiene `h` gigantesca —300 km rectos— y el GPS ni la mira.
+
+El momento ¡ajá! es éste: **h no cambia el grafo, no cambia el algoritmo, no cambia ni una línea del bucle de relajación. Cambia el ORDEN del heap — y el orden de pops era todo lo que Dijkstra era.** Si metes `h ≡ 0`, la clave de ordenación degenera en la de Dijkstra y A\* *es* Dijkstra, pop a pop. Todo el capítulo es una consecuencia de esa frase.
+
+## 23.4 Primera solución
+
+La solución ingenua ya la tienes escrita: `dijkstra_path(store, origen, destino, &peso)`. Es óptima, está testeada y termina en cuanto el destino sale del heap. En la trampa devuelve el camino correcto (coste 9.0) tras expandir 13 nodos.
+
+El intento naïve de «dirigir» la búsqueda también lo escribiría cualquiera: si la brújula es buena, ordena el heap **sólo por h** y ve directo al destino (greedy best-first). Y funciona… hasta que no funciona: una arista cara «que acerca» le gana a un desvío barato, porque `g` no cuenta para nada en la ordenación. El greedy es la sobre-estimación llevada al extremo: confía *tanto* en la corazonada que ignora lo andado.
+
+## 23.5 Sus límites
+
+Las dos soluciones ingenuas fallan por extremos opuestos y complementarios:
+
+1. **Dijkstra**: toda la información sobre lo andado (`g`), ninguna sobre lo que queda. Paga el grafo entero en el peor caso: 13 expansiones donde hacían falta 10; 7 donde hacían falta 3.
+2. **Greedy por h**: toda la información sobre lo que queda, ninguna sobre lo andado. Rápido y **sin garantía de optimalidad** — el mismo defecto que tendrá cualquier heurística que sobre-estima, como veremos en la sección 23.8.
+
+La ley del todo-o-nada: o exploras en círculo, o pierdes el óptimo. Falta la idea que mezcle ambas informaciones *sumándolas* — y que sepa qué garantía conserva esa suma. Esa idea es A\*, y en una base de datos necesita resolver antes una pregunta de diseño: **¿de dónde sale h?**
+
+## 23.6 Solución evolucionada
+
+### El trait `Heuristic`: la heurística la aporta el CALLER
+
+El código vive en `liradb-workspace/crates/vol2-liradb/src/cap23_a_estrella.rs`. El corazón del diseño es un contrato de tres líneas:
+
+```rust
+pub trait Heuristic {
+    fn estimate(&self, store: &dyn GraphStore, node: NodeId) -> Result<f64, PathError>;
+}
+```
+
+¿Por qué un trait y no una closure `Fn(NodeId) -> f64`, que sería menos ceremonia? Tres razones, y ninguna es estética:
+
+1. **Las heurísticas interesantes tienen estado y están ligadas a un destino.** La euclídea recuerda las coordenadas del destino y los nombres de las props (`x`, `y`); una de landmarks (sección 23.11) llevaría tablas de distancias precalculadas. Un struct con campos lo expresa sin esfuerzo; una closure tendría que fabricar ese estado con `Rc<RefCell<…>>`.
+2. **Una closure no podría leer el store.** `estimate` recibe `&dyn GraphStore` porque la euclídea necesita las props *del nodo que se está estimando* — datos que no están en la closure sino en el grafo. La alternativa sería capturar el store prestado, y entonces esa closure queda casada con ese store: no podrías pasarle otro. Es la PRIMERA VEZ que un algoritmo de la Parte V lee datos del **NODO** (todo el cap. 22 leyó aristas): por eso la firma es lo que es.
+3. **El contrato se valida en un sitio.** `a_star` revisa cada estimación que usa (finita, no negativa); si cada caller se fabricara su closure, ese contrato se repartiría por el código.
+
+Y ojo: el trait no cierra la puerta al caso ad-hoc. Los tests definen `Fija(Vec<f64>)` —una tabla de valores por nodo— en tres líneas, y con ella construyen los casos patológicos del capítulo (inconsistente, sobre-estimada, negativa). El patrón es el mismo que `WeightSource` en el cap. 22: el algoritmo fija la maquinaria; el caller aporta la política.
+
+### `ZeroHeuristic`: h≡0, o por qué un test no es una esperanza
+
+```rust
+pub struct ZeroHeuristic;   // h(n) = 0.0 para todo n
+```
+
+La heurística nula es admisible (0 ≤ coste real, siempre), consistente (0 ≤ w + 0, siempre)… y completamente inútil para dirigir nada. Su valor es doble, y los dos son de ingeniería, no de teoría:
+
+- **Es la línea base**: contra ella se mide cuánto ahorra una heurística real (`expanded` con h≡0 = trabajo de Dijkstra).
+- **Es un test de equivalencia exacta.** Con h≡0, la clave del heap `Reverse<(Cost(f), Cost(g), NodeId)>` degenera en `(Cost(g), NodeId)` — *exactamente* la de Dijkstra. No «parecida»: la misma. Por eso el test `heuristica_cero_es_dijkstra_exactamente` exige MISMO camino, MISMO coste y **MISMO orden de pops** (`popped`, `expanded` y `relax_updates` idénticos). Si tu A\* suma mal la f, desempata distinto o relaja en otro orden, el test se pone rojo. Un test que compara sólo el coste aceptaría una implementación que «acierta» explorando distinto; un test de orden de pops no perdona nada.
+
+Ese es el sentido de la frase del modelo mental: A\* contiene a Dijkstra como caso degenerado, y ese caso degenerado es un **freno de regresión**, no una curiosidad.
+
+### `EuclideanHeuristic`: coordenadas como props de nodo
+
+La heurística canónica del capítulo: la distancia en línea recta de cada nodo al destino, leyendo las coordenadas de las props del nodo:
+
+```rust
+let h = EuclideanHeuristic::new(&store, destino, "x", "y")?;
+// estimate(n) = hypot(x_n − x_dest, y_n − y_dest)
+```
+
+Tres decisiones escondidas aquí:
+
+1. **El destino se liga al construir** (`new` lee y valida SUS coordenadas eager — son 2 props, fallar antes de empezar es más barato que fallar en medio de la búsqueda). Por eso `estimate` no recibe el destino: una heurística apunta a UN destino.
+2. **Semántica estricta, la misma que `edge_weight` en el cap. 22**: prop ausente o `Null` → `PathError::MissingCoordinate { node, prop }`; tipo no numérico o Float no finito → `InvalidCoordinate`; un `Int` se promociona (coordenadas `Int(3)`/`Int(4)` dan la hipotenusa 5.0, el triángulo 3-4-5 del test). Un grafo schemaless delata sus huecos *cuando se pisan*, no antes.
+3. **`hypot` y no `((dx*dx)+(dy*dy)).sqrt()`**: `f64::hypot` calcula la raíz sin desbordes intermedios y garantiza resultado ≥ 0 y finito con entradas finitas — que ya validamos. h nunca llega al heap con un NaN (ver la validación de `h_of` abajo).
+
+¿Por qué es admisible? Porque **una carretera nunca es más corta que la línea recta**: si los pesos son distancias en las mismas unidades que las coordenadas, cada arista satisface `w(u,v) ≥ dist_recta(u,v)`, y por la desigualdad triangular ninguna ruta puede ser más corta que la recta al destino. Admisible *por construcción*, no por fe. Guarda esa condición de unidades: es la bomba de la sección 23.8.
+
+### El algoritmo: la misma maquinaria, otra clave
+
+`a_star(store, origen, destino, weight, heuristic)` reutiliza del cap. 22 *tal cual* la sanidad eager (`validate_edge_weights`, extraída a `pub(crate)` para compartirla — refactor puro), `WeightSource`/`edge_weight`, `Path`, `PathError`, `PathStats` y la reconstrucción por predecesores. Lo nuevo son cuatro detalles:
+
+```rust
+let mut heap: BinaryHeap<Reverse<(Cost, Cost, NodeId)>> = BinaryHeap::new();
+// (f, g, nodo): f = g + h prioriza; g y nodo desempatan (determinismo)
+
+while let Some(Reverse((_, Cost(g_u), u))) = heap.pop() {
+    if g_u > g[u] { continue; }        // entrada obsoleta: su g ya fue superado
+    stats.expanded += 1;                // pop VIVO: esto es lo que se mide
+    if u == dest { break; }            // válido con h admisible
+    for eid in store.out_edges(u) { /* relajar como en cap. 22 */ }
+}
+```
+
+1. **La clave es `(f, g, nodo)`, no un `f64`**: el heap exige `Ord`, y `f64` no lo implementa precisamente por los NaN. El newtype `Cost` del cap. 22 devuelve; los desempates por `g` y luego por id dan determinismo.
+2. **Entradas obsoletas**: cuando un nodo mejora su `g`, su entrada vieja *sigue* en el heap (los `BinaryHeap` no borran). Al salir, su `g` queda comparado contra el vigente (`g_u > g[u]`) y se descarta sin expandir. Comparación exacta: ambos valores salen de las mismas sumas.
+3. **Re-apertura, no `settled`**: aquí está la diferencia estructural con Dijkstra. Dijkstra puede marcar nodos como definitivos porque h≡0 es *trivialmente consistente* y un nodo expandido jamás mejora. Con una h inconsistente, un nodo ya expandido PUEDE mejorar su `g` después… y hay que re-expandirlo o pierdes caminos. Por eso `stats.expanded` puede superar el número de nodos: es el precio medido, no escondido, de tolerar heurísticas imperfectas.
+4. **Caché de estimaciones** (`h_cache`, NaN = «sin estimar»): la heurística se consulta a lo sumo UNA vez por nodo — la euclídea si no reelería dos props por cada inserción en el heap.
+
+Y el criterio de parada, enunciado con precisión: cuando el destino sale del heap como entrada *viva*, su `g` es óptimo **si h es admisible** — cualquier camino aún por descubrir pasa por un nodo del heap cuyo `f` es cota inferior de su coste, y todos eran ≥ `f(destino)`. Con h≡0 esto es literalmente el argumento de Dijkstra del cap. 22.
+
+### La validación honesta: qué se revisa, qué se documenta, qué se diagnostica
+
+Ésta es la decisión de diseño más importante del capítulo, y es una decisión sobre *costes*. El cap. 22 validó eager los pesos negativos porque era O(E) y saltársela producía respuestas mentira. Aquí la escala manda:
+
+| Propiedad | Coste de verificarla | Decisión |
+|---|---|---|
+| Pesos no negativos | O(E), herencia cap. 22 | Eager, misma función |
+| h finita y ≥ 0 | 1 comparación por estimación (cacheada) | Se revisa SIEMPRE (`NonFiniteHeuristic`, `NegativeHeuristic`) |
+| **Admisibilidad** (h ≤ coste real) | ¡Resolver Dijkstra hacia el destino! | **No verificable** — se documenta, el riesgo se DEMUESTRA en tests |
+| **Consistencia** (h(u) ≤ w(u,v)+h(v)) | O(E) + ≤2V estimaciones, LOCAL | Utilidad `check_consistency`, diagnóstico opcional |
+
+- **h finita y ≥ 0 sí es negociable que se revise**: un NaN rompería el orden total de `Cost` y haría *panic dentro del heap* — el peor lugar del mundo para depurar. Un h negativo casi siempre es un bug del caller y rompe el criterio de parada. La función `h_of` es la aduana (y de paso, la caché):
+
+```rust
+fn h_of(heuristic: &dyn Heuristic, store: &dyn GraphStore,
+        cache: &mut [f64], node: NodeId) -> Result<f64, PathError> {
+    if cache[node].is_nan() {                    // NaN = "todavía no estimada"
+        let v = heuristic.estimate(store, node)?;
+        if !v.is_finite() { return Err(PathError::NonFiniteHeuristic { node, value: v }); }
+        if v < 0.0      { return Err(PathError::NegativeHeuristic  { node, value: v }); }
+        cache[node] = v;                          // ≤ 1 consulta por nodo
+    }
+    Ok(cache[node])
+}
+```
+
+- **La admisibilidad NO se puede verificar**: saber si `h(n) ≤ coste real de n al destino` exige conocer ese coste real… que es exactamente el problema que estás resolviendo. Verificarla costaría más que la propia búsqueda. Así que el contrato se **documenta** y el riesgo se **demuestra** (tests: h sobre-estimada y unidades mezcladas ⇒ camino subóptimo *sin ningún error*).
+- **La consistencia sí es local**, y por eso existe `check_consistency`: una pasada por las aristas comprobando `h(u) ≤ w(u,v) + h(v)`. Devuelve `InconsistentHeuristic { edge, h_from, bound }` señalando la PRIMERA arista culpable. Y fíjate en la asimetría deliberada: es una utilidad de diagnóstico, **no un requisito** — A\* no la exige, porque rechazar una heurística inconsistente sería rechazar respuestas correctas (con h admisible-inconsistente, la re-apertura conserva el óptimo; el test lo mide: **5 expansiones para 4 nodos**, porque A se expande dos veces —con g=4 y luego con g=3.6—, y el coste 4.6 sigue siendo el óptimo que da Dijkstra).
+
+## 23.7 El hito: rutas sobre una red de ciudades
+
+El test `hito_del_brief_rutas_sobre_una_red_de_ciudades` monta la red del capítulo con coordenadas estilizadas en km (Madrid en el origen, Zaragoza a (190,130), Barcelona a (380,180)…) y carreteras siempre algo más largas que la recta. La pregunta: Madrid→Barcelona.
+
+- El directo cuesta 460. La ruta por Zaragoza, 240 + 200 = **440**: ésa es la óptima, y la encuentra cualquiera de los dos algoritmos.
+- Dijkstra expande **7 nodos**: asienta todas las ciudades — Valladolid, Bilbao, Valencia, Sevilla incluidas — porque ordena por `g` y el círculo no distingue.
+- A\* con la euclídea expande **3**: Madrid, Zaragoza, Barcelona. La recta desde Madrid a Barcelona (≈ 420 km) ya adelanta que Valladolid y Sevilla están *lejos* del destino: sus `f` nacen altísimos y no salen del heap. El resto del mapa ni se mira.
+
+```
+              Bilbao                    Barcelona ● ← destino (3ª y última)
+               |                          ▲
+           Valladolid          Zaragoza ●──┘ ← 2ª: la recta la señala
+               |                          ▲
+             Sevilla          Valencia    │
+                                │         │
+                             Madrid ●─────┘ ← 1ª
+        (Dijkstra: las 7 · A*: 3 · mismo camino, mismo coste 440)
+```
+
+Ese «7 vs 3» es `PathStats::expanded`, la métrica que este capítulo añadió al struct del cap. 22 (y que `dijkstra_impl` también incrementa). ¿Qué compra? Hace **visible** el ahorro de la heurística: sin ella, «A\* es mejor» es una fe; con ella, es un número que puedes `assert_eq!`. Y además delata la re-apertura (`expanded` > nodos tocados = hay inconsistencia). En el grafo-trampa de la sección 23.2, la misma métrica dice 13 vs 10: Dijkstra cae en la trampa barata que se aleja; A\* ve que esos nodos están lejísimos del destino y no los toca.
+
+## 23.8 El bug didáctico estrella: kilómetros contra minutos
+
+Éste es el error que quiero que te lleves tatuado. Test `unidades_mezcladas_km_vs_minutos_rompen_la_admisibilidad`: coordenadas en km, pesos en **minutos**. Autopista directa de 200 km con tráfico (200 min) contra un desvío rápido por el norte (98 + 67 = 165 min, el óptimo real).
+
+La euclídea sigue siendo «válida en forma»: finita, ≥ 0, geometría impecable. Pero la recta de 139 km ya no acota *minutos* — sobre-estima. Y entonces, sin error, sin warning, sin pánico:
+
+- Dijkstra (que no usa h) devuelve el óptimo: **165** por el desvío.
+- A\* devuelve **200** por la directa, camino `[0, 2]` perfectamente válido — encadena, las aristas existen, el coste suma — sólo que subóptimo.
+
+`h` hundió al desvío con «139 km que no son minutos» y premió la directa. Es el mismo síntoma que la sobre-estimación deliberada del otro test (h(1)=10 ⇒ A\* responde 3.0 donde el óptimo es 2.0): **A\* no miente sobre el camino que devuelve — miente sobre su optimalidad, y en silencio.** Por eso la admisibilidad no se «verifica y santifica»: se entiende o se sufre.
+
+¿Y cómo se caza? Con el diagnóstico local: `check_consistency` señala la arista culpable, la del desvío final — `h(1) ≈ 139.28 > w + h(2) = 67 + 0`. La primera arista cuya desigualdad triangular se rompe en unidades. Un O(E) que contesta lo que la búsqueda jamás te dirá.
+
+## 23.9 Prueba de fuego
+
+Los tests de este capítulo no afirman «funciona»: afirman números. Ejecútalos (`cargo test -p vol2-liradb`) y léelos como una tabla de garantías:
+
+| Test | Lo que demuestra |
+|---|---|
+| `heuristica_cero_es_dijkstra_exactamente` | h≡0 ⇒ MISMO camino, coste, pops, expanded, relax_updates que Dijkstra |
+| `euclidea_mismo_coste_con_menos_expansiones` | Trampa: 13 vs 10 expansiones, mismo coste 9.0, y `check_consistency` ok |
+| `hito_del_brief_rutas_sobre_una_red_de_ciudades` | Madrid→Barcelona: 7 vs 3, coste 440.0 por Zaragoza |
+| `admisible_no_consistente_reexpande_y_sigue_optimo` | 5 expansiones para 4 nodos, óptimo 4.6 intacto, `check_consistency` señala B→A |
+| `sobre_estimacion_devuelve_suboptimo_demostrando_el_riesgo` | 3.0 vs 2.0 **sin error**; el camino devuelto es válido |
+| `unidades_mezcladas_km_vs_minutos_rompen_la_admisibilidad` | 200 vs 165 silencioso; `check_consistency` delata la arista |
+| `coordenadas_ausentes_invalidas_o_no_finitas` | Missing/InvalidCoordinate; Int promociona (3-4-5 ⇒ 5.0) |
+| `heuristica_negativa_o_no_finita_es_rechazada` | NaN ⇒ error tipado (sin él: panic en `Cost::cmp`) |
+
+¿Qué pasaría si te saltas este capítulo? Dos síntomas detectables: tus rutas punto-a-punto escalan con todo el grafo (el círculo del radar), y el día que copies una heurística con unidades distintas a tus pesos obtendrás rutas malas **sin ningún síntoma** — ni error, ni test rojo. Sólo `check_consistency`, que no sabrás ejecutar, te lo habría dicho.
+
+## 23.10 Qué hemos sacrificado
+
+1. **La tabla single-source**: A\* sólo responde punto-a-punto. El sesgo hacia el destino es toda la gracia, y las distancias intermedias que va fijando NO están garantizadas (con h inconsistente, ni las de los nodos tocados). ¿Distancias desde un origen a todos? `dijkstra` del cap. 22, sin discusión.
+2. **Cero re-expansiones**: tolerar h inconsistente cuesta re-abrir (5 expansiones para 4 nodos). Una implementación con `settled` sería más rápida… y mentiría sobre qué heurísticas admite.
+3. **No hay `check_admissibility`**: no es una omisión, es una imposibilidad con presupuesto. La hermana local existe; la global no puede.
+4. **La euclídea exige coordenadas y unidades coherentes**: grafos sin geometría (redes sociales, grafos de dependencias) no tienen recta que medir. Para ellos quedan las heurísticas de tabla — y los landmarks de la sección siguiente.
+
+## 23.11 Cómo lo hace una BBDD real
+
+- **Neo4j GDS** ofrece `gds.shortestPath.astar`: la heurística es la distancia entre las coordenadas **`latitude`/`longitude` que deben vivir como propiedades del nodo** — exactamente nuestra `EuclideanHeuristic` con otros nombres de props, y con la misma condición implícita de que el coste sea una distancia comparable.
+- **pgRouting** expone `pgr_aStar` con parámetros `heuristic`, `factor` y `epsilon` y columnas x1/y1/x2/y2: la euclídea multiplicada por un factor que el usuario puede *subir* — es decir, sobre-estimación deliberada y configurable, cambiando óptimo garantizado por velocidad. Y su documentación/comunidad advierten del revés real: `pgr_astar` puede salir *más lento* que `pgr_dijkstra` si la heurística es mala (¡nuestro h≡0 de nuevo, pero en producción!). La moraleja de este capítulo vive en sus issues.
+- **GraphHopper** (el motor de rutas detrás de muchos servidores de mapas) usa **ALT**: *A\*, Landmarks, Triangle inequality* — se eligen unos pocos nodos «hito» (landmarks), se precalculan sus distancias a todo el grafo, y `h(n) = máx |d(L,t) − d(L,n)|` sobre los hitos acota por la desigualdad triangular. Es la heurística de nuestro ejercicio experto, con pedigree: Goldberg y Harrelson la publicaron en SODA 2005 («A\* Search Meets Graph Theory»). Cuando NO hay coordenadas — o las rectas mienten, como con ferris y túneles — los landmarks son la euclídea del pobre y del rico a la vez.
+- **Kùzu** hoy resuelve `SHORTEST` con recursive joins semánticos (lo veremos en el cap. 26) sin heurística geométrica: un recordatorio de que A\* es una herramienta para preguntas *métricas* punto-a-punto, no para todo patrón.
+
+## 23.12 Lo que te llevas
+
+- **f = g + h**: la clave del heap mezcla lo andado y lo que queda; h sólo cambia el ORDEN de los pops.
+- **h≡0 ⇒ A\* ES Dijkstra**, pop a pop — y por eso es un test de regresión, no una curiosidad.
+- **Admisible** (h ≤ coste real: global, NO verificable sin resolver el problema) ≠ **consistente** (local, O(E) con `check_consistency`). Admisible basta para el óptimo; consistente evita re-abrir.
+- **Re-apertura** en vez de `settled`: con h inconsistente se re-expande y el óptimo se conserva — medido en `expanded`.
+- **La euclídea es admisible por construcción** sólo si pesos y coordenadas están en las mismas unidades; mezclar km y minutos produce subóptimos **en silencio** (200 vs 165).
+- **`expanded`** hace visible el ahorro: 13 vs 10 en la trampa, 7 vs 3 en Madrid→Barcelona.
+- La heurística es un **trait ligado al destino** que lee props de NODO del store — la primera vez que la Parte V mira datos del nodo.
+
+## 23.13 Ojo, cuidado con…
+
+- **Confundir admisible con consistente**: la consistencia implica admisibilidad (con h(dest)=0); al revés no. Admisibilidad = óptimo; consistencia = además, sin re-expansiones.
+- **Sustituir `h` por el coste real «ya calculado» de una ejecución anterior**: si el grafo cambió (¡grafo mutable!), tu h sobre-estima y el silencio vuelve.
+- **Contar `popped` como trabajo**: los pops obsoletos no expanden; lo que cuesta es `expanded`. Son métricas distintas con nombres parecidos.
+- **Validar TODAS las coordenadas al empezar**: el destino se valida eager (2 props); el resto se delata al pisarlo. Validar O(V) para una ruta que toca 3 nodos es pagar el grafo entero otra vez — el pecado del radar.
+
+## 23.14 Pin de batalla
+
+> *«Una heurística que miente hacia arriba no acelera tu búsqueda: te vende un camino peor sin decirte nada. La admisibilidad no se verifica — se entiende.»*
+
+## 23.15 Si solo lees 30 segundos
+
+Dijkstra explora en círculo porque su heap sólo conoce `g`, lo andado. A\* ordena por `f = g + h`, donde `h(n)` es lo que el CALLER sabe («¿cuánto queda?») — en LiraDB, un trait `Heuristic` ligado al destino que lee props de nodo (`EuclideanHeuristic` con `x`/`y`). Con h **admisible** (nunca sobre-estima) el primer pop vivo del destino es óptimo; con h **consistente** ni siquiera re-abre nodos; con h sobre-estimadora —o con unidades mezcladas— el resultado es subóptimo **sin error**, y sólo `check_consistency` (O(E), local) te señala la arista culpable. El ahorro se mide en `PathStats::expanded`: 13→10, 7→3.
+
+## 23.16 Una historia pequeña
+
+Cuando Ana montó la red de ciudades para el hito, reutilizó las coordenadas de un mapa viejo — en kilómetros — pero los pesos los sacó de un servicio de tráfico que devolvía **minutos**. «A\* con euclídea, esto vuela», dijo, y voló: Madrid→Barcelona en 3 expansiones. Sólo que por la autopista directa. Dijkstra, con el mismo grafo, encontraba la ruta por el desvío rápido, 35 minutos antes. Ningún test fallaba — el camino de Ana encadenaba, sumaba, existía. Tardó una tarde en caer en la cuenta de que la heurística hablaba kilómetros y el grafo escuchaba minutos, y cinco minutos en confirmarlo: `check_consistency` señaló la arista del desvío y su `139.28 > 67` fue la confesión. Desde entonces, en LiraDB, toda heurística nueva pasa por el túnel de consistencia antes de estrenarse. No porque sea obligatorio. Porque es silencioso.
+
+## Ejercicios resueltos
+
+**1. ¿Por qué el test de h≡0 compara también el ORDEN de pops y no sólo el coste?**
+
+Porque la clave del heap con h≡0, `Reverse<(Cost(g+0), Cost(g), NodeId)>`, se ordena exactamente como la de Dijkstra, `(Cost(g), NodeId)`: mismas prioridades, mismos desempates. Comparar sólo camino y coste dejaría pasar una implementación que suma mal `f` o desempata por otra cosa pero «acierta» el resultado en ese grafo. Exigir `popped`, `expanded` y `relax_updates` idénticos convierte la equivalencia en exacta: cualquier desviación del orden es un rojo. Es el test de equivalencia más fuerte que se puede pedir sin leer el heap paso a paso.
+
+**2. Con h admisible pero inconsistente, ¿por qué re-abrir nodos conserva el óptimo?**
+
+Porque la garantía de parada no depende de que un nodo expandido sea definitivo: depende de que, al salir el destino como entrada viva, todo camino por descubrir tenga una cota inferior `f ≥ f(destino)`. Esa cota sólo exige admisibilidad (h nunca promete de menos). La inconsistencia hace que un nodo expandido pueda mejorar su `g` después; si lo marcáramos `settled`, perderíamos esa mejora y con ella el camino óptimo que la atraviesa. Re-expandir paga el precio (5 expansiones para 4 nodos en el test) pero no toca la garantía. Marcar `settled` es una optimización válida sólo bajo consistencia — y por eso es una decisión, no un default.
+
+## Ejercicios propuestos
+
+**Esencial (retrieval).** Sin mirar el código ni el capítulo: (a) di qué degenera exactamente en la clave del heap cuando h≡0 y qué TRES contadores debe igualar A\* para que la equivalencia con Dijkstra sea exacta; (b) di cuál de las dos propiedades —admisible, consistente— puede verificar LiraDB en O(E), y qué tendría que resolver para verificar la otra. Verifica tus respuestas contra `heuristica_cero_es_dijkstra_exactamente` y la doc de `check_consistency`.
+
+**Intermedio (analizar).** El túnel del doctest: A en (0,0), B en (3,4) — recta de 5 —, una carretera de 6 y un túnel de 4. Antes de ejecutar nada, razona: ¿es consistente la euclídea hacia B en ese grafo? ¿Es admisible? Si el camino óptimo de A a B pasa por el túnel, ¿qué puede devolver A\* — camino válido, coste correcto, o silencio? Monta el store, compruébalo con `a_star` + `dijkstra_path` + `check_consistency`, y explica la diferencia entre la propiedad global rota y la local rota.
+
+**Experto (crear, con spacing del cap. 22).** Implementa `LandmarkHeuristic`: elige un hito L (¿Sevilla o Zaragoza? discute cuál acota mejor hacia Barcelona), precalcula con el `dijkstra` single-source del cap. 22 la tabla `d(L,·)`, y define `h(n) = |d(L,dest) − d(L,n)|` (la desigualdad triangular la hace admisible; el destino fíjalo en construcción, como la euclídea). Corre Madrid→Barcelona y compara `expanded` contra `ZeroHeuristic` (7) y la euclídea (3). Ejecuta `check_consistency` e interpreta lo que diga. Criterio de éxito: camino 440.0 idéntico, `expanded` medido, y una frase defendiendo tu elección de hito.
+
+## Para profundizar
+
+- **Hart, Nilsson y Raphael, «A Formal Basis for the Heuristic Determination of Minimum Cost Paths» (IEEE Trans. SSC, 1968)** — el paper de A\*, nacido del robot Shakey. Corto, legible, y las definiciones son las que usamos aquí.
+- **Hart, Nilsson y Raphael, corrección en SIGART Newsletter 37 (1972)** — donde se aclara la distinción admisible/consistente que este capítulo explota.
+- **Dechter y Pearl, «Generalized Best-First Search Strategies and the Optimality of A\*» (JACM, 1985)** — por qué A\* con h consistente es óptimamente eficiente entre quienes usan la misma h.
+- **Goldberg y Harrelson, «Computing the Shortest Path: A\* Search Meets Graph Theory» (SODA, 2005)** — ALT: landmarks + desigualdad triangular, la evolución natural de este capítulo.
+- **Docs de Neo4j GDS (A\* con latitud/longitud), de pgRouting (`pgr_aStar` y sus parámetros `heuristic`/`factor`/`epsilon`) y de GraphHopper (`landmarks.md`)** — las tres decisiones de producción sobre la misma teoría.
+
+## Mini-diálogo: frente al mapa
+
+> — Entonces A\* es Dijkstra más una corazonada.
+>
+> — Menos una mitad del mapa. La corazonada —h— sólo reordena el heap; el bucle, la relajación, el camino, todo es del capítulo 22. Por eso h≡0 ES Dijkstra, pop a pop: no es una casualidad, es el caso degenerado del diseño.
+>
+> — ¿Y si mi corazonada exagera?
+>
+> — Entonces llega antes y por el camino equivocado, y no te enteras: el camino que te devuelve existe, encadena, suma. Se llama subóptimo silencioso, y es el motivo de que exista `check_consistency`. Dijkstra no se equivoca así porque no promete nada que no haya andado. La heurística es la primera pieza de LiraDB que habla del futuro — y hablar del futuro tiene reglas.
+>
+> — ¿Y la regla?
+>
+> — Nunca prometas menos de lo que queda. En km, si el grafo mide en km.
+
+---
+
+*(Próximo capítulo: 24 — Centralidad y PageRank. A\* necesitaba UN destino para saber hacia dónde ir; ahora la pregunta se invierte: cuando no hay destino sino importancia repartida, ¿quién manda a quién? La Parte V deja de buscar caminos y empieza a puntuar nodos.)*
+# Capítulo 24 — Centralidad y PageRank
+
+> *«Un enlace no es un voto igualitario: es la reputación del que enlaza, repartida entre sus salidas.»*
+
+## 24.0 La anécdota de la esquina
+
+En 1996, Larry Page llegó al doctorado de Stanford con una idea que sonaba académica: estudiar el **grafo de enlaces** de la web. Su director, Terry Winograd, le sugirió el ángulo que lo cambiaría todo: en ciencia, un artículo vale por sus citas — y un enlace ES una cita. La web entera, vista así, es el mayor grafo de citas jamás construido. Con Sergey Brin —y con Rajeev Motwani y Winograd como coautores— el proyecto, primero llamado BackRub, se convirtió en un buscador llamado Google, y en enero de 1998 la idea quedó por escrito: «The PageRank Citation Ranking: Bringing Order to the Web», un informe técnico de Stanford presentado también en la conferencia WWW7 (Brisbane, abril de 1998).
+
+El corazón del paper es una imagen que vale un buscador: el **surfer aleatorio**. Alguien que navega pulsando enlaces al azar para siempre. ¿En qué páginas pasará más tiempo? La respuesta a esa pregunta de paseo infinito es el PageRank. Y dos detalles que hoy siguen vigentes: el factor de amortiguación `d = 0.85` que usaremos tal cual, y el nombre — un juego de palabras con el apellido Page.
+
+La historia tiene un tercer acta verificable: la **patente US 6,285,999**, «Method for node ranking in a linked database». Solicitada el 9 de enero de 1998 por el propio Page… y asignada a Stanford, no a Google: la universidad la licenció en exclusiva a la empresa que sus dos estudiantes de doctorado fundaron el 4 de septiembre de 1998. La patente se concedió el 4 de septiembre de 2001 — tres años después, al día. En 2018 expiró. El IEEE la conmemora como hito («PageRank and the Birth of Google, 1996–1998»).
+
+Este capítulo construye PageRank — y las cuatro familias de centralidad que lo rodean — sobre el grafo persistente de LiraDB. Y lo hace empezando por el final: primero veremos el algoritmo que PageRank vino a arreglar, y veremos fallar.
+
+## 24.1 Objetivo
+
+Al terminar este capítulo sabrás responder, sobre el grafo REAL de tu store, la pregunta «¿quién es importante aquí?» — y sabrás por qué esa pregunta tiene cinco respuestas distintas, cada una con su coste. Habrás construido, en `cap24_centralidad.rs`:
+
+1. **Las familias clásicas**: grado, closeness (con corrección de Wasserman-Faust) y betweenness (algoritmo de Brandes 2001).
+2. **El «antes» honesto**: la centralidad eigenvector — implementada con sus DOS fallos como tests, porque son la mejor demostración de por qué existe el siguiente.
+3. **PageRank**: damping en (0,1) ABIERTO, masa colgante redistribuida uniformemente, convergencia L1 con historial por iteración — y su variante personalizada (`Teleport::Personalized`), la costura que el Vol. III usará para GraphRAG.
+
+Una regla del capítulo, heredada del brief: estas familias no están implementadas con optimización industrial — están para explicar cómo PIENSA cada una, y el coste se mide (`CentralidadStats`), no se declama.
+
+## 24.2 Problema
+
+Mira el grafo demo que arrastras desde el capítulo 20:
+
+```
+   KNOWS:      0 → 1 → 2 → 0        (Ana, Bo, Carla: triángulo)
+               3 → 3                (Dani: self-loop)
+   LIVES_IN:   0 → 4,  1 → 5        (Madrid, Sevilla: sumideros)
+```
+
+Pregunta: ¿quién es la persona «más importante»? La respuesta ingenua ya la tienes: contar aristas. Pero el grado es una medida LOCAL: cuenta vecinos y no pregunta quién los aporta. En la web de 1998 esto era literalmente un campo de batalla: los buscadores contaban palabras y enlaces, así que los spammers rellenaban páginas de ambas cosas. La genialidad de Page y Brin fue darse cuenta de que **un enlace lo publica OTRO**: tú puedes repetir mil palabras, pero no puedes obligar a mil webs a enlazarte. El enlace ajeno es una señal difícil de falsificar.
+
+Falta, aún así, la segunda mitad del insight: no todos los enlaces valen igual. Ser citado por un desconocido es algo; ser citado por una fuente importante es otra cosa. Quiero una métrica donde **la importancia se propague**: un nodo es importante si nodos importantes lo apuntan. Y una condición de ingeniería: el cálculo debe correr sobre `&dyn GraphStore`, el grafo persistente que llevas desde el capítulo 8, no sobre una matriz ad-hoc.
+
+Y aquí un problema práctico que condiciona todo el código: los algoritmos iterativos van a tocar la adyacencia muchísimas veces — decenas de iteraciones, todas las aristas cada una. Si cada acceso pasa por `out_edges` + `get_edge`, pagamos el store completo en CADA ronda.
+
+## 24.3 Modelo mental
+
+El **surfer aleatorio**, con tres reglas:
+
+1. **Pulsa enlaces**: desde la página actual, elige un enlace saliente al azar. Si la página tiene 3 enlaces, cada uno recibe 1/3 de su «voto».
+2. **Se aburre**: con probabilidad 1−d (el `damping` d es la probabilidad de seguir pulsando), no pulsa nada y **teletransporta** a una página elegida según el vector de teleport (uniforme: cualquier página, 1/n).
+3. **Los callejones teletransportan**: si cae en una página sin enlaces salientes (nodo colgante, dangling), se teletransporta igualmente.
+
+```
+   UNA iteración de PageRank (d = 0.85):
+
+   x[u] = (1-d)·t[u]              ← teleport: la renta básica (1/n)
+        + d·D/n                   ← cuota de la masa colgante
+        + d·Σ_{v→u} x[v]/grado(v) ← votos: cada vecino reparte su
+                                     importancia entre sus salidas
+
+   Σ_u x[u] = 1  en CADA iteración  (la masa no se crea ni se destruye)
+```
+
+PageRank(u) = fracción de la eternidad que el surfer pasa en u. La «importancia» es una **masa** que fluye por los enlaces: entra por los votos, sale repartida entre las salidas, y el teleport la devuelve al sistema. Este modelo de masa es el que hace legibles todas las decisiones del capítulo: el delta de convergencia es «cuánta masa se movió», el dangling es «masa a punto de fugarse», el damping es «con qué fuerza vuelve la masa al sistema».
+
+Comprueba el modelo en miniatura: una estrella de tres hojas apuntando a un centro. Las hojas no reciben votos — sin teleport, su importancia se desangra a 0 y el centro lo acumula TODO (es el fallo 1 del §24.5, y el test lo clava: centro > 0.999999, hojas < 1e-6). Con teleport, cada hoja cobra su renta básica de 1−d repartida en 1/n y el cuadro deja de ser tan despótico. Y si una hoja tuviera un enlace saliente hacia otra hoja, su voto valdría poco (pobre votante)… pero el del centro, repartido entre SUS salidas, vale por su prestigio. Voto = prestigio del emisor dividido por sus salidas: ni más ni menos.
+
+El momento ¡ajá!: la importancia no se declara — se FLUYE. Y toda la aritmética del capítulo es contabilidad de ese flujo.
+
+## 24.4 Primera solución
+
+Primero la infraestructura común. Toda la Parte V corre sobre una **proyección** del store: `Proyeccion::proyectar(store, dir)` materializa una sola vez los nodos (ordenados por id: determinismo), un índice denso NodeId→posición (los huecos de `delete_node` quedan fuera del cálculo) y los vecindarios. Es el CSR del capítulo 14 en forma de memoria volátil: misma idea (adyacencia compactada, acceso O(1) por nodo), sin persistencia. ¿Por qué materializar? Porque el bucle de PageRank toca cada arista `iteraciones` veces: re-leer el store por ronda sería pagarlo O(iteraciones) veces. ¿Y por qué es PRIVADA y no ponderada? El guion pide las familias «para explicar»; el BFS de saltos basta. La versión con pesos — con la semántica estricta `edge_weight` del capítulo 22 — es una deuda explícita hacia el capítulo 26, que la saldó con `ProyeccionPonderada`.
+
+Con dirección configurable: `GraphDirection::Out` (salientes), `In` (la transpuesta PURA de la salida, con aristas paralelas conservadas) y `Both` (la vista «no dirigida» como CONJUNTO: vecinos distintos y self-loop una sola vez — la convención del `Expand` UNDIRECTED del capítulo 20; sin dedup, un store simetrizado a mano contaría cada par doble).
+
+Sobre esa base, las cinco familias del capítulo — cuatro «de consulta puntual» y una global. Las preguntas, para tenerlas juntas:
+
+- **Grado** — «¿cuántos vecinos?». Una pasada, O(V+E), normalizado por n−1 (el máximo posible: estar conectado a todos). Con dirección: en el triángulo `0→1, 0→2, 2→0`, el nodo 0 tiene grado out 1.0 (2 de 2 posibles), pero grado in 0.5. Mismo grafo, dos preguntas: el que HABLA y el que es ESCUCHADO.
+- **Closeness** — «¿a qué distancia estoy de todos?». Un BFS por nodo: O(V·(V+E)). En el camino simetrizado 0-1-2-3 sale el valor de libro: extremos 0.5 y centro 0.75 — `C = 3/Σd` con Σd = 6 en los extremos y 4 en el centro. Con la corrección de **Wasserman-Faust** para componentes desconectadas: `C(u) = ((r−1)/(n−1))·((r−1)/Σd)`, donde r es cuántos nodos alcanzas. Sin ella, en un grafo de dos 2-ciclos separados cada nodo daría 1.0 (¡perfecto dentro de su burbuja!) — con ella dan 1/3: penalizados por el mundo que NO alcanzan.
+- **Betweenness** — «¿qué fracción de los caminos mínimos AJENOS pasan por mí?». Es la métrica del control: el nodo que está en TODOS los caminos entre otros dos es un cuello de botella — un aeropuerto hub, un router troncal, un corredor de información. En el camino 0-1-2-3, los intermedios 1 y 2 acumulan TODOS los pares: crudo 4, normalizado 2/3. En la estrella, el centro llega al máximo absoluto, 1.0: sin él, nadie habla con nadie. Aquí está la joya algorítmica del capítulo: **Brandes 2001**, con números en el §24.7.
+
+Y la versión ingenua de la pregunta global: la **centralidad eigenvector**. «Soy lo que mis entrantes valen», sin ningún correctivo: `x_u ← Σ_{v→u} x_v`, iteración de potencia sobre la adyacencia cruda, normalizada en L2 cada paso. ¿Por qué la normalización, si «ensucia» el autovector? Porque la masa que escapa por los colgantes no vuelve: sin renormalizar, el vector entero se desangra hacia 0 y la iteración no tendría punto fijo que alcanzar. Con L2 por paso, al menos el vector conserva norma — y sus dos fallos quedan a la vista, que es justo lo que queremos de él. Caso borde honesto: un grafo sin aristas (autovalor 0, cualquier vector es autovector) devuelve el uniforme con `converged = true` sin iterar — no todo es drama.
+
+## 24.5 Sus límites
+
+El eigenvector crudo se rompe de DOS maneras en grafos dirigidos reales. No lo afirmamos: lo ejecutamos.
+
+**Fallo 1: la masa se fuga por los colgantes.** Estrella con las hojas apuntando al centro: converge — pero las hojas mueren a 0 (`ev.score(hoja) < 1e-6`) y el centro se lo lleva todo (`> 0.999999`). ¿Y si el centro tuviera a su vez un sumidero favorito? La masa que entra en un nodo sin salidas SE ESCAPA del sistema: el flujo de importancia se desangra. En la cadena 0→1→2 lo ves en pequeño: la masa fluye río abajo, llega a 2… y desaparece del mundo. Iteración a iteración, el vector entero mengua — por eso el código renormaliza en L2 cada paso: para que al menos el vector conserve la norma mientras la ESTRUCTURA interna colapsa. En la web esto no es un caso borde: casi TODA página tiene enlaces salientes a alguna parte… y muchas (PDFs, imágenes, páginas abandonadas) no. Es la regla, no la excepción.
+
+**Fallo 2: la oscilación periódica.** El grafo trampa: una cola que desemboca en un 3-ciclo (`0→1, 1→2, 2→3, 3→1`). La masa muere en la cola y lo que queda ROTA en el ciclo: en cada iteración el vector se desplaza un terzo de ciclo y al siguiente vuelve — oscila para siempre. El test lo dice sin rodeos: `eigenvector_centrality(&s, 100, 1e-9)` devuelve `converged = false` tras agotar las cien iteraciones, con `delta > 1e-9`.
+
+```
+   grafo: 0 → 1 → 2 → 3, con 3 → 1   (cola + 3-ciclo: 1→2→3→1)
+
+   eigenvector (sin damping)          PageRank (d = 0.85)
+   ─────────────────────────────      ─────────────────────────────
+   la cola muere; la masa             la cola muere; la masa rota
+   ROTA en el ciclo sin decaer:       AMORTIGUADA: en cada paso un
+   it k:   pico en 1                  15 % se va al teleport y
+   it k+1: pico en 2                  termina asentándose:
+   it k+2: pico en 3, como en k       δ_k → 0 geométricamente
+   δ_k ≈ constante > tol, nunca baja  (razón ≈ d·λ₂ < 1)
+   converged = false                  converged = true
+```
+
+Si tu motor de ranking se rompe en un ciclo de tres nodos, no tienes un motor de ranking. Hace falta algo que repare AMBOS fallos: que devuelva la masa fugada y que amortigüe la rotación. Ese algo no es un parche numérico — es el damping.
+
+El test que lo clava es tan corto que cabe entero — y es, en cuatro líneas, la tesis del capítulo:
+
+```rust
+// Cola + 3-ciclo: T→A, A→B, B→C, C→A.
+let s = dirigido(4, &[(0, 1), (1, 2), (2, 3), (3, 1)]);
+
+let ev = eigenvector_centrality(&s, 100, 1e-9).unwrap();
+assert!(!ev.converged);                  // agotó las 100 y sigue oscilando
+assert!(ev.delta > 1e-9);
+
+let pr = page_rank(&s, 0.85, 200, 1e-9).unwrap();
+assert!(pr.converged);                   // MISMO grafo: converge
+assert!((pr.total_mass() - 1.0).abs() < 1e-6);  // y la masa sigue ahí
+```
+
+## 24.6 Solución evolucionada
+
+PageRank es el eigenvector con exactamente DOS arreglos quirúrgicos.
+
+**Arreglo 1: el teleport (damping).** Con probabilidad 1−d, el surfer reaparece en una página del vector t. ¿Por qué repara la oscilación? Algebra lineal honesta, con nombre: **Perron-Frobenius**. La iteración de potencia converge al autovector dominante si todo lo demás es, en módulo, menor que 1. Un ciclo puro tiene autovalores complejos de módulo 1 (las raíces de la unidad: por eso rota sin decaer). La matriz de Google `G = d·M + (1−d)·t·1ᵀ` contrae TODOS los autovalores salvo el 1 por el factor d: con teleport uniforme, el segundo autovalor es exactamente d (Haveliwala y Kamvar, 2003, lo demostraron). Con d = 0.85, la masa de error se contrae un 15 % por iteración… pero se contrae SIEMPRE: la matriz es positiva (todas las entradas > 0, gracias al teleport que toca todo el mundo), luego primitiva, luego con un ÚNICO estacionario y convergencia garantizada — sin importar ciclos, colas ni componentes. Y por eso `damping ∈ (0,1)` ABIERTO por ambos extremos: d = 0 es teleport puro (una iteración, sin estructura — no hay grafo que rankear), y d = 1 es eigenvector PURO… que ya vimos fallar, y que por eso existe como función propia con sus tests de fallo. Los bordes no son valores válidos: son otros dos algoritmos. (Detalle técnico que ya nos costó un test: para excluir el 0 no sirve `Range::contains` — el inicio del rango es inclusivo. Comparación explícita.)
+
+**Arreglo 2: redistribución uniforme de la masa colgante.** Un surfer en un nodo sin salidas teletransporta. ¿Por qué uniforme y no «se descarta y se renormaliza al final» (la variante «no-scale»)? Porque con redistribución la masa total es 1 EN CADA ITERACIÓN — un invariante que testeamos, no una esperanza — y el delta L1 conserva su lectura de probabilidad. La variante no-scale está documentada en el código como alternativa legítima: cambia el límite, no el procedimiento. Aquí no la implementamos: dos contratos semánticos para el mismo algoritmo es una trampa de lector.
+
+El damping también paga otra deuda silenciosa: las **componentes desconectadas**. El teleport es lo único que conecta mundos que no se tocan — hace la cadena irreducible. Con teleport uniforme, cada componente recibe masa proporcional a su tamaño: dos 2-ciclos aislados se reparten 0.5 y 0.5; un 3-ciclo frente a un 2-ciclo, 3/5 y 2/5. Sin teleport no habría respuesta global posible: cada componente tendría su propio PageRank y ninguno sabría nada del otro.
+
+Los EXTREMOS, medidos y no filosofados: con d = 0.01 el resultado es prácticamente el teleport uniforme (todos a 1/3 en la cadena con colgante, con margen 0.01); y a d fijo, subir d retrasa la convergencia — d = 0.99 necesita MÁS iteraciones que d = 0.5 para la misma tolerancia, porque la razón de contracción se acerca a 1 (`pagerank_damping_extremos` lo testea con las dos ejecuciones).
+
+Sobre el núcleo compartido (`iteracion_de_potencia`), dos funciones públicas con una costura:
+
+```rust
+pub enum Teleport {
+    Uniform,                          // PageRank global: 1/n
+    Personalized(Vec<(NodeId, f64)>), // PPR: semillas ponderadas
+}
+
+pub fn page_rank(store, damping, max_iterations, tol)
+    -> Result<PageRankResult, _>
+{ /* mismo núcleo, t = Teleport::Uniform */ }
+
+pub fn personalized_page_rank(store, seeds, damping, max_iterations, tol)
+    -> Result<PageRankResult, _>
+{ /* MISMO núcleo, t = Teleport::Personalized(seeds) */ }
+```
+
+¿Por qué el teleport es un parámetro y no está pegado al cálculo? Porque el PageRank personalizado no es una floritura: es un operador de RECUPERACIÓN. Su lectura cambia por completo: el global pregunta «¿qué es importante en general?»; el personalizado pregunta «¿qué es relevante PARA ESTE punto de partida?». Las semillas definen «el centro del mundo»: la masa que escapa por el damping vuelve a ELLAS. Con dos 2-ciclos desconectados y semilla en el nodo 0, la componente lejana queda a masa EXACTAMENTE 0 — fuera del mundo — y en la componente sembrada la solución a mano es `a = 0.15/(1−0.85²) ≈ 0.54`. El Vol. III (capítulo 51, GraphRAG) enchufará aquí su pregunta del usuario como `Teleport::Personalized` sobre el subgrafo de documentos. Si teleport y núcleo estuvieran acoplados, tendría que duplicar PageRank; tal como está, no toca el núcleo.
+
+## 24.7 Código completo ejecutable
+
+El código vive en `liradb-workspace/crates/vol2-liradb/src/cap24_centralidad.rs`. Los tests corren con `cargo test -p vol2-liradb tests_centralidad` (28, todos verdes). Recorremos las decisiones.
+
+**Brandes, con números.** Betweenness(u) = Σ σ_st(u)/σ_st: la fracción de caminos mínimos entre pares ajenos que pasan por u. La versión ingenua corre un BFS POR PAR: V² pares × O(E) por BFS = O(V²·E)… y encima eso sólo da distancias — enumerar los caminos de cada par puede explotar exponencialmente (Brandes cita el estado previo como O(V³) y peor). Brandes 2001 lo reduce a V BFS con acumulación: en el BFS se cuentan los caminos (σ) y se anotan predecesores; después se recorren los nodos EN ORDEN INVERSO acumulando dependencias `delta[v] += (σ_v/σ_w)·(1 + delta[w])` — la recursión que evita enumerar caminos. Coste: O(V·E). Números: V = 1.000.000, E = 10.000.000 → por pares ~10¹⁹ operaciones (a 10⁹ op/s: siglos); Brandes ~10¹³ (del orden de horas). La normalización es la dirigida, 1/((n−1)(n−2)) — con `Both` sobre un grafo simetrizado reproduce EXACTO el libro no dirigido: camino 0-1-2-3 → intermedios a 2/3; estrella → centro a 1.0. Las aristas paralelas son caminos distintos (σ las cuenta).
+
+**El bucle de PageRank.** Cae entero en `iteracion_de_potencia`: (1) sumar la masa de los colgantes; (2) sembrar el vector nuevo con teleport + cuota colgante; (3) repartir votos de 1/grado por cada arista saliente; (4) delta L1, history, y parar bajo tolerancia. Multigrafo, sutileza testeada: duplicar la arista 0→2 NO duplica el voto de 2 (también duplica el denominador)… pero le ROBA la mitad de la cuota al otro vecino: 2 sube, 1 baja (`pagerank_multigrafo_el_duplicado_roba_masa`).
+
+Y cuando el grafo es simétrico, el sistema se resuelve A MANO — el mejor test es el que puedes verificar con lápiz. A↔B y A↔C (A reparte entre B y C; ambos le devuelven todo): por simetría x_B = x_C = y, con dos ecuaciones `x = (1−d)/3 + d·2y` e `y = (1−d)/3 + d·x/2`. Con d = 0.85: `y = (0.05 + 0.425)/1.85 ≈ 0.257` y `x = 1 − 2y ≈ 0.487`. El test `pagerank_ciclos_compartidos_solucion_a_mano` ejecuta y compara — EPS 1e-6.
+
+**Por qué L1 y no max-delta.** El delta L1 (Σ|Δscore|) es la MASA TOTAL que se movió en la iteración: «¿cuánta masa falta por asentar?» — un número con lectura de probabilidad, y comparable entre grafos de distinto tamaño (1e-6 de masa es 1e-6 de masa con 6 nodos o con 6 millones). El max-delta (el cambio del nodo que más se movió) es más estricto por nodo, pero no significa nada como masa y su umbral cambia de sentido con el tamaño del grafo. Documentado y descartado.
+
+**Por qué el history es contenido.** `PageRankResult.history` guarda el delta de CADA iteración. Ejecuta la cadena 0→1→2 (colgante al final) y míralo — esto es la salida real, no un esquema:
+
+```text
+$ page_rank(0→1→2, d=0.85, tol=1e-10)  →  converged=true, 33 iteraciones
+history: 3.778e-1  2.676e-1  1.668e-1  4.726e-2  2.800e-2  1.931e-2
+         7.134e-3  2.630e-3  2.063e-3  1.022e-3  2.897e-4  2.229e-4
+         ... (monótono a la baja) ...
+         3.670e-9  2.146e-9  1.492e-9  5.629e-10 1.998e-10 1.584e-10 8.006e-11
+```
+
+Tres lecturas en esos números. Primera: decrece MONÓTONO desde la segunda iteración (la primera mezcla el arranque) — el test lo exige término a término. Segunda: la razón entre consecutivos no es una constante limpia — oscila (el colgante devuelve la masa a saltos) — pero se mantiene acotada por debajo de 1: la contracción geométrica de Perron-Frobenius trabajando, con la huella del colgante encima. Tercera: el contraste es todavía más elocuente. En dos 2-ciclos simetrizados el teleport uniforme YA es el estacionario: converge en UNA iteración y `history = [0.0]`. El historial cuenta ambas historias — y en ningún caso tienes que creerte nada: ejecutas y ves.
+
+**El coste, medido.** `CentralidadStats { bfs_runs, edges_scanned, iterations }`: closeness y betweenness reportan un BFS por nodo; PageRank acumula `iteraciones × E`. El test del camino lineal comprueba `edges_scanned` EXACTO (12 de proyección + 24 de BFS). La tabla del guion queda verificable:
+
+| Familia | Pregunta | Coste | Stats |
+|---|---|---|---|
+| Grado | ¿cuántos vecinos? | O(V+E) | — |
+| Closeness | ¿lo lejos que estoy de todos? | O(V·(V+E)) | bfs_runs = V |
+| Betweenness | ¿por cuántos caminos paso? | O(V·E) | bfs_runs = V |
+| Eigenvector | ¿quién me apunta? | O(iter·E) | iterations |
+| PageRank | ¿dónde pasa la eternidad el surfer? | O(iter·E) | iterations |
+
+**Cómo leer un resultado.** Los tres tipos devuelven más que números: `score(id)` (que responde `None` para ids inexistentes o borrados), `entries()` en orden de id, `ranking()` por score descendente con desempate por id (determinismo: dos ejecuciones dan el mismo ranking, siempre), y en PageRank la transparencia del cálculo: `converged`, `delta`, `history`, `damping` y `Display` — `PageRank(d=0.85, iteraciones=33, delta=8.01e-11, convergido=sí)`. La validación de entrada falla ruidosamente ANTES de iterar: `InvalidDamping` (con los bordes explicados en el propio mensaje de error), `InvalidTolerance`, `InvalidMaxIterations`, y para el teleport personalizado, `NegativeTeleportWeight` señalando el nodo, `ZeroTeleportMass` y `UnknownNode`. Una función que va a correr 500 iteraciones no puede descubrir en la 499 que la semilla no existía.
+
+## 24.8 Prueba de fuego
+
+El test que ES el capítulo, `eigenvector_no_converge_en_periodico_y_pagerank_si`: el MISMO grafo cola+3-ciclo donde eigenvector agota 100 iteraciones sin converger, `page_rank(&s, 0.85, 200, 1e-9)` converge con masa 1. Los DOS fallos del §24.5, con su cura al lado.
+
+Después, el grafo demo — y su sorpresa pedagógica. KNOWS forma el triángulo 0→1→2→0 más el self-loop de Dani (3→3); LIVES_IN lleva de 0 y 1 a las ciudades 4 y 5. ¿Quién gana? **Dani, con 0.386** — por delante de todo el triángulo. Nosotros también pensamos que era un bug. No lo era: el self-loop le devuelve CADA voto (es su único vecino saliente), y encima cobra la cuota uniforme de la masa colgante de las ciudades, que no votan. Self-loop + masa colgante = trampa de acumulación. Las salidas reales, lado a lado:
+
+```text
+PageRank (d=0.85, 92 iteraciones):   Grado OUT (una pasada):
+  n3 (Dani)   = 0.386                  n0 = 0.40   ← Ana
+  n0 (Ana)    = 0.151                  n1 = 0.40   ← Bo
+  n1 (Bo)     = 0.122                  n2 = 0.20
+  n4 (Madrid) = 0.122                  n3 = 0.20   ← Dani, "casi marginal"
+  n2 (Carla)  = 0.110                  n4 = 0.00
+  n5 (Sevilla)= 0.110                  n5 = 0.00
+```
+
+Por GRADO, Dani es casi el más marginal (1/5 — sólo supera a las ciudades, que no votan); por PageRank, arrasa. Dos métricas, dos historias — y ninguna de las dos «la verdad». Fíjate también en los empates estructurales: n1 con n4, n2 con n5 — la simetría rotacional del triángulo arrastra a cada persona a empatar con la ciudad que alimenta. El ranking desempata por id (determinismo), pero el empate es información del grafo, no ruido.
+
+Los invariantes, en todos los tests: `total_mass() = 1` (desviaciones de ~1e-15: redondeo de f64); damping fuera de (0,1) — incluido NaN, que no compara bajo `PartialEq` y por eso se testea con `matches!` — rechazado ruidosamente; semillas negativas, de masa cero o inexistentes rechazadas señalando el nodo culpable. Y `converged = false` es una RESPUESTA: una base de datos prefiere decir «no convergió» que devolver números casi-buenos en silencio.
+
+Dos cierres de análisis sobre el mismo demo. Primero: personaliza en Madrid (semilla = nodo 4) y el grafo se RE-CENTRA — `ppr_vs_global_en_demo_graph`, salida real:
+
+```text
+   global           PPR semilla=Madrid(4)
+   n3 = 0.386       n3 = 0.328   ← Dani se desinfla: pierde el teleport uniforme
+   n4 = 0.122       n4 = 0.254   ← Madrid se duplica: el teleport vuelve a casa
+   n0 = 0.151       n0 = 0.128   ← hasta Ana BAJA: fuera de órbita, fuera de masa
+```
+
+La ciudad sube, la trampa de Dani se desinfla al dejar de cobrar teleport uniforme, y hasta el nodo 0 (que la apunta) baja — quien no está en la órbita de la semilla pierde teleport sin ganar nada equivalente. Mismo grafo, mismo algoritmo, otro mundo — esa es la potencia del vector de teleport. Segundo: borra el nodo central de una cadena (`delete_node`) y el índice denso de la proyección excluye el hueco: los ids restantes siguen puntuando, el borrado responde `None` — no existe, no puntúa (`pagerank_huecos_tras_delete_node`). La proyección deriva del store; no lleva el grafo «en la cabeza».
+
+## 24.9 Qué hemos sacrificado
+
+1. **La proyección no ponderada.** El closeness ponderado (Dijkstra del capítulo 22 por cada origen) queda como deuda hacia el capítulo 26: cuando exista la proyección con pesos, el BFS de este capítulo se sustituye sin tocar nada más. Deuda declarada, no olvidada.
+2. **Nada de optimización industrial.** Ni PageRank por bloques, ni betweenness aproximada por muestreo, ni GPU. El guion manda: familias para explicar, coste para medir.
+3. **La variante no-scale de dangling.** Documentada, no implementada: dos contratos semánticos para un algoritmo es una trampa.
+4. **Arranque asistido, acoplado.** El arranque es el propio teleport (uniforme o semillas): ahorra iteraciones de mezclado y es una línea — los arranques «inteligentes» (scores del grado) ganarían poco y oscurecerían el análisis.
+5. **Empates no desempatados por significado.** El ranking desempata por id ascendente (determinismo); en el demo, 1 empata con 4 y 2 con 5 por simetría estructural — el orden entre iguales es convención.
+
+## 24.10 Cómo lo hace una BBDD real
+
+- **Neo4j GDS** expone `gds.pageRank` con la MISMA parametrización de siempre y los mismos números de hace 27 años: `dampingFactor` 0.85, `maxIterations` 20, tolerancia 1e-7. Y el PageRank personalizado NO es otra función: es el parámetro `sourceNodes`, que acepta pares (nodo, sesgo) — traducción literal de nuestro `Personalized(Vec<(NodeId, f64)>)`. Mismo núcleo, otro mundo: exactamente la costura de nuestro `Teleport`.
+- **`gds.betweenness`** implementa Brandes… y ofrece una variante por MUESTREO para grafos grandes, porque hasta O(V·E) se queda corto en producción. Nuestro `CentralidadStats` mide lo que su muestreo recorta.
+- **PPR como base de recomendación** es patrón clásico de la industria: el «Who to Follow» de Twitter se construyó sobre random walks con reinicio en el grafo de follows, y la personalización de Google News (2007) rankeó noticias con PageRank sobre el grafo usuario-noticia. La receta es siempre la misma: semilla = usuario/consulta, ranking = dónde pasa el surfer su tiempo.
+- **Google**, por supuesto, ya no usa «el» PageRank de 1998: cientos de señales encima. Pero la decisión de diseño — medir la importancia como proceso global sobre el grafo de enlaces, no como recuento local — es la que ordenó la web.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: en la cadena 0→1→2, ¿por qué el colgante 2 NO absorbe toda la masa si recibe el voto de 1 y no emite nada?
+- *Intermedio*: ¿cómo cambiaría el history de un PageRank con d = 0.5 frente a d = 0.95 en el MISMO grafo? Predícelo y mídelo.
+- *Experto*: ¿qué teleport reproduce la centralidad de grado como caso degenerado de PPR, y con qué d? (Pista: piensa qué pasa cuando d→0 y las semillas son TODOS los nodos con peso 1/n… y por qué aún así no es el grado.)
+
+## 24.11 Lo que te llevas
+
+- «Importante» tiene cinco respuestas con cinco costes: grado O(V+E), closeness O(V·(V+E)), betweenness O(V·E) (Brandes, no por pares), eigenvector/PageRank O(iter·E). Mídelo con `CentralidadStats`.
+- El eigenvector crudo falla DOS veces: masa que se fuga por colgantes y oscilación periódica. Ambos fallos son tests.
+- PageRank = eigenvector + damping (teleport) + redistribución colgante. La matriz se vuelve positiva ⇒ primitiva ⇒ converge SIEMPRE, geométricamente, razón ≈ d·λ₂ — y el `history` te lo enseña.
+- Masa = 1 en cada iteración es un invariante testeado; el delta L1 es «masa que se mueve» — interpretable y comparable entre tamaños.
+- `Teleport{Uniform, Personalized}` separa el MUNDO del NÚCLEO: el mismo código rankea la web entera o la órbita de una consulta. El capítulo 51 del Vol. III vive en esa costura.
+
+## 24.12 Ojo, cuidado con…
+
+- **Confundir damping con tuning**: no es velocidad, es reparación. d→1 converge MÁS lento (la razón se acerca a 1); d→0 devuelve el teleport. 0.85 es el equilibrio del paper, no una manía.
+- **Olvidar la masa colgante**: quien calcula «a mano» con solo teleport+votos obtiene masa < 1 y no lo nota. `total_mass()` existe; úsalo.
+- **Both no es out+in apilados**: es unión como CONJUNTO (vecinos distintos, self-loop UNA vez); `In` es la transpuesta pura. Mezclar ambas cosas fue un bug real de esta implementación.
+- **Duplicar aristas esperando duplicar votos**: el duplicado roba masa a los OTROS vecinos del mismo origen. Semántica multigrafo: sutil, testeada.
+- **Eigenvector en grafos dirigidos**: si necesitas el autovector de verdad (espectral), el Vol. I cap. 16 lo trata; aquí su papel es ser el «antes» honesto del PageRank.
+
+## 24.13 Pin de batalla
+
+> *«Sin damping, la importancia se pierde en los callejones o se queda dando vueltas para siempre. El teleport no es un parámetro: es decidir a dónde vuelve toda masa que se extravía.»*
+
+## 24.14 Si solo lees 30 segundos
+
+La centralidad pregunta «¿quién es importante?». El grado cuenta vecinos; el closeness mide distancias; el betweenness mide atascos (Brandes: V BFS en vez de todos los pares); el eigenvector propaga importancia… y se rompe en grafos dirigidos: la masa fuga por los colgantes y oscila en los ciclos. PageRank lo repara con dos arreglos — teleport con probabilidad 1−d (la matriz se vuelve primitiva: converge siempre, a razón ≈ d·λ₂) y redistribución uniforme de la masa colgante (masa total 1 en cada iteración). El teleport personalizado cambia el centro del mundo: semillas = consulta, ranking = recuperación. Esa es la pieza que GraphRAG heredará.
+
+## 24.15 Una historia pequeña
+
+La primera vez que corrimos PageRank sobre el grafo demo, Dani ganó con 0.386. Presentamos el resultado como «seguramente un bug»: nadie enlaza a Dani salvo él mismo. Pasamos la tarde buscando el error — reparticiones mal sumadas, teleport mal normalizado, el self-loop contado dos veces — hasta que hicimos lo que había que hacer desde el principio: resolver el sistema a mano. El número era 0.386 exacto: el self-loop devuelve cada voto y las ciudades le pagan la cuota colgante. El algoritmo estaba bien; MALA era nuestra intuición sobre «quién es importante». Esa tarde aprendimos la regla que atraviesa el capítulo: cuando un ranking sorprende, primero se hace la aritmética — el surfer nunca se equivoca sobre dónde pasa su tiempo; nosotros sí sobre dónde debería.
+
+## Ejercicios resueltos
+
+**1. En la cadena 0→1→2 (2 es colgante), calcula a mano la PRIMERA iteración desde el arranque uniforme y comprueba la masa.**
+
+Arranque: x = [1/3, 1/3, 1/3]. Teleport uniforme t = 1/3, d = 0.85. Masa colgante D = x[2] = 1/3. Cuota colgante: d·D/n = 0.85·(1/3)/3 ≈ 0.0944 por nodo. Base por nodo: (1−d)·t + cuota = 0.05 + 0.0944 = 0.1444. Votos: 0→1 aporta 0.85·(1/3) ≈ 0.2833 a 1; 1→2 aporta 0.2833 a 2. Resultado: y = [0.1444, 0.4278, 0.4278], suma = 1.0000 exacto. La masa se conserva DESDE la primera iteración — el invariante no espera al límite. (El límite, para curiosos: 0.184, 0.341, 0.474 — el colgante acumula, pero la redistribución le impide absorberlo todo.)
+
+**2. ¿Por qué la corrección de Wasserman-Faust da 1/3 a TODOS los nodos de dos 2-ciclos desconectados, y Freeman puro daría 1?**
+
+Cada nodo alcanza a 1 de los 3 posibles, con Σd = 1. Freeman puro aplicado a lo alcanzable daría (r−1)/Σd = 1/1 = 1: la forma ingenua compara «mi mundo alcanzado» consigo mismo y premia la burbuja. Wasserman-Faust multiplica por la fracción alcanzada: C = ((r−1)/(n−1))·((r−1)/Σd) = (1/3)·(1/1) = 1/3: penalizado por los 2 nodos que NO alcanza. Verificación: `closeness_componentes_desconectadas_wasserman_faust`.
+
+## Ejercicios propuestos
+
+**Esencial (recordar — retrieval puro).** Con el libro CERRADO: (a) los DOS fallos del eigenvector crudo, con el grafo mínimo de cada uno; (b) los DOS arreglos de PageRank y qué garantiza cada uno; (c) qué mide el delta L1 y por qué la razón entre deltas consecutivos tiende a d·λ₂. Después ejecuta `cargo test -p vol2-liradb tests_centralidad` y localiza cada afirmación en un test POR NOMBRE. *Pistas*: (1) ¿qué le pasa al surfer en una página sin enlaces? (2) ¿puede una masa rotar en un ciclo para siempre? (3) ¿qué matriz converge siempre: la positiva o la cruda? *Criterio*: cuatro tests citados correctamente sin mirar.
+
+**Intermedio (analizar — spacing con el cap. 14).** Explica en dos frases por qué la `Proyeccion` es «el CSR del capítulo 14 en memoria» y qué le falta para SERLO (offsets+targets compactos vs `Vec<Vec<usize>>`, pesos, ids de arista). Luego PREDICE, antes de ejecutar, `bfs_runs` y `edges_scanned` de `betweenness_centrality` sobre el camino simetrizado de 6 nodos (fórmula V·E menos la deduplicación de Both) y verifícalo con un miniprograma que lea `CentralidadStats`. *Pistas*: (1) ¿cuántos BFS corre Brandes? (2) ¿cuántas entradas de vecindario pisa cada BFS en un camino? (3) ¿qué cuenta `edges_scanned` de la proyección además del BFS? *Criterio*: predicción exacta y el paralelo CSR bien dicho.
+
+**Experto (crear — interleaving caps. 7-8-22-26 + costura Vol. III).** Construye el mini-operador de recuperación que el capítulo 51 necesitará: `ppr_por_etiqueta(store, etiqueta, damping) -> Result<PageRankResult>` que siembre `personalized_page_rank` con TODOS los nodos de esa etiqueta a peso uniforme (recorriendo `iter_nodes` del trait, cap. 8). Verifica: masa = 1; los nodos de otra etiqueta SIN camino desde la semilla quedan a ~0 (¿por qué en el demo las ciudades NO quedan a 0 exacto?); el ranking difiere del global. Extensión conceptual sin código: ¿qué habría que cambiar para que los enlaces PESen por la propiedad `since`? (Respuesta esperada: nada aquí — es la `ProyeccionPonderada` del cap. 26 leyendo pesos con la semántica estricta `edge_weight` del cap. 22; el núcleo de potencia no se toca.) *Pistas*: (1) ¿quién valida las semillas: tu función o `densificar`? (2) ¿por dónde entra el peso en `iteracion_de_potencia`? (3) ¿por qué tu función no debe duplicar el bucle? *Criterio*: test propio verde, núcleo intacto.
+
+## Para profundizar
+
+- **L. Page, S. Brin, R. Motwani y T. Winograd, «The PageRank Citation Ranking: Bringing Order to the Web» (Stanford Digital Library, 1998/1999; presentado en WWW7, Brisbane, 1998)** — el paper del capítulo: el surfer aleatorio, el damping 0.85, la web como grafo de citas.
+- **S. Brin y L. Page, «The Anatomy of a Large-Scale Hypertextual Web Search Engine» (WWW7, 1998)** — el paper de Google como sistema, con PageRank como pieza.
+- **U. Brandes, «A Faster Algorithm for Betweenness Centrality» (Journal of Mathematical Sociology 25(2), 2001)** — la reducción de todos-los-pares a V BFS con dependencias hacia atrás.
+- **S. Wasserman y K. Faust, «Social Network Analysis: Methods and Applications» (Cambridge Univ. Press, 1994)** — la corrección de cercanía en componentes desconectadas.
+- **A. Langville y C. Meyer, «Google's PageRank and Beyond» (Princeton Univ. Press, 2006)** y **T. Haveliwala y S. Kamvar, «The Second Eigenvalue of the Google Matrix» (Stanford, 2003)** — por qué converge y a qué velocidad: λ₂ = d.
+- **Neo4j Graph Data Science — `gds.pageRank` (con `sourceNodes`) y `gds.betweenness`** — las mismas decisiones de diseño, en producción.
+- **Patente US 6,285,999** («Method for node ranking in a linked database», 1998-2018) e **IEEE Milestone «PageRank and the Birth of Google, 1996–1998»** (ethw.org) — la historia, documentada.
+
+## Mini-diálogo: en la cima del ranking
+
+> — Entonces el damping es… ¿el parámetro que hace que el bucle acabe?
+>
+> — Es el parámetro que hace que el bucle PUEDA acabar: contrae todos los autovalores salvo el 1. Sin él, un miserable ciclo de tres nodos te deja oscilando para siempre — lo hemos ejecutado, no es retórica.
+>
+> — ¿Y el 0.85 es sagrado?
+>
+> — Es el del paper y el de Neo4j. Bájalo y rankeas el teleport; súbelo y tardas más en asentar. El número importa menos que el intervalo: (0,1) ABIERTO, porque los bordes son otros dos algoritmos degenerados.
+>
+> — Y lo personalizado… ¿eso no es hacer trampa con el resultado?
+>
+> — Es cambiar la pregunta. El global pregunta qué importa en general; el personalizado pregunta qué importa DESDE ti. La web entera o tu órbita: mismo surfer, distinto mapa. Recuérdalo — en el Vol. III, esa diferencia será un buscador.
+
+---
+
+*(Próximo capítulo: 25 — Comunidades y agrupaciones. PageRank dice quién es importante; aún no sabe decir en qué GRUPOS se organiza el grafo. Llega Louvain — y con él una sorpresa: no podrá reutilizar la proyección de este capítulo tal cual. Te avisamos por algo.)
+# Capítulo 25 — Comunidades y agrupaciones (Louvain simplificado)
+
+> *«El ojo ve doce tribus. La modularidad, con el grafo entero en la cabeza, prefiere seis. Ninguna de las dos miente: preguntan cosas distintas.»*
+
+## 25.0 La anécdota de la esquina
+
+En 2008, cuatro físicos e informáticos belgas — Vincent D. Blondel, Jean-Loup Guillaume, Renaud Lambiotte y Etienne Lefebvre — publicaron en una revista de física estadística (*Journal of Statistical Mechanics: Theory and Experiment*, artículo P10008) un método para «desplegar» la estructura de comunidades de redes enormes. El título del paper, «Fast unfolding of communities in large networks», no menciona ninguna universidad. Pero el método nació en la Université catholique de Louvain (Louvain-la-Neuve, Bélgica), y la comunidad científica, que necesita nombres cortos, lo bautizó con el de la institución: **el método de Louvain**. Hoy es uno de los papers más citados de la ciencia de redes — decenas de miles de citas — y hasta la página del propio Blondel en UCLouvain lo presenta ya como «the Louvain method».
+
+La velocidad era la afirmación audaz del paper: «supera a todos los métodos conocidos de detección de comunidades en tiempo de cómputo» (es la claim literal del abstract), y lo demostraron con la red de llamadas de una operadora belga — 2,6 millones de clientes — y con un grafo web de 118 millones de nodos y más de mil millones de enlaces. Para dimensionar lo que eso significaba: el método clásico que lo precedió, el **divisivo de Girvan-Newman**, detectaba comunidades cortando repetidamente la arista de mayor *betweenness* — la que calculaste con tanto esfuerzo en el capítulo 24 — y tenía que recalcularla entera después de cada corte: los propios autores (Newman-Girvan 2004) reportan un coste de O(m²·n), es decir O(n³) en grafos dispersos. Con 2,6 millones de nodos, ni hablemos. Curiosamente, la **modularidad** — la métrica que guía todo este capítulo — nació precisamente en esa tradición: Newman y Girvan la inventaron en 2004 como criterio para decidir *cuándo parar de cortar aristas*. Louvain invirtió el papel de las dos piezas: en vez de cortar aristas y usar Q para parar, **optimiza Q directamente** con movimientos locales baratos y una jerarquía que se contrae sola. Ese giro — y no una fórmula nueva — es lo que lo hizo rápido.
+
+## 25.1 Objetivo
+
+Al terminar este capítulo sabrás **particionar un grafo en comunidades de forma verificable**: no «grupos que se ven bonitos», sino grupos con un número — la modularidad Q — que cualquiera puede recalcular sobre la partición y comparar con alternativas. Construirás las cuatro piezas del módulo `cap25_comunidades.rs`:
+
+1. `componentes_conexas` — el suelo del concepto: alcanzabilidad pura.
+2. `label_propagation` — la primera heurística densa, y sus límites documentados.
+3. `modularidad` — la métrica Q de Newman-Girvan, con resolución γ, verificable sobre cualquier partición dada.
+4. `louvain` — el greedy jerárquico: fase local con ΔQ exacto + agregación en supernodos, nivel a nivel, dejando un dendrograma.
+
+El hito: detectar los dos grupos de una red social pequeña (dos K4 unidos por un puente) y *demostrar con números* que es la mejor partición.
+
+## 25.2 Problema
+
+El capítulo 24 te dio el mapa del «quién es importante». Esta es la pregunta complementaria: **¿quiénes forman grupo?** Piensa en la red social del `demo_graph`: Ana, Bea y Carlos se conocen entre sí; cada uno vive en una ciudad; Dani se conoce a sí mismo (ese `KNOWS` de Dani hacia sí mismo que ya te encontraste en el capítulo 24, dándole cuota de PageRank). ¿Cuántas comunidades hay? ¿Quién está con quién?
+
+La pregunta es resbaladiza por dos motivos:
+
+- **«Comunidad» no puede ser «grupo denso» a secas.** Un triángulo dentro de un grafo completísimo no es comunidad: ahí TODO es denso. Lo que hace comunidad es ser denso **respecto a lo que cabría esperar al azar**. Necesitas un modelo de azar de referencia — un *modelo nulo* — o el concepto no significa nada.
+- **Cualquier partición es una respuesta.** «Todos en una» es una partición. «Cada uno solo» es otra. Sin una función que puntúe particiones, no puedes ni compararlas ni decir que tu algoritmo hizo un buen trabajo. «Encontré 7 comunidades» no es un resultado: 7 salió de ti, no del grafo.
+
+Y hay una restricción de negocio, heredada del capítulo 24: esto corre **dentro de una base de datos**. Así que los análisis tienen que ser **reproducibles** (dos ejecuciones, mismo resultado: nada de aleatoriedad) y **ruidosos al fallar** (un peso negativo no se «tolera»: se señala con la arista culpable, igual que hacía Dijkstra en el capítulo 22).
+
+## 25.3 Modelo mental
+
+Piensa en el grafo como un **mapa de tribus**. Una tribu es una región del mapa donde la gente se relaciona sobre todo entre sí, y poco con los de fuera. La pregunta que mide la calidad del mapa:
+
+> **De todo el peso de las aristas del grafo, ¿qué fracción cae dentro de las tribus… y cuánto MÁS de lo que esperaría el azar si repartiáramos esas mismas aristas al azar (conservando cuántas relaciones tiene cada nodo)?**
+
+Ese «azar que conserva los grados» es el **modelo nulo de configuración**: la probabilidad de que el azar ponga una arista entre i y j es proporcional a k_i·k_j. La **modularidad** (Newman-Girvan 2004) es exactamente ese exceso sobre el azar, sumado por comunidad:
+
+```text
+Q_γ = Σ_c [ Σ_in(c)/2m − γ·(Σ_tot(c)/2m)² ]
+        \_______/   \____________________/
+        fracción de   lo que el azar
+        peso INTERNO  esperaría para c
+```
+
+- `Σ_in(c)`: peso interno de la comunidad c, contando cada arista por sus dos extremos.
+- `Σ_tot(c)`: suma de los grados (ponderados) de los miembros de c — incluye las aristas que salen fuera.
+- `2m`: el peso total del grafo contando cada arista en ambas direcciones (la convención de siempre: Σ_tot de todos = 2m).
+- `γ` (gamma): la **resolución** de Reichardt-Bornholdt 2006 — cuánto le exigimos al azar. γ=1 es el clásico.
+
+Lecturas inmediatas: la partición trivial (todo junto) da Q = 1 − γ = 0 exacto; Q > 0 es «mejor que el azar»; Q < 0, peor. Y como es una fracción de 2m, **escalar todos los pesos por una constante no cambia Q** — lo testea el módulo.
+
+El diagrama que ordena el capítulo es el anillo de tríos — el grafo canónico del límite de resolución de Fortunato-Barthélemy (2007), que veremos en 25.6:
+
+```text
+      trío 0        trío 1        trío 2         ...      trío 11
+    0 ─── 1  ~~  3 ─── 4  ~~   6 ─── 7   ...         ~~ 33 ─── 34
+     \  /          \  /          \  /                      \  /
+      2 ────────────5 ────────────8 ───── ... ───────────── 35
+      (K3)          (K3)          (K3)                     (K3)
+        eslabón del anillo: cada trío cuelga del siguiente por UNA arista
+```
+
+Doce tríos idénticos, un eslabón cada uno. Tu ojo ve doce tribus. Veremos que Q, con γ=1, prefiere seis pares — y por qué eso no es un bug sino una lección profunda sobre lo que significa «comunidad global».
+
+## 25.4 Primera solución
+
+La solución más ingenua que funciona un poco: **una comunidad es una componente conexa**. El módulo la implementa con el BFS de toda la vida sobre la vista simétrica del store (pesos constantes 1, porque la alcanzabilidad no pesa):
+
+```rust
+pub fn componentes_conexas(store: &dyn GraphStore) -> Result<ComponentesResult, ComunidadesError>
+```
+
+O(V+E), números por menor miembro (el barrido ascendente numera cada componente con el nodo más pequeño que contiene — la renumeración canónica sale gratis). Es el **suelo del concepto**: toda comunidad vive dentro de una componente (nadie se agrupa con quien no alcanza), pero ninguna noción de densidad decide todavía.
+
+Segundo paso, ya con ambición: **label propagation** (LPA, Raghavan-Albert-Kumara 2007). Cada nodo empieza con su etiqueta; en cada pasada (nodos por id ascendente, actualización asíncrona) adopta la etiqueta más votada entre sus vecinos, con votos ponderados por el peso de la arista. Casi lineal, sin función objetivo. El módulo lo hace determinista: empates → se conserva la propia etiqueta si empata con la máxima, y si no gana la menor.
+
+## 25.5 Sus límites
+
+**Las componentes mueren con un solo puente.** Dos K3 unidos por una arista: una componente. La red social real suele ser UNA componente gigante — la pregunta interesante (tribus dentro de la isla) queda intacta.
+
+**LPA no optimiza nada verificable — y encima gotea.** No hay Q que comprobar. Peor: con pesos uniformes, los empates de la primera pasada pueden GOTEAR por los puentes. El test `lpa_separa_dos_trios_y_empates_deterministas` lo documenta con un experimento espejo que vale la pena despacio:
+
+```text
+dos K3 con puente 2-3:  LPA → 1 comunidad   Louvain → 2 comunidades
+dos K3 con puente 1-4:  LPA → 2 comunidades  Louvain → 2 comunidades
+```
+
+El MISMO grafo espejado (solo cambia qué nodos toca el puente), el MISMO algoritmo… y resultados opuestos. Mecánica del goteo en el primer caso: al barrer por id ascendente, el trío izquierdo (nodos 0-2) se forma primero; cuando le llega el turno al nodo 3 (el del puente derecho), sus votos son {etiqueta 1: 1, etiqueta 4: 1, etiqueta 5: 1} — tres etiquetas empatadas, y la de él propio (3) tiene cero votos de vecinos. Adopta la 1. Arrastró la etiqueta izquierda a través del puente antes de que su propio trío tuviera tiempo de formarse. En el caso espejo (puente 1-4), cuando el barrido llega al nodo 4, el nodo 3 ya barrió y le dio un voto a la etiqueta 4 — la política de «conservar la propia si empata con la máxima» lo salva. El resultado de LPA depende del orden y de la numeración; es determinista aquí (dos ejecuciones, idéntico), pero frágil. La receta práctica — test incluido — es romper los empates con pesos (puente de peso 0.5 → LPA ya separa).
+
+Ésta es exactamente la motivación de Louvain: una heurística sin métrica no se puede ni verificar ni defender. Hace falta la métrica primero, el algoritmo después.
+
+## 25.6 Solución evolucionada
+
+### Paso 1: Q como juez — `modularidad(partición dada)`
+
+La decisión de diseño más importante del capítulo: la modularidad es una **función verificable sobre CUALQUIER partición dada**, no un subproducto interno del algoritmo. `modularidad(store, particion, weight, gamma)` la calcula sobre lo que le pases (nodos ausentes → singletons; ids de grupo u64 arbitrarios; γ validado: 0, negativo, NaN e ∞ rechazados). Con eso, Q es a la vez la métrica guía de Louvain y el oráculo de sus tests.
+
+Cuenta conmigo los dos tríos con puente (pesos 1; 7 aristas → 2m = 14; grados [2,3,2,2,3,2] — el puente sube a 3 los nodos 1 y 4):
+
+```text
+partición perfecta {0,1,2} {3,4,5}:  cada trío In=6 (3 aristas × 2 extremos), K=7
+    Q = 2·[6/14 − (7/14)²] = 12/14 − 1/2 = 5/14 ≈ 0.357
+partición trivial (todo junto):      In=2m → Q = 1 − 1 = 0 exacto
+singletons:  Q = −Σ(k_i/2m)² = −(4+9+4+4+9+4)/196 = −17/98
+```
+
+Los tres números están testeados contra la aritmética exacta (`EPS = 1e-12`). Fíjate en el porqué de usar Q y no «número de comunidades»: 2 comunidades (Q=5/14), 6 (Q=−17/98) y 1 (Q=0) son particiones de distinto tamaño — el conteo no las ordena; Q sí. Y para demostrar que Q está bien calculada, un ejercicio de honestidad numérica: en el MISMO grafo, ¿conviene fundir los dos tríos? ΔQ = 2/14 − 2·(7/14)² = −5/14 < 0: no. Ojo a esa fórmula, porque reaparece.
+
+### Paso 2: el greedy local con ΔQ EXACTO — y la agregación
+
+Louvain alterna dos fases por nivel:
+
+1. **Fase local**: desde singletons, cada nodo (por id ascendente — el Louvain «de literatura» baraja; una BD no puede) evalúa moverse a cada comunidad *vecina* con el **ΔQ exacto** — solo cambian los términos de las DOS comunidades implicadas:
+
+```text
+ΔQ = q(In_c + 2·k_{i,c} + 2·s_i, K_c + k_i)      ← destino ganado
+   + q(In_d − 2·k_{i,d} − 2·s_i, K_d − k_i)      ← origen perdido
+   − q(In_c, K_c) − q(In_d, K_d)                 ← como estaban
+donde q(in, k) = in/2m − γ·(k/2m)²,  k_{i,c} = peso de i hacia c,  s_i = self-loop de i
+```
+
+Se mueve solo si ΔQ > 0 estricto; empates → comunidad de menor id (`total_cmp`, la misma disciplina anti-f64 de los caps. 22 y 24). Pasada tras pasada hasta que nadie se mueva. ¿Por qué ΔQ exacto y no «recalcular Q entera»? **Trazabilidad aritmética**: cada movimiento se puede re-verificar a mano con cuatro términos, la complejidad por evaluación es O(grado) en vez de O(V+E), y la monotonía de Q queda garantizada por construcción (test: Q nunca baja entre niveles).
+
+2. **Agregación**: cada comunidad se contrae en un **supernodo**; las aristas internas se vuelven self-loops del supernodo, las externas suman pesos entre supernodos. La fase (1) se repite sobre el grafo contraído. La gracia: movimientos que a escala de nodo estaban bloqueados (dos tríos que individualmente no ganan nada moviéndose) se vuelven visibles cuando cada trío YA es un supernodo. En el anillo de 12 tríos, el nivel 0 encuentra los 12 tríos (Q = 2/3) y el nivel 1 los funde en 6 pares (Q = 17/24): dos niveles, dendrograma real.
+
+### Paso 3: el TEST ESTRELLA — el límite de resolución
+
+¿Por qué el nivel 1 del anillo FUNDE tríos si tu ojo ve doce tribus? La cuenta, con la fórmula del paso 1 (cada trío: In=6, K=8; 2m=96):
+
+```text
+fundir dos tríos adyacentes (el eslabón, peso 1, se vuelve interno):
+  ΔQ = 2/96 − γ·2·(8/96)²  =  1/48 − γ/72
+γ=1:  ΔQ = +1/144  → FUNDE (Q pares 17/24  >  Q tríos 2/3)
+γ=2:  ΔQ = −1/144  → NO funde (Q tríos 7/12  >  Q pares 13/24)
+```
+
+Ahí está, en dos fracciones, el **límite de resolución de Fortunato-Barthélemy (2007)**: la modularidad global pregunta al azar de TODO el grafo, y en un grafo grande el azar espera tan poquito cruce entre dos tríos que fusionarlos «ahorra» penalización — aunque el eslabón sea una única arista floja. La MISMA estructura local que en el grafo de 2m=14 NO se funde (ΔQ = −5/14), en el anillo de 2m=96 SÍ (ΔQ = +1/144): el tamaño del mundo cambia la respuesta. La escala crítica de Fortunato-Barthélemy: comunidades más chicas que ~√(2m) aristas se vuelven invisibles para γ=1. El remedio es γ: γ>1 exige comunidades más densas y chicas (el umbral de este anillo está en γ* = 3/2, donde ΔQ = 0). El panorama completo, todo él verificable con `modularidad()`:
+
+| Partición del anillo | Q con γ=1 | Q con γ=2 | Ganadora |
+|---|---|---|---|
+| 12 tríos (la del ojo) | 2/3 ≈ 0.667 | **7/12 ≈ 0.583** | γ=2 |
+| 6 pares fundidos | **17/24 ≈ 0.708** | 13/24 ≈ 0.542 | γ=1 |
+
+El test `louvain_limite_de_resolucion_gamma` demuestra ambas columnas con particiones ground-truth y Q analíticos — y por eso es el test estrella: no valida el código, valida la MÉTRICA, enseñándote cuándo tu herramienta va a mentirte.
+
+## 25.7 Código completo ejecutable
+
+El código vive en `liradb-workspace/crates/vol2-liradb/src/cap25_comunidades.rs`. Las piezas con su porqué.
+
+### `GrafoPonderado`: la proyección hermana del cap 24 — pero que SUMA
+
+```rust
+struct GrafoPonderado {
+    nodes: Vec<NodeId>,            // orden ascendente → determinismo
+    self_loop: Vec<f64>,           // s_i SIN el ×2 (la convención se materializa en k)
+    vecinos: Vec<Vec<(usize, f64)>>, // vecinos distintos, pesos ACUMULADOS, ordenados
+    k: Vec<f64>,                   // k_i = 2·s_i + Σ_j w_ij  (self-loop contado doble)
+    dos_m: f64,                    // 2m = Σ_i k_i
+    edges_scanned: u64,
+}
+```
+
+¿Por qué un grafo propio y no reusar la `Proyeccion` del cap 24? Porque son **familias distintas con convenciones distintas**. El cap 24 contaba *vecinos distintos* — su `GraphDirection::Both` hace unión como CONJUNTO (deduplica aristas paralelas), que es correcto para grado y centralidades. La modularidad es de **multigrafo**: tres mensajes entre Ana y Bea son un lazo triple, y deben SUMAR (el término 2·k_{i,c} del ΔQ lo exige). El test `louvain_multigrafo_paralelas_equivalen_a_peso_sumado` lo clava: 3 aristas paralelas de peso 1 ≡ una de peso 3, mismo resultado exacto. Además Louvain **reconstruye** el grafo en cada agregación: `contraer()` devuelve otro `GrafoPonderado`. Lo heredado del cap 24 es el patrón (ids ordenados, índice denso que compacta los huecos de `delete_node`, materializar una vez); lo heredado del cap 22 es la semántica estricta de pesos (`WeightSource` + `edge_weight`, con `From<PathError>` para envolver `MissingWeight`/`InvalidWeight`/`NonFiniteWeight`).
+
+### El self-loop ×2 — la convención que sostiene la jerarquía
+
+Un self-loop de peso s entra como A_ii = 2s: **cuenta doble** en k_i y en 2m. No es capricho: es la convención estándar de la modularidad (así k_i = Σ_j A_ij lo cuenta «una vez por dirección»), y sobre todo es lo que hace que la **contracción conserve Q**: una arista interna de peso w aportaba 2w a Σ_in (sus dos extremos) y w+w a Σ_tot; contraída, es un self-loop s=w que aporta A_cc = 2w a ambas cosas — idéntico. Test de invariante nivel a nivel: la Q de cada nivel, calculada en el grafo contraído, coincide con `modularidad()` sobre el original. En una red social, un self-loop es una relación consigo mismo (el `KNOWS` de Dani): refuerza su comunidad propia sin unirlo a nadie — en `demo_graph`, Dani acaba solo, con Q = 5/18 empatada entre DOS óptimos distintos (el test documenta el empate en vez de fingir unicidad).
+
+### `louvain`: el bucle de niveles y su cota de terminación
+
+```rust
+let tope_niveles = n + 1;   // cota DEMOSTRABLE, no esperanza
+loop {
+    let (com, movimientos, pasadas) = g.fase_local(gamma, max_pasadas, &mut stats);
+    if movimientos == 0 { break; }             // nada que agregar
+    // ... grabar NivelLouvain (asignación de nodos ORIGINALES, Q, stats)
+    mapeo = mapeo.iter().map(|&t| densa[t]).collect(); // composición
+    g = g.contraer(&densa);                     // 2m se conserva
+    if g.len() < 2 || niveles.len() >= tope_niveles { break; }
+}
+```
+
+La cota: cada nivel arranca de singletons, así que su PRIMER movimiento vacía una comunidad ⇒ el nivel siguiente tiene estrictamente menos nodos ⇒ niveles con movimientos ≤ V (en la práctica O(log V): el grafo se contrae geométricamente). `max_pasadas` limita cada fase local — un seguro contra el ruido de f64 en ΔQ ≈ 0 (un ΔQ «positivo» de 1e-18 movería nodos para siempre). Y ojo al hallazgo testeado: `max_pasadas=1` NO rebaja la calidad final — lo que una pasada deja a medias en el nivel 0, la agregación lo repara en el nivel 1.
+
+### La jerarquía lleva nodos ORIGINALES
+
+`NivelLouvain` guarda, por nivel, la asignación de los nodos **originales** (la composición de particiones), su Q y su número de comunidades; `particion_en(nivel)` construye el dendrograma a demanda. ¿Por qué original y no supernodos? Porque esto es un producto: el cap 51 (Vol. III, GraphRAG) consumirá los niveles para generar resúmenes del grafo a varias granularidades, y necesita responder «¿quién está con quién?» en el vocabulario del usuario. El anidamiento queda garantizado por construcción (cada comunidad del nivel ℓ+1 es unión exacta de comunidades del ℓ — testeado en la dirección correcta: fina ⇒ gruesa).
+
+## 25.8 Prueba de fuego
+
+El hito del capítulo: **dos K4 unidos por un puente** (13 aristas, 2m = 26). Louvain DEBE separarlos, y la Q debe cuadrar a mano: cada K4 tiene In = 12 (6 aristas × 2) y K = 13 (los nodos del puente tienen grado 4):
+
+```rust
+let r = louvain(&s, &WeightSource::Constant(1.0), 1.0, 30).unwrap();
+assert_eq!(r.num_comunidades(), 2);
+assert_ne!(r.comunidad(0), r.comunidad(5));
+assert!((r.modularidad - 11.0 / 26.0).abs() < 1e-12);   // 2·[12/26 − (13/26)²] = 11/26
+```
+
+Los tests que cierran el círculo (todos ejecutables con `cargo test -p vol2-liradb cap25`):
+
+- **Oráculo**: Q del resultado == `modularidad()` de la misma partición, en CADA caso.
+- **Determinismo**: dos ejecuciones idénticas, jerarquía incluida, incluso con el orden de inserción de las aristas INVERTIDO (`louvain_determinismo_y_orden_de_insercion`).
+- **Ground truth sintético**: 3 anillos con cuerdas y 2 eslabones (30 nodos): recupera los 3 grupos EXACTO y con Q ≥ Q_truth — mientras `componentes_conexas` dice que todo es UNO (alcanabilidad ≠ densidad, dos nociones de grupo).
+- **Los pesos reestructuran**: dos tríos con puente de peso 100 → NO se funde todo (Q es invariante a escala): el puente deja de ser explicable por el azar y la mejor partición ROMPE los tríos alrededor de él — {0,2},{1,4},{3,5} con Q = 100/2809, mejor que la trivial (0). «Más peso» no es «más fusión».
+- **Fallos ruidosos**: peso negativo → `NegativeWeight { edge, weight }` con la arista señalada; prop ausente → el `MissingWeight` del cap 22 envuelto.
+- **Coste medible, no declamado**: `ComunidadesStats` cuenta `edges_scanned` (96 en el anillo de 12 tríos: 48 pares × 2 aristas dirigidas), `pasadas`, `movimientos` y `niveles` — la sección «coste computacional» del guion, verificada por `louvain_stats_coherentes`.
+
+Si te saltaras este capítulo, el síntoma te delataría: agruparías por componentes («¡una comunidad gigante!») o confiarías en LPA sin pesos, y cuando alguien pregunte «¿por qué esas comunidades y no otras?» no tendrías número ni criterio — y el cap 51 se quedaría sin dendrograma.
+
+## 25.9 Qué hemos sacrificado
+
+1. **El barajado del Louvain original**: la aleatoriedad explora mejor (escapa de algunos óptimos locales); la pagamos con la reproducibilidad, que en una BD no se negocia. Queda documentado el precio: varios óptimos con Q igual se resuelven por orden (`demo_graph`: dos óptimos con Q = 5/18).
+2. **La re-localización de Leiden**: Louvain clásico puede dejar comunidades MAL CONECTADAS internamente (dos piezas unidas «por detrás» del supernodo). Leiden (Traag-Waltman-van Eck 2019) lo repara con una fase de refinamiento; aquí lo declaramos limitación (sección 25.10).
+3. **La proyección con pesos compartida**: la Parte V merece una proyección ponderada única sobre el CSR del cap 14 — es exactamente el capítulo 26. Aquí el `GrafoPonderado` la materializa en memoria y la deuda queda declarada.
+4. **Exactitud global**: greedy local = óptimo local garantizado-coherente, no óptimo global. El contrato del resultado es «una partición coherente con su Q», no «la mejor partición posible».
+
+## 25.10 Cómo lo hace una BBDD real
+
+**Neo4j Graph Data Science** expone exactamente estas piezas: `gds.louvain` (Tier 1) y `gds.leiden` (Tier 2), con `relationshipWeightProperty` (nuestro `WeightSource::Property`), `tolerance` (nuestro corte de ΔQ), `maxLevels` (nuestro tope de niveles) y — dato que valida el capítulo — `includeSelfLoops`, un flag que decide si los self-loops cuentan en el cálculo: la convención A_ii = 2s es una decisión de semántica real, la que discutimos en 25.7. Los modos `stats/mutate/stream/write` escriben el `communityId` como propiedad de nodo — la partición como dato consultable, igual que nuestra `Particion::grupo(id)`.
+
+¿Por qué existe Leiden si Louvain es tan bueno? Por la crítica demoledora de Traag, Waltman y van Eck («From Louvain to Leiden: guaranteeing well-connected communities», *Scientific Reports* 9:5233, 2019): el greedy de Louvain evalúa si cada NODO está bien conectado a su comunidad, nunca si la COMUNIDAD está bien conectada consigo misma — y pueden salir (ellos lo fotografían) comunidades internamente desconectadas: dos trozos pegados solo a través de otras comunidades, invisibles tras la agregación. Leiden añade una fase de refinamiento que parte comunidades mal conectadas y garantiza (con su procedimiento de agregación) conectividad interna. La lección de ingeniería: un algoritmo que optimiza una métrica no garantiza propiedades que la métrica no mide.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: calcula a mano la Q de la partición {0,1,2},{3,4,5},{4}… no: de {0,1,2,4},{3},{5} sobre los dos tríos con puente. ¿Supera al −17/98 de los singletons? ¿Y al 0 de la trivial?
+- *Intermedio*: ¿por qué el umbral γ* del anillo de 12 tríos es exactamente 3/2? Derívalo de ΔQ = 1/48 − γ/72 y comprueba que γ* no depende de k (número de tríos). ¿Qué SÍ depende de k?
+- *Experto*: construye el anillo de k tríos con k parámetro y encuentra empíricamente el k donde γ=1 empieza a fundir; explica por qué el k crítico crece con… ¿o no crece? (Fortunato-Barthélemy: la escala invisible es ~√(2m).)
+
+## 25.11 Lo que te llevas
+
+- **Comunidad = densidad contra el azar** (modelo nulo de configuración), no componente (alcanabilidad) ni «grupo denso» a secas.
+- **Q_γ es la métrica guía Y el oráculo**: verificable sobre cualquier partición dada; compara particiones de distinto tamaño; un «número de comunidades» no compara nada.
+- **Greedy local con ΔQ exacto + agregación**: O(grado) por evaluación, trazable a mano, monótono en Q; el corte de aristas de Girvan-Newman (O(m²·n)) es lo que Louvain reemplazó.
+- **Convenciones que sostienen todo**: self-loop A_ii = 2s (hace que la contracción conserve Q), simetrización SUMANDO (multigrafo), pesos estrictos del cap 22 y negativos rechazados eager.
+- **Determinismo total**: orden por id, empates por `total_cmp` → menor, renumeración por menor miembro; cota ≤ V niveles + `max_pasadas` anti-ruido-f64.
+- **El límite de resolución**: Q global no ve comunidades más chicas que ~√(2m); γ lo arregla (anillo de tríos: γ=1 → 6 pares con Q=17/24; γ=2 → 12 tríos con Q=7/12).
+- **La jerarquía es el producto**: nodos ORIGINALES por nivel, anidamiento garantizado — el dendrograma que el cap 51 consumirá.
+
+## 25.12 Ojo, cuidado con…
+
+- **Comparar Q entre grafos o entre γ distintos**: Q es «exceso sobre el azar» DENTRO de un grafo y una γ. 0.42 aquí no es «mejor» que 0.36 allá.
+- **Contar el self-loop simple**: rompe k_i, 2m y la conservación de Q al agregar. Se detecta porque la Q de un nivel deja de cuadrar con `modularidad()` sobre el original.
+- **Deduplicar aristas paralelas** (la convención del cap 24): aquí el multigrafo ACUMULA; deduplicar mide otro grafo.
+- **Confundir «partición coherente con su Q» con «partición óptima»**: el greedy para cuando nadie mejora; el mundo puede tener dos óptimos empatados (`demo_graph`, Q = 5/18 ×2) o uno mejor que el greedy nunca vio.
+
+## 25.13 Pin de batalla
+
+> *«Si tu detector de comunidades no puede decirte QUÉ está optimizando con un número que puedas recalcular, no es un detector: es una opinión compilada.»*
+
+## 25.14 Si solo lees 30 segundos
+
+Una comunidad es una región del grafo más densa de lo que el azar esperaría. La **modularidad Q_γ** pone número a una partición completa — «fracción de peso interno menos la esperada por el azar» — y por eso guía Y juzga. **Louvain** la optimiza en dos fases alternadas: mover nodos al vecino con mayor ΔQ exacto (greedy local, determinista), y contraer comunidades en supernodos (agregación) nivel a nivel, conservando Q. Sus límites declarados: óptimos locales (greedy) y el **límite de resolución** (Q global funde comunidades chicas: el anillo de 12 tríos lo demuestra; γ lo corrige). La jerarquía resultante, con nodos originales, es el insumo del GraphRAG del cap 51.
+
+## 25.15 Una historia pequeña
+
+Cuando añadimos el límite de resolución al módulo, el primer impulso fue «arreglarlo»: si Q prefiere seis pares donde el ojo ve doce tribus, que la libería corrija el resultado. Nos detuvimos a medio commit. El anillo no estaba roto — estaba ENSEÑANDO: la misma estructura local funde o no funde según el tamaño del grafo entero, porque el azar de referencia es global. Ocultar eso habría convertido el test estrella en una caja negra que «funciona». Lo dejamos, con γ al aire y los valores analíticos al lado: 17/24 contra 2/3 con γ=1, 7/12 contra 13/24 con γ=2, y el umbral en 3/2 derivable a mano. El día que un usuario pregunte «¿por qué mi detección une estos dos equipos que claramente son distintos?», la respuesta estará esperando en un test, no en un foro.
+
+## Ejercicios resueltos
+
+**1. ¿Por qué la partición trivial da exactamente 0 y no «casi 0»?**
+
+Con todo en una comunidad: Σ_in = 2m (todas las aristas son internas) y Σ_tot = 2m. El término único es 2m/2m − γ·(2m/2m)² = 1 − γ. Con γ=1, exactamente 0 — sin redondeos, sin suerte: la estructura de la fórmula lo garantiza para CUALQUIER grafo. Es el test más barato y más duro de romper de la función `modularidad` (está en el doctest).
+
+**2. En `demo_graph` (KNOWS: 0→1→2→0 y self-loop de Dani; LIVES_IN: 0→4, 1→5; k = [3,3,2,2,1,1], 2m = 12), ¿por qué Dani acaba solo SIEMPRE?**
+
+El self-loop de Dani entra como A_33 = 2. Su única «relación» es consigo mismo: no tiene comunidad vecina a la que moverse (la fase local evalúa solo comunidades VECINAS). Queda de semilla singleton en cualquier nivel. Y las dos particiones restantes empatan EXACTO en Q = 5/18: {0,2,4},{1,5},{3} y {0,1,2,4,5},{3} — el ΔQ que las separa es 0, y el greedy determinista toma una. El test afianza lo que NO depende del camino (Dani solo, Q = 5/18), no la elección.
+
+## Ejercicios propuestos
+
+**Esencial (retrieval).** Sin mirar el capítulo: escribe Q_γ de memoria y calcula a mano la Q de la partición perfecta de los dos tríos con puente. Verifica contra el doctest de `modularidad` y el test `modularidad_particion_trivial_es_cero_y_perfecta_analitica`. Pistas: (1) ¿cuánto vale Σ_in si cada arista interna se cuenta por sus DOS extremos?; (2) ¿el puente entra en Σ_tot del trío?; (3) ¿por qué la trivial es 0 exacto?
+
+**Intermedio (spacing con el cap 24).** Explica, nodo a nodo, la primera pasada de LPA sobre dos K3 con puente 2-3 (gotea a 1 comunidad) y sobre el espejo con puente 1-4 (separa en 2), y qué haría Louvain en ambos. Verifica con `lpa_separa_dos_trios_y_empates_deterministas`. Pistas: (1) ¿en qué orden se barren los nodos?; (2) ¿de dónde salen los votos de la etiqueta PROPIA de un nodo?; (3) ¿qué ΔQ tendría el movimiento que gotea?
+
+**Experto (interleaving, gancho al cap 51).** Generaliza el anillo a k tríos con k parámetro: deriva el ΔQ de fundir dos tríos adyacentes en función de k y γ, predice para qué k γ=1 empieza a fundir, y verifícalo empíricamente. Luego, con γ=2 y `particion_en(0)`/`particion_en(1)` sobre el anillo de 12, lista las comunidades finas y gruesas — el dendrograma que el cap 51 resumirá. Pistas: (1) ¿qué términos de Q dependen de k?; (2) ¿2m crece con k… y el término de fusión también?; (3) ¿por qué el anidamiento solo se afirma en la dirección fina ⇒ gruesa?
+
+## Para profundizar
+
+- **Blondel, Guillaume, Lambiotte, Lefebvre, «Fast unfolding of communities in large networks», J. Stat. Mech. (2008) P10008** — el paper de Louvain; el abstract con la claim de velocidad y los 2,6 M de clientes está en [IOPscience](https://iopscience.iop.org/article/10.1088/1742-5468/2008/10/P10008) y [arXiv:0803.0476](https://arxiv.org/abs/0803.0476).
+- **Fortunato, «Community Detection in Graphs», Physics Reports 486 (2010)** — el mapa completo: divisive, LPA, modularidad, límites.
+- **Fortunato-Barthélemy, «Resolution limit in community detection», PNAS 104(1):36-41 (2007)** — [el paper del anillo de cliques](https://www.pnas.org/doi/10.1073/pnas.0605965104).
+- **Traag, Waltman, van Eck, «From Louvain to Leiden», Sci. Rep. 9:5233 (2019)** — [la crítica de las comunidades mal conectadas y el algoritmo que las garantiza](https://www.nature.com/articles/s41598-019-41695-z).
+- **Neo4j GDS: [Louvain](https://neo4j.com/docs/graph-data-science/current/algorithms/louvain/) y [Leiden](https://neo4j.com/docs/graph-data-science/current/algorithms/leiden/)** — `relationshipWeightProperty`, `includeSelfLoops`, `tolerance`, `maxLevels`: este capítulo en producción.
+
+## Mini-diálogo: en guardia nocturna
+
+> — O sea que Louvain es «mueve nodos si Q sube, contrae, repite». ¿Y por qué tanto bombo?
+>
+> — Porque cada pieza es verificable. El ΔQ es exacto y lo recalculas a mano; la Q de cada nivel coincide en el grafo contraído y en el original; dos ejecuciones dan lo mismo hasta con las aristas insertadas al revés. Puedes enseñarle el algoritmo a un auditor línea a línea.
+>
+> — Pero el anillo de tríos… tu métrica prefiere seis pares donde yo veo doce tribus.
+>
+> — Exacto: esa es la mejor parte. La herramienta no te falla en silencio — te dice CUÁNDO va a mentirte, con la aritmética a la vista. γ es el zoom, y el umbral 3/2 del anillo lo derivas tú, no lo decreta la librería.
+>
+> — ¿Y si necesito que las comunidades estén bien conectadas por dentro?
+>
+> — Entonces ya sabes qué paper leer, qué algoritmo pedirle a tu base de datos, y por qué existe. Eso es saber más que «usar Louvain».
+
+---
+
+*(Próximo capítulo: 26 — Ejecutar algoritmos sin agotar la memoria. Aquí `GrafoPonderado` materializó el grafo entero en RAM; veremos la proyección con pesos sobre el CSR del capítulo 14, el streaming y los frontiers — y saldremos de la deuda que este capítulo dejó declarada.)*
+# Capítulo 26 — Ejecutar algoritmos sin agotar la memoria (proyección, streaming, frontiers)
+
+> *«La memoria no se gestiona con swap. Se gestiona decidiendo qué existe y cuándo.»*
+
+## 26.0 La anécdota de la esquina
+
+Hacia 2008-2009, en Google se toparon con un muro que no era de algoritmos. El grafo de la Web, el de las redes sociales, los mapas de enlaces entre sitios: miles de millones de vértices que no cabían en la RAM de ninguna máquina. La herramienta generalista de la casa, MapReduce, encadenaba trabajos que re-leían el grafo ENTERO en cada iteración — y los algoritmos de grafos son, por naturaleza, iterativos. PageRank con 50 pasadas era re-leer el planeta 50 veces para que cada página mirase a sus vecinas.
+
+La respuesta se presentó en SIGMOD 2010: Grzegorz Malewicz y seis coautores firmaron «Pregel: a System for Large-Scale Graph Processing» (pp. 135-146). La idea se resume en tres palabras que desde entonces son un lema: **think like a vertex** — piensa como un vértice. No escribas código que recorre el grafo: escribe el `compute()` de UN vértice, que en cada *superpaso* lee los mensajes que le llegaron, actualiza su estado y manda mensajes a sus vecinos. El sistema reparte los vértices entre máquinas y sincroniza los superpasos con una barrera — el modelo *bulk synchronous parallel* que Leslie Valiant había publicado en 1990 en Communications of the ACM. Cada vértice trabaja sólo con su trozo; el grafo nunca necesita estar entero en un sitio.
+
+Y fíjate en la cronología de lo que vino DESPUÉS, porque es la trama de este capítulo. **Giraph** clonó Pregel en open source (y Facebook lo escaló a billones de aristas). **GraphChi** (Kyrola, OSDI 2012) invirtió la apuesta: nada de clúster — mil millones de aristas desde el DISCO de un solo PC, con *parallel sliding windows* que procesan el grafo por bloques sin cargarlo. **GraphX** (Xin et al., OSDI 2014) lo unificó todo dentro de Spark. Dos familias sobreviven de aquella era: los que **materializan** una copia compacta del grafo y la iteran muchas veces (Pregel, Giraph, GDS), y los que **procesan sin cargar** (GraphChi y su estirpe). Hoy construyes las dos, a mano, sobre LiraDB.
+
+## 26.1 Objetivo
+
+Al terminar este capítulo sabrás **por qué ejecutar un algoritmo no es lo mismo que leer el grafo**, y habrás construido las dos estrategias con las que una base de datos real responde a esa diferencia. Cuatro piezas en `cap26_proyeccion.rs`:
+
+1. **`ProyeccionPonderada`** — el grafo (o su subgrafo filtrado) materializado en memoria compacta, con pesos resueltos UNA vez. La API pública que la Parte V llevaba debiendo desde los caps. 22 y 24.
+2. **`FronterasBfs`** — un `Iterator` perezoso que produce frontera a frontera leyendo el store bajo demanda, bajo un `Presupuesto` con `MotivoParada` explícito.
+3. **`ContandoStore`** — el voltímetro: un wrapper que cuenta las lecturas que llegan de verdad al store, para VERIFICAR las promesas de los dos anteriores.
+4. **`BitSet`** — el conjunto de visitados a mano: un bit por nodo, la lección de denso contra disperso.
+
+Y el hito que cierra la Parte V: un BFS de profundidad 2 sobre una cadena de 500 nodos que lee **2 de las 499 aristas**, y 5 Dijkstras que cuestan **11 lecturas en vez de 45**. Medidos, no prometidos.
+
+## 26.2 Problema
+
+La Parte V lleva cuatro capítulos ejecutando algoritmos SOBRE el store persistente, y cada uno leyendo arista a arista lo que necesita: `out_edges(u)` y `get_edge(e)` por cada relajación. Para UNA consulta, perfecto. Pero mira los dos extremos que ya tienes:
+
+**El extremo iterativo.** El cap. 24 calculó closeness con un BFS por cada origen; el 25 iteró Louvain nivel a nivel. Llevado a Dijkstra sobre el store (cap. 22), cada llamada re-lee y re-valida E aristas. En una cadena de 12 nodos, cinco orígenes distintos leen 11+10+9+8+7 = **45 aristas**. ¿Para qué? Los pesos no cambiaron entre la primera y la quinta pasada. Estás pagando cinco veces la misma fotocopia. Y cada una de esas lecturas tiene precio doble desde el cap. 13: la que falla la caché del buffer pool cuesta una página de disco — comprarlas por adelantado, cuando ya sabes que vas a necesitar MUCHAS, es exactamente el trato que aquí cerramos.
+
+**El extremo local.** «¿Quién está a 2 saltos de Ana?» Con lo que sabes, la respuesta honesta del motor es: materializa el grafo y recórrelo. Sobre una cadena de 500 nodos, eso es cargar 499 aristas para usar... 2. El 99,6% de lo leído se tira. Y lo de antes al revés: aquí la estrategia del cap. 22 (leer bajo demanda) era la BUENA, y materializar sería el disparate.
+
+Dos síntomas opuestos, un mismo diagnóstico: **tratar todas las consultas igual**. Y una espina clavada desde el cap. 22: el CSR persistente del cap. 14 sólo guarda topología (offsets y targets) — sin ids de arista ni pesos no puede alimentar un Dijkstra. La deuda está escrita en el banner de aquel módulo.
+
+La pregunta del capítulo: ¿qué existe en memoria en cada momento, y quién decide cuándo?
+
+## 26.3 Modelo mental
+
+Piensa en un **archivo provincial** con dos formas de trabajar:
+
+- **La biblioteca que fotocopia UNA sección.** Vas a necesitar esa sección muchas veces (un análisis, una tesis). Pagas UNA fotocopia completa de la sección que te interesa — ni más (filtro: sólo Personas, sólo KNOWS) ni menos — y trabajas sobre tu copia. El archivo sigue recibiendo documentos nuevos mientras tanto, pero tu copia es una **foto**: inmutable, coherente, tuya. Materializar = `ProyeccionPonderada`.
+- **El archivista que va hoja a hoja.** Sólo necesitas saber qué hay a dos carpetas de la tuya. Le pides la carpeta, la miras, pides las que cita, y le dices basta. Nunca pidió lo que no necesitabas. Le pones un tope — «máximo 10 carpetas» — y él te deja una nota final: si trajo TODO lo que había o se quedó sin permiso. Streaming = `FronterasBfs` + `Presupuesto` + `MotivoParada`.
+
+Y en la puerta del archivo, **un contador de solicitudes**: el archivista puede presumir de trabajar poco; el contador no sabe presumir, sólo sumar. Ese es `ContandoStore`.
+
+```
+               ┌─ MATERIALIZAR (K iteraciones) ─────────────────────────┐
+               │  store ──proyectar(filtro)──► copia CSR (pesos ya)     │
+ store vivo ───┤                                    │                   │
+ (OLTP sigue   │                        K algoritmos │ CERO lecturas     │
+  mutando)     │                        sobre la foto │ del store        │
+               └────────────────────────────────────────────────────────┘
+               ┌─ STREAMEAR (consulta local) ───────────────────────────┐
+               │  store ──frontera 0──► frontera 1──► frontera 2 ──║ corte
+               │            lee SÓLO la adyacencia que expande      ║ presupuesto
+               │            memoria ∝ visitados, nunca ∝ grafo      ║ MotivoParada
+               └───────────────────────────────────────────────────────┘
+```
+
+El momento ¡ajá!: «¿qué hay a 2 saltos de Ana?» no necesita el grafo — necesita DOS adyacencias. Y «Dijkstra desde todos los nodos» no necesita releer el grafo V veces — necesita UNA fotocopia. El tipo de consulta decide la estrategia; el motor sólo tiene que ofrecerte las dos.
+
+## 26.4 Primera solución
+
+La solución ingenua ya la tienes y funciona: es la de los caps. 22-23. Cada algoritmo lee el store cuando lo necesita, arista a arista, sin copia previa. Cero infraestructura nueva. Para una consulta suelta, es incluso la opción correcta.
+
+Y su gemela simétrica, igual de tentadora: «pues materializo siempre el grafo entero al abrir la base de datos, y todos los algoritmos trabajan sobre la copia».
+
+## 26.5 Sus límites
+
+Ambas se rompen en el extremo contrario:
+
+1. **Leer-bajo-demanda multiplica por K.** Cada Dijkstra del cap. 22 valida los E pesos eager (una BD prefiere fallar ruidosamente a contestar casi-bien — política que NO vamos a ablandar) y luego relaja leyendo del store. El closeness ponderado que el cap. 24 dejó apuntado como deuda exigiría V Dijkstras: V·E lecturas. Las 45 de la cadena de 12 son 11 útiles + 34 repetidas.
+2. **Materializar-siempre castiga lo local.** La cadena de 500: cargar 499 aristas para contestar con 2. Y de regalo, O(grafo) de memoria para una consulta O(2 saltos) — el título del capítulo, literal.
+3. **La copia ingenua no sabe de filtros ni de huecos.** Sin más, copiarías nodos borrados (huecos de `delete_node`, cap. 16) y aristas que la consulta no puede pisar (hacia nodos fuera del subgrafo: un subgrafo no tiene aristas colgando hacia nodos que no contiene).
+
+Conclusión: no hay UNA estrategia buena; hay DOS, y la consulta elige. Empecemos por la primera.
+
+## 26.6 Solución evolucionada, parte 1: la proyección materializada
+
+`ProyeccionPonderada::proyectar(store, &WeightSource, &FiltroProyeccion)` hace UNA pasada y devuelve una copia compacta e inmutable. Su layout es el CSR del cap. 14 **completado** — lo único que allí no cabía en disco, aquí sí en memoria:
+
+```text
+nodes:   [id0, id1, ...]     ids ordenados          (determinismo)
+index:   id → posición densa compacta huecos        (herencia del cap. 24)
+offsets: [0, g0, g0+g1, ...]  fronteras de fila u32  (EL CSR del cap. 14)
+targets: posiciones destino   ← lo ÚNICO que persiste el cap. 14
+pesos:   f64 por arista       ← lo que AÑADE este capítulo
+aristas: EdgeId por arista    ← lo que AÑADE este capítulo
+```
+
+Tres decisiones que valen un porqué cada una:
+
+**¿Por qué el filtro hace que las aristas de nodos excluidos NI SE LEAN?** Porque `proyectar` itera las ADYACENCIAS de los nodos admitidos — no todas las aristas. Una arista cuyo ORIGEN está fuera del filtro jamás llega a `get_edge`: su adyacencia no se consulta. El ahorro del subgrafo no es «leer y tirar», es no leer. Mira el bucle, que es todo el secreto:
+
+```rust
+for &u in &nodes {                    // SÓLO nodos admitidos: la adyacencia
+    for eid in store.out_edges(u) {   // de un EXCLUIDO jamás se itera
+        let edge = store.get_edge(eid)?;
+        stats.edges_scanned += 1;
+        if !filtro.admite_arista(edge) { stats.descartadas += 1; continue; }
+        let destino = match index.get(edge.target).copied().flatten() {
+            Some(d) => d,
+            None => { stats.descartadas += 1; continue; } // destino fuera
+        };
+        let w = edge_weight(edge, weight)?;               // peso UNA vez
+        fila.push((destino, eid, w));
+    }
+}
+```
+
+Y es medible: en el test de la red mínima (2 Personas + 1 Ciudad, aristas 0→1 KNOWS, 1→4 VIVE_EN, 4→0 VIVE_EN), proyectar sólo Personas da `edges_scanned = 2` (las adyacencias de los dos nodos vivos) y `descartadas = 1` — la 1→4 se leyó y se descartó (su destino no entra), pero la 4→0 **no aparece ni en descartadas: no existe para esta proyección**. Esa es la diferencia entre filtrar al leer y filtrar leyendo.
+
+**¿Por qué los pesos se resuelven UNA vez, con la semántica ESTRICTA del cap. 22?** Porque la calidad del dato no se negocia por el lado analítico: prop ausente/NULL = `MissingWeight`, tipo no numérico = `InvalidWeight`, NaN/±∞ = `NonFiniteWeight` — el mismo `edge_weight`, el mismo contrato, ahora pagado O(E) una sola vez en la vida de la copia. Es el trato de la analítica: 11 lecturas que valen para las 5 consultas siguientes. Los pesos negativos NO son error de proyección (Bellman-Ford los admite): los rechaza `dijkstra_proyeccion` eager sobre TODA la copia — y aquí está la sutileza económica: `dijkstra_proyeccion` valida por llamada, pero `closeness_ponderado` valida UNA vez y llama V veces al núcleo sin validar. La sanidad se paga una vez; quien itera, no re-paga.
+
+**¿Por qué es un snapshot y no una vista viva?** Porque inmutable es una FEATURE: los V Dijkstras del closeness recorren la MISMA foto (resultados consistentes entre sí, determinismo total — dos proyecciones del mismo store son `PartialEq` idénticas), y el store puede seguir recibiendo escrituras OLTP mientras la analítica corre. La separación OLTP/analítica del guion no es un diagrama: es un tipo que congela un instante. (¿Qué garantiza que el instante fue coherente? Nada todavía — eso es la Parte VI.)
+
+Sobre la foto, las deudas se pagan solas: `dijkstra_proyeccion` reproduce punto por punto al del cap. 22 (mismas distancias, mismos caminos, misma arista elegida entre paralelas — test `dijkstra_proyeccion_coincide_con_dijkstra_store`), y `closeness_ponderado` hace lo que el cap. 24 prometió: Wasserman-Faust con distancias PONDERADAS. En la cadena 0→1→2→3 con pesos 1, 5, 1: el nodo 0 cae de 3/6 (saltos) a 3/14 (Σd = 1+6+7), el 1 a 4/33, y el 2 ni se entera (1/3 en ambas: su mundo no toca la arista cara). La fuente de pesos cambia la respuesta — la lección del cap. 22, ahora en centralidad.
+
+## 26.7 Solución evolucionada, parte 2: streaming por fronteras con presupuesto
+
+La otra mitad del título. `bfs_fronteras(store, origen, dir, presupuesto)` devuelve un `FronterasBfs` que **es un `Iterator` de verdad**:
+
+```rust
+let mut it = bfs_fronteras(&s, 0, Out, Presupuesto::profundidad(2))?;
+it.next();  // Some([0])  — el origen
+it.next();  // Some([1])  — leyó 1 arista
+drop(it);   // la adyacencia del 1 JAMÁS se consultó
+```
+
+**¿Por qué un Iterator y no un `Vec<Vec<NodeId>>` de niveles?** Porque el Vec materializa TODO antes de que empieces: pagas el recorrido completo para quizás mirar dos niveles. El iterador es perezoso de verdad: la frontera k+1 no existe hasta que la pides — su adyacencia se lee al EXPANDIR, nunca antes. El que consume decide cuándo parar (un callback que encontró lo que buscaba suelta el iterador y ahí se acabó la factura). Test: `bfs_iterador_perezoso_una_frontera` — pedir 2 fronteras de una cadena de 6 deja el voltímetro en exactamente 1 lectura de arista.
+
+**¿Por qué el `Presupuesto` se comprueba ANTES de cada lectura?** Porque un límite que se puede superar no es un límite. Mira dónde viven los chequeos — dentro del bucle, no por frontera:
+
+```rust
+for eid in eids {
+    if let Some(max) = presupuesto.max_lecturas
+        && stats.aristas_leidas >= max {
+        terminado = Some(MotivoParada::PresupuestoLecturas);
+        break 'nodos;                       // ANTES de leer
+    }
+    let edge = store.get_edge(eid)?;         // la lectura autorizada
+    stats.aristas_leidas += 1;
+    // ... y el de nodos, ANTES de marcar el descubrimiento:
+    if let Some(max) = presupuesto.max_nodos
+        && stats.nodos_visitados >= max { /* corte */ }
+}
+```
+
+`Presupuesto{max_profundidad, max_nodos, max_lecturas}` se valida antes de cada `get_edge` y antes de cada descubrimiento: las promesas son EXACTAS — «máximo 2 lecturas» produce exactamente 2. Y `max_lecturas` es el presupuesto más importante de los tres en un store en disco: acotar lecturas es acotar el tiempo Y la memoria de trabajo de una sola vez. (Un presupuesto de 0 no tiene sentido — «no empezar» se consigue no llamando — y se rechaza con error tipado.)
+
+**¿Por qué `MotivoParada` es parte de la RESPUESTA?** Porque cambia lo que el resultado significa. `Completo`: se agotó la componente — tu lista de nodos ES la respuesta. `PresupuestoNodos` o `PresupuestoLecturas`: había más y no te lo puedo dar — tu lista es un recorte, y tomar decisiones sobre él como si fuera completo es mentir con estadística. `ProfundidadMaxima`: cortaste tú, en el borde exacto que pediste. El test lo clava: un nodo aislado con presupuesto de 1 nodo acaba en `Completo` (no había nada más), no en `PresupuestoNodos` — mismo recorrido, significados opuestos.
+
+Detalle fino que la dirección regala: en streaming, `GraphDirection::In` es GRATIS — se leen las `in_edges` bajo demanda, no hay que transponer nada (la proyección dirigida-out habría necesitado una segunda copia). Y `Both` deduplica por bitset, documentando que un store simetrizado a mano paga cada par dos veces: visible en las stats, no escondido.
+
+`bfs_streaming` es la versión de una tirada: consume el iterador y te devuelve niveles + stats + `MotivoParada` en un `RecorridoBfs`. Mismo motor, dos ergonomías.
+
+## 26.8 Solución evolucionada, parte 3: el voltímetro y el bitset
+
+Todo lo anterior PROMETE lecturas («2 de 499», «45 contra 11»). ¿Quién verifica la promesa? No el propio algoritmo: **no confíes en que el código se auto-auditore** — el mismo bug que infla la optimización podría desinflar el contador. `ContandoStore` es un voltímetro: un wrapper de sólo lectura sobre `&dyn GraphStore` cuyos `get_edge`/`get_node`/`out_edges`/`in_edges` suman en contadores `Cell` y delegan:
+
+```rust
+fn get_edge(&self, id: EdgeId) -> Option<&Edge> {
+    self.lecturas_arista.set(self.lecturas_arista.get() + 1); // Cell: los
+    self.inner.get_edge(id)                                    // métodos son &self
+}
+fn put_edge(&mut self, _: Edge) -> Result<(), StoreError> {
+    panic!("ContandoStore es un instrumento de medida de sólo lectura")
+}
+```
+
+Fíjate en las dos formas: `Cell` porque el trait de lectura va con `&self` (contar es una mutación invisible para el sistema de tipos), y el `panic` en las escrituras porque un instrumento de medida no es un store — si dejases escribir a través del voltímetro, dejarías de poder confiar en lo que cuenta. Los tests enchufan el BFS o la proyección al voltímetro y exigen que la stats interna y el contador externo — dos fuentes INDEPENDIENTES — coincidan. Es el patrón de medir desde fuera, y su lección trasciende el capítulo: cuando un sistema se autoinforma, pon un instrumento que él no controle.
+
+Y el `BitSet`: el conjunto de visitados del BFS, a mano — `Vec<u64>`, un bit por id. **¿Por qué aquí BitSet y en el filtro HashSet?** Denso contra disperso. Los ids del store nacen densos (cap. 7): un bitset gasta 1 bit por id posible — 1/8 de lo que ocupa un `usize` en un HashSet, sin hashing ni rehash, con la consulta «¿ya visité este vecino?» en dos instrucciones. Crece bajo demanda (una palabra cada 64 ids) y su espacio es O(id_máximo_visitado/8). Pero el `FiltroProyeccion` guarda STRINGS arbitrarios (etiquetas, tipos) dispersos por definición: un bitset no puede indexarlos sin un diccionario previo, y entonces ya tienes un HashSet con pasos extra. Regla: universo denso de enteros → bitset; claves dispersas o arbitrarias → tabla hash. (¿Y si los ids fueran gigantes y dispersos? El bitset pagaría palabras vacías: el doc del `BitSet` lo deja escrito, y el HashSet ganaría. Aquí no pasa: los ids nacen del contador del store.)
+
+## 26.9 Prueba de fuego: la tesis y la economía, medidas
+
+**El test-tésis** (`bfs_streaming_no_lee_todo_el_grafo`): cadena de 500 nodos, 499 aristas. BFS profundidad 2 desde el 0:
+
+```text
+niveles          = [[0], [1], [2]]
+parada           = ProfundidadMaxima
+nodos_visitados  = 3        aristas_leidas = 2   ← 2 de 499 (<0,5%)
+voltímetro       = 2        ← la stats interna NO mintió
+```
+
+Dos aristas leídas — no tres: con profundidad 2 sólo se EXPANDEN los nodos 0 y 1; para DESCUBRIR el 2 basta leer la arista de 1, y el 2 no se expande porque su frontera ya excede el presupuesto. El resto del grafo — 497 aristas — no existió para esta consulta. Esa es la tesis del capítulo en un `assert`.
+
+**El test-economía** (`economia_multiorigen_una_lectura_por_adelantado`): misma cadena de 12 (E = 11). Por la proyección: materializar = 11 lecturas; 5 Dijkstras después = SIGUEN siendo 11. Directo contra el store (cap. 22): 11+10+9+8+7 = **45**. Cuatro veces más, y cada origen extra agranda la brecha. (¿Por qué 45 y no 55? La validación eager del cap. 22 usa `iter_edges` — el voltímetro cuenta `get_edge` — y cada Dijkstra del origen i expande los nodos i..11 y lee 11−i aristas. Calibrar contadores se hace trazando el código a mano, nunca «lo que suena razonable».)
+
+Y las dos mitades del capítulo se dan la mano en el grafo demo de la Parte IV: el BFS streaming desde Ana produce niveles `[0], [1, 4], [2, 5]` (Dani inalcanzable: sólo su self-loop), y esos visitados son EXACTAMENTE los `alcanzados()` del Dijkstra sobre la proyección — misma componente, dos estrategias, una verdad (`bfs_en_demo_graph_alcance_y_contraste_con_dijkstra`).
+
+**Las deudas, saldadas ante notario**: `dijkstra_proyeccion_coincide_con_dijkstra_store` (consistencia proyección↔algoritmo, la deuda del cap. 22) y `closeness_ponderado_paga_la_deuda_del_cap24` (el closeness ponderado, con consenso contra la versión por saltos cuando el peso es `Constant(1.0)` y CERO lecturas del store en los V Dijkstras). La Parte V cierra sin facturas pendientes.
+
+¿Y si te saltas el capítulo? Síntoma detectable: tus analíticas tardan proporcionalmente a iteraciones (cada pasada relee), tus consultas locales tardan proporcionalmente al GRAFO, y no puedes demostrar ninguna de las dos cosas porque no tienes voltímetro.
+
+## 26.10 Repaso de la Parte V: la cadena 22→26
+
+Este capítulo cierra la Parte V. Reconstruyamos el árc completo — cada capítulo ejecutó el algoritmo académico del Vol.I SOBRE el store persistente, y cada uno descubrió que los datos viven en el disco:
+
+```
+ 22 CAMINOS MÍNIMOS ──► 23 A* ──► 24 CENTRALIDAD ──► 25 COMUNIDADES ──► 26 SIN AGOTAR MEMORIA
+    pesos de PROPS        heurística    V iteraciones         K niveles        la estrategia:
+    del EDGE, semántica   del NODE      → proyección          → grafo          MATERIALIZE o
+    ESTRICTA (fail loud)  (coords km)   PRIVADA sin pesos     simétrico        STREAM según consulta
+    │                     │             + índice denso        propio           └─ la API pública
+    └─ deuda: CSR no pesa └─ refactors  └─ deuda: ponderado  └─ decisión:     que las salda todas
+       (cap. 14)             compartidos    y proyección        CONVIVIR         + el voltímetro
+                           (validate_     pública               (no unificar)
+                            edge_weights)
+```
+
+Cada eslabón dejó una garantía heredada: el **22** fijó el contrato de calidad de pesos (estricto, ruidoso) y anotó que el CSR del 14 no podía pesarlo; el **23** descubrió que los algoritmos también necesitan datos del NODO, y extrajo `validate_edge_weights` compartido; el **24** tropezó con la K-iteración y se construyó la primera proyección — privada, sin pesos, con el índice denso que aquí reutilizas — dejando apuntado «cuando exista la proyección con pesos, el BFS de saltos se cambia por Dijkstra»; el **25** decidió CONVIVIR (su `GrafoPonderado` simétrico codifica el contrato de Louvain; unificar a la fuerza sería re-asegurar 597 tests por cero valor). Y el **26** reúne: hereda el layout del 14, el contrato del 22, el índice denso del 24, la sabiduría de convivencia del 25 — y añade lo que ninguno tenía: la decisión explícita de qué existe en memoria, y el instrumento para demostrarla. El método de la Parte V en una frase: **el algoritmo es el fácil; lo difícil es ejecutarlo sin mentir sobre los datos ni quebrar la memoria.**
+
+Estas dos piernas — materializar con filtro y streamear con presupuesto — son también las que sostendrán el futuro inmediato del libro: en el Vol.III, el cap. 51 montará GraphRAG sobre exactamente esto (PageRank personalizado multi-hop sobre proyecciones de una base de conocimiento que no cabe en memoria, con fronteras acotadas por presupuesto). Antes, la Parte VI contestará la pregunta que este capítulo deja abierta a propósito: ¿quién garantiza que la FOTO fue coherente?
+
+## 26.11 Qué hemos sacrificado
+
+1. **Paralelismo real, documentado no implementado**: `bloques_de_nodos(tam)` reparte rangos de posiciones — cada bloque un slice CSR independiente, perfectamente divisible entre hilos. Pero `&dyn GraphStore` no es `Sync` y el workspace no usa crates. La semilla queda; cómo lo paralelizan GDS y Kùzu es prosa de §26.12.
+2. **Snapshot sin aislamiento transaccional**: la proyección es inmutable, pero ¿fue coherente el instante fotográfico? Nada lo garantiza aún: eso exige transacciones (Parte VI) y MVCC (cap. 30).
+3. **Proyección dirigida-out fiel**: paralelas y self-loops se conservan tal cual (la proyección FOTOGRAFÍA, no interpreta). Quien necesite simetría o unión, la construye encima — como hicieron los caps. 24/25.
+4. **El presupuesto cuenta `get_edge`, no `iter_edges`**: la validación eager del cap. 22 escapa al voltímetro (por eso 45, no 55). Contar el catálogo entero de accesos difiere el instrumento; documentado.
+5. **Convivencia antes que pureza**: tres estructuras de proyección coexisten (la pública de aquí, la del 24, la del 25). El refactor unificador queda como deuda declarada, no oculta.
+
+## 26.12 Cómo lo hace una BBDD real
+
+- **Neo4j GDS**: `gds.graph.project()` materializa una proyección EN MEMORIA (native projection por configuración, o Cypher projection por consulta) con exactamente nuestros tres ejes: qué nodos, qué tipos de relación, qué propiedades. Vive en un graph catalog con estimación de memoria previa (`estimate`) y se suelta con `gds.graph.drop`. Es nuestra `ProyeccionPonderada` con catálogo y factura de RAM.
+- **Kùzu** invierte el diseño: almacenamiento COLUMNAR (CIDR 2023). Las propiedades viven en columnas, de modo que una analítica que necesita 2 propiedades de 20 lee DOS columnas del disco — nada que copiar a RAM. Kùzu hace barato lo que nosotros materializamos; nosotros materializamos lo que Kùzu hace barato.
+- **Pregel/Giraph**: materializar y iterar por superpasos BSP (Valiant 1990) — la proyección repartida entre máquinas, frontera de mensajes en cada barrera. Facebook escaló Giraph a billones de aristas.
+- **GraphChi** (OSDI 2012): el streaming extremo — parallel sliding windows procesan el grafo POR BLOQUES desde el disco de un PC, sin cargarlo nunca entero. La estirpe de nuestro `FronterasBfs` bajo presupuesto de lecturas.
+- **GraphX** (OSDI 2014): unifica grafo-paralelo y dato-paralelo en Spark, reinterpretando los superpasos como joins distribuidos — la prueba de que las dos familias eran dos vistas del mismo problema.
+- **DuckDB**, fuera del mundo grafo: su buffer manager derrama a disco temporal cuando la consulta no cabe en RAM (out-of-core). Nuestro `Presupuesto` es su primo pequeño: en vez de reaccionar al desbordamiento, lo prohíbes de antemano.
+- **El survey del guion**: (a) *paralelismo* — las fronteras y los bloques CSR son divisibles; GDS y Kùzu paralelizan exactamente por bloques de nodos; (b) *snapshots* — la foto inmutable es la separación OLTP/analítica encarnada; el paso siguiente es MVCC (cap. 30); (c) *OLTP vs analítica* — el punto (`get_edge` sobre el vivo) contra el recorrido (K pasadas sobre la foto): dos cargas, dos estrategias, una base de datos que ofrece ambas.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: en el test de la Persona-only, ¿por qué `descartadas` es 1 si DOS aristas (1→4 y 4→0) quedan fuera de la proyección?
+- *Intermedio*: ¿por qué el presupuesto de lecturas se comprueba DENTRO del bucle de aristas y no por frontera? Construye un caso donde la diferencia sea visible.
+- *Experto*: tu `Presupuesto` no distingue lecturas de PÁGINA (cap. 13) de lecturas de arista. ¿Qué mediría un voltímetro de páginas sobre un BFS frontera a frontera, y por qué la localidad del CSR lo favorece?
+
+## 26.13 Lo que te llevas
+
+- **Dos estrategias, no una**: K iteraciones sobre todo el grafo → materializar UNA vez (E lecturas); consulta local a k saltos → streaming frontera a frontera (k adyacencias). El tipo de consulta decide.
+- **La proyección es el CSR del cap. 14 completado**: mismo layout, más el peso y el id de arista que el disco no podía pagar; índice denso compactando huecos; determinismo total.
+- **Filtrar aquí es no leer**: las aristas de nodos excluidos NI SE LEEN (ahorro medible en `edges_scanned`/`descartadas`).
+- **La sanidad de pesos se paga UNA vez**: semántica estricta heredada del 22, validación eager en `closeness_ponderado` FUERA del bucle de orígenes — 11 lecturas que valen para 5 consultas (45 de la vía directa).
+- **Un Iterator, no un Vec**: la frontera k+1 no existe hasta que la pides; soltarlo a mitad corta la factura.
+- **`MotivoParada` es parte de la respuesta**: `Completo` y `PresupuestoNodos` son recorridos con el mismo aspecto y significados opuestos.
+- **El voltímetro externo**: dos fuentes independientes (stats interna + `ContandoStore`) que deben coincidir; nunca confíes en el autoinforme.
+- **BitSet donde es denso, HashSet donde es disperso**: un bit por id si los ids nacen contiguos; tabla hash si las claves son arbitrarias.
+
+## 26.14 Ojo, cuidado con…
+
+- **Interpretar sin mirar `parada`**: tres nodos visitados puede ser la componente entera o el corte del presupuesto. Primero `parada`, después conclusiones.
+- **Calibrar contadores de oído**: profundidad k ⇒ expandir k nodos (2 aristas leídas, no 3). Los tests de contadores se calibran trazando el código a mano.
+- **Presupuestos a posteriori**: comprobar el límite tras la lectura permite superarlo de a una — el chequeo va ANTES de cada `get_edge` y de cada descubrimiento.
+- **Bitset con ids dispersos**: ids gigantes y huecos pagan palabras vacías; ahí el HashSet gana. El bitset es denso o no es.
+- **Confundir la proyección con una vista viva**: es una FOTO. El store siguió mutando; tu analítica contesta sobre el instante de la foto, no sobre el ahora.
+
+## 26.15 Pin de batalla
+
+> *«Un resultado recortado por presupuesto no es una respuesta a medias: es una promesa a medias. Sin MotivoParada, ni siquiera sabes cuál de las dos te dieron.»*
+
+## 26.16 Si solo lees 30 segundos
+
+Materializar (`ProyeccionPonderada`) paga E lecturas UNA vez y luego itera K algoritmos con CERO lecturas del store — 11 contra 45 en la cadena de 12. Streamear (`FronterasBfs`) lee frontera a frontera bajo demanda: profundidad 2 en la cadena de 500 lee 2 aristas de 499. El `Presupuesto` (profundidad/nodos/lecturas) nunca se supera porque se comprueba antes de leer, y `MotivoParada` dice si tu respuesta está completa o recortada. El `ContandoStore` verifica todo desde fuera: dos fuentes independientes, ninguna se auto-audita. BitSet si los ids son densos; HashSet si las claves son dispersas.
+
+## 26.17 Una historia pequeña
+
+La migración de este capítulo casi se pierde. El agente que escribía el módulo quedó cortado por usage-limit con las 2.150 líneas COMPLETAS pero sin cablear en `lib.rs`, sin compilar, y con cuatro tests mal calibrados. El orquestador lo terminó a mano: dos errores de compilación (`sort_unstable` no ordena `f64` — se necesita `total_cmp`; y el `#[derive(Debug)]` no sabe imprimir un `&dyn GraphStore` — impl manual con los contadores), cuatro lints, y luego lo bueno: los cuatro tests de contadores que fallaban.
+
+Uno decía `5·E = 55` lecturas para 5 Dijkstras; el voltímetro decía 45. ¿Quién mentía? Nadie: la validación eager del cap. 22 usa `iter_edges` — que el voltímetro no cuenta como `get_edge` — y cada origen i lee E−i aristas: 11+10+9+8+7. Otro decía que el BFS de profundidad 2 leía 3 aristas; la traza de `FronterasBfs::next` a mano demostró que se EXPANDEN 2 nodos, no 3 — descubrir el nodo 2 no exige expandirlo. Las expectativas se recalibraron una a una, cada una con su derivación al lado. La moraleja quedó escrita en la bitácora de migración: los tests de contadores no se calibran con lo que suena razonable; se calibran trazando el código. El voltímetro no opina: suma.
+
+## Ejercicios resueltos
+
+**1. En el filtro Persona-only de §26.6, ¿por qué `descartadas == 1` si DOS aristas quedan fuera de la proyección (1→4 y 4→0)?**
+
+Porque `descartadas` cuenta lo que se LEYÓ y se descartó, no todo lo que queda fuera. La arista 1→4 se lee (la adyacencia del nodo 1 — admitido — se itera) y se descarta: su destino (la ciudad) no pasa el filtro de nodos. La arista 4→0 NI SE LEE: su origen (la ciudad) está excluido y `proyectar` jamás consulta su adyacencia — por eso `edges_scanned == 2` (las adyacencias de los dos nodos admitidos) y la 4→0 no aparece en ninguna stats. El ahorro del subgrafo: no pagar lecturas de lo que ni entra. Verificación: `subgrafo_filtrado_por_label_y_tipo_de_arista`.
+
+**2. ¿Por qué 5 Dijkstras del cap. 22 sobre la cadena de 12 son 45 lecturas y no 55 (5×11)?**
+
+Dos razones que hay que separar. Primero, no cada Dijkstra lee las 11: el origen i sólo expande los nodos i..11, luego lee 11−i aristas — la suma es Σ(E−i) = 11+10+9+8+7 = 45. Segundo, la validación eager de pesos del cap. 22 recorre `iter_edges` (un iterador del store), que el voltímetro NO cuenta como `get_edge` — por eso no suma ni una lectura más. Con la proyección: 11 lecturas de materialización y las 5 consultas no tocan el store. Verificación: `economia_multiorigen_una_lectura_por_adelantado` (y su comentario con la derivación exacta).
+
+## Ejercicios propuestos
+
+**Esencial (recordar/aplicar).** Sin ejecutar nada, sobre la estrella 0→{1,2,3,4} (cuatro aristas 0→i) con `Presupuesto::sin_limite().con_nodos(3)`: predice `niveles`, `nodos()`, las cuatro stats (`nodos_visitados`, `aristas_leidas`, `adyacencia_consultas`, `fronteras`) y el `MotivoParada`. Luego verifica con `bfs_streaming` envuelto en un `ContandoStore`: stats interna y voltímetro deben coincidir. Repite con el origen aislado y presupuesto 1. *Pistas*: (1) ¿el límite de nodos se comprueba antes o después de descubrir?; (2) ¿cuántas aristas se leen hasta descubrir la segunda hoja?; (3) ¿qué `MotivoParada` espera a un grafo que ya no tiene nada? *Criterio*: predicción exacta de niveles+parada y coincidencia stats/voltímetro (compárate con `bfs_streaming_presupuesto_nodos_exacto`).
+
+**Intermedio (analizar — mezcla caps. 22 y 24).** La cadena 0→1→2→3 con pesos 1, 5, 1. (a) Calcula a mano el closeness ponderado de los cuatro nodos (Wasserman-Faust con Σd ponderado). (b) Explica por qué 0 y 1 se devalúan respecto a la versión por saltos y el 2 no cambia. (c) ¿Qué error tipado esperas con pesos negativos, quién lo lanza y CUÁNTAS veces valida `closeness_ponderado`? Verifica con `closeness_ponderado_paga_la_deuda_del_cap24` (allí están los valores 3/14, 4/33, 1/3, 0 y el test de economía con voltímetro). *Pistas*: (1) ¿qué Σd y qué r para cada origen?; (2) ¿qué aristas toca el mundo alcanzable del 2?; (3) ¿dónde corre `validar_pesos_no_negativos` respecto al bucle de orígenes? *Criterio*: números exactos + la diferencia semántica salto/peso + la validación UNA vez.
+
+**Experto (crear — cierre de Parte V, retrieval puro).** Primera parte, de memoria (sin mirar los banners de los caps. 22-25): reconstruye el árc de la Parte V — qué añadió cada capítulo (22: pesos estrictos de props; 23: heurísticas del nodo; 24: familias + proyección privada e índice denso; 25: comunidades + grafo simétrico propio) y qué garantía o deuda dejó cada uno. Segunda parte: implementa `pagerank_proyeccion(&ProyeccionPonderada)` — damping validado en (0,1), masa dangling redistribuida uniformemente, convergencia L1 (todo lo aprendiste en el 24) — con CERO lecturas del store tras materializar (voltímetro en el test) y verifica que sus scores coinciden con el `pagerank` del cap. 24 sobre el mismo grafo simetrizado. *Pistas*: (1) ¿qué convención de self-loops y paralelas debes re-declarar para que la equivalencia sea justa?; (2) ¿dónde del bucle por iteraciones se escapa la masa dangling?; (3) ¿por qué aquí no hay validación de pesos DENTRO del bucle? *Criterio*: árc completo de memoria + equivalencia con el 24 + cero lecturas medidas.
+
+## Para profundizar
+
+- **Malewicz et al., «Pregel: a System for Large-Scale Graph Processing» (SIGMOD 2010, pp. 135-146, DOI 10.1145/1807167.1807184)** — el paper que bautizó «think like a vertex» y los superpasos. La anécdota de la esquina, en fuente primaria.
+- **L. G. Valiant, «A Bridging Model for Parallel Computation» (CACM 33(8), 1990)** — el modelo BSP en el que Pregel se apoyó veinte años después.
+- **A. Kyrola, «GraphChi: Large-Scale Graph Computation on Just a PC» (OSDI 2012)** — el streaming por bloques desde disco, en un solo PC: parallel sliding windows.
+- **R. S. Xin et al., «GraphX: Unifying Data-Parallel and Graph-Parallel Analytics» (OSDI 2014)** — la unificación de las dos familias en Spark.
+- **Neo4j Graph Data Science — docs de graph projection (native y Cypher), memory estimation y graph catalog** — la `ProyeccionPonderada` a escala industrial, con factura de RAM.
+- **G. Jin et al., «Kùzu» (CIDR 2023) y Gupta et al., «Columnar Storage and List-based Processing for Graph Queries» (VLDB 2021)** — el camino columnar: leer poco en vez de copiar.
+- **DuckDB, «Memory Management in DuckDB» (blog, 2024)** — out-of-core: derramar a disco cuando no cabe, el complemento reactivo de nuestro presupuesto preventivo.
+- **McCune et al., «A Survey of Vertex-Centric Frameworks» (ACM Computing Surveys, 2015)** — el mapa de toda la familia TLAV/BSP.
+
+## Mini-diálogo: a la puerta del archivo
+
+> — Entonces, ¿materializo o streameo?
+>
+> — Pregúntale a la consulta, no a la moda. ¿Vas a recorrer el grafo K veces? Fotocópialo una vez. ¿Sólo quieres saber qué hay a dos saltos? Pide dos carpetas y di basta.
+>
+> — ¿Y si miento y me equivoco?
+>
+> — Para eso está el contador de la puerta. Tus stats dicen dos lecturas; el contador dice dos; bien. El día que digan cosas distintas, ya tienes el bug acorralado entre los dos.
+>
+> — ¿Y el presupuesto? Me da miedo cortar la respuesta a medias.
+>
+> — Al contrario: cortar a medias y SABERLO es lo honesto. `MotivoParada` es la diferencia entre «esto es todo» y «esto es lo que me dejaron ver». Lo peligroso no es el recorte: es el recorte sin etiqueta.
+
+---
+
+*(Próximo capítulo: 27 — Qué significa una transacción. Tu proyección es la foto de un instante… ¿pero quién garantiza que ese instante fue coherente, y que dos escritores no te rompan el store mientras analizas su foto? La Parte VI — ACID, WAL, recuperación — convierte la fe en contrato. Y más adelante, en el Vol.III, el cap. 51 montará GraphRAG sobre las piernas de éste: PPR multi-hop sobre proyecciones y fronteras de una base de conocimiento que no cabe en memoria.)*
 # Apéndice 0 — Manual de estilo unificado
 
 > *Borrador inicial — se completará en la Fase 2.*
