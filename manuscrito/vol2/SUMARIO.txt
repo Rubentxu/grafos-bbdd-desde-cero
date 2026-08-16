@@ -1,6 +1,10 @@
 portada.md
 prologo.md
 tabla-de-contenidos.md
+cap-07-el-modelo-de-datos-de-liradb-property-graph-y-value.md
+cap-08-disenar-una-api-antes-de-persistir-trait-graphstore.md
+cap-09-del-objeto-al-byte-encoding-endianness-versionado.md
+cap-10-persistencia-append-only.md
 cap-11-paginas-bloques-y-slotted-pages.md
 cap-12-el-gestor-de-paginas-trait-pager.md
 cap-13-el-buffer-pool-lru-clock-metricas.md

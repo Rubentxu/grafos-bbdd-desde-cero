@@ -184,6 +184,1410 @@ Empezamos. Bienvenido al motor.
 
 ---
 
+# Capítulo 7 — El modelo de datos de LiraDB (Property Graph + Value)
+
+> *«Un grafo de bits te dice dónde hay un enlace. Un modelo de datos te dice qué significa ese enlace.»*
+
+## 7.0 La anécdota de la esquina
+
+En 1970, Edgar Codd publicó en el *Communications of the ACM* un artículo de once páginas que iba a cambiar la informática: «A Relational Model of Data for Large Shared Data Banks» (CACM, vol. 13, nº 6, pp. 377-387). La tesis era tan sencilla como radical: los datos no deberían guardarse según *cómo se accede a ellos* (archivos, punteros, jerarquías), sino según un modelo matemático —las relaciones, o tablas— que fijara de forma declarativa qué significa cada dato **y qué tipos puede tener**. Antes de Codd, un valor cualquiera era de facto un trozo de texto; después de Codd, nadie serio lo discutía: ordenar, comparar y sumar exigían saber si aquello era un número, una fecha o un booleano.
+
+Años después, el problema reapareció con otro rostro. Las bases de datos relacionales eran soberbias con tablas, pero los datos del mundo real —amistades, caminos, dependencias— son redes: la relación "Ana conoce a Bo (desde 2020)" tiene *cualidades propias* que no caben bien en una tabla y sus claves foráneas. En 2007, Neo4j popularizó el modelo **property graph** y el lenguaje Cypher, y en 2024 la ISO publicó **ISO/IEC 39075** — el estándar *Graph Query Language (GQL)* — reconociendo que el grafo es un modelo de datos de primera clase, con su propio tipado y sus propias aristas con propiedades.
+
+El hilo que une a Codd, Neo4j, GQL y LiraDB es exactamente este capítulo: **un grafo no es solo una colección de aristas; es un modelo de datos**, con tipos de valor, identidades y etiquetas. Vamos a definirlos.
+
+## 7.1 Objetivo
+
+Al terminar este capítulo sabrás responder a una pregunta que quema: **¿qué significa "tener un grafo" dentro de una base de datos?** No basta con dibujar nodos y flechas. Hace falta decidir, con la precisión de un contrato:
+
+1. **Cuántos tipos de valor existen** y qué puede guardar cada propiedad (`Value`).
+2. **Qué es la identidad** de un nodo o una arista, y por qué existe aunque no tengan datos (los `id`).
+3. **Qué papel juegan las etiquetas** (los `labels`), distintas de las propiedades.
+4. **Cómo se organizan nodos y aristas** en memoria para poder recorrer el grafo (`PropertyGraph`).
+
+Vas a construir las cuatro piezas del modelo conceptual que el resto del Vol.II persiste, indexa, consulta y recorre: `Value`, `Node`, `Edge`, `Element` y `PropertyGraph`.
+
+## 7.2 Problema
+
+Retoma el minigrafo de la Parte I: Ana conoce a Bo. Hasta ahora lo pintábamos como una estructura de computación — una lista de adyacencia, una matriz de bits — pensada para *recorrer*. Pero Ana no es solo "el nodo 0" y la flecha no es solo "true". Ana tiene nombre, edad y país. La flecha tiene el año desde el que se conocen. Y el día que guardes esto en un fichero y lo vuelvas a leer meses después, necesitas saber **exactamente** qué es cada cosa.
+
+El problema es que un grafo de "computación" responde bien a *estructura* y fatal a *dato*:
+
+- **La matriz de adyacencia con bits** (la del Vol.I cap. 2) te dice "hay una arista entre 0 y 1" — y nada más. No hay sitio para "desde 2020", ni para la edad de Ana, ni para saber que la arista es de tipo `KNOWS` y no `WORKS_AT`.
+- **Los nodos como `HashMap<String, String>`** (la tentación natural) guardan "36" como texto. Ordenar por edad da `1, 10, 2`. Sumar "36" es un error de tipos enmascarado. Comparar funciones es imposible sin decidir antes qué tipo es cada campo.
+- **Los `id` como posición en el array** (el atajo) funcionan hasta que borras el nodo del medio y "el índice 2" pasa a significar otra cosa.
+
+La raíz del problema: un grafo de base de datos necesita un **modelo de datos** — la capa que Codd añadió a las tablas en 1970 y que ahora hay que añadir a los grafos — que responda tres preguntas con tipos fuertes: *qué valores guardo, qué identidad tiene cada elemento y qué etiquetas lo clasifican*.
+
+## 7.3 Modelo mental
+
+Piensa en el **archivo de expedientes de un hospital** (de nuevo, como el del cap. 3):
+
+- Cada paciente tiene un **número de expediente** (el `id`). Ese número existe **aunque la ficha esté vacía** o la persona aún no haya entrado. El número no es "la ficha que está en el quinto hueco": es un nombre estable que no cambia si reorganizas la estantería.
+- La ficha tiene **campos con tipos predefinidos** (`edad`: número; `activo`: sí/no; `alergias`: lista de texto). Nadie escribe la edad "a mano en tinta borrosa".
+- Encima hay una **etiqueta de carpeta** ("Paciente", "Hospital", "Cardiólogo") que *clasifica* — y que puedes mirar sin abrir la ficha. Las **notas internas** (propiedades) *describen* — y exigen abrir la carpeta.
+- En cada carpeta, una hoja lista los **expedientes enlazados** y con qué relación: "recibe de" (la arista entrante) y "envía a" (la arista saliente).
+
+El archivo, visto de fuera:
+
+```
+Expediente 0 ──[KNOWS, since=2020]──▶ Expediente 1
+   labels: ["Person"]                    labels: ["Person"]
+   props:                                props:
+     name: "Ada"                          name: "Bo"
+     age:  Int(36)                         city: "Oporto"
+```
+
+Dos ideas son el corazón:
+
+1. **La identidad vive aparte de los datos.** `Ada` "es" el expediente 0 no porque tenga nombre, sino porque su `id` es 0. Por eso un nodo *sin ninguna propiedad* es perfectamente válido.
+2. **El tipo de valor es una decisión del modelo.** Que `age` sea `Int(36)` y no `"36"` no es un capricho: es lo que permite comparar, ordenar y ahorrar espacio.
+
+### El momento ¡ajá!
+
+> *La matriz de adyacencia con bits es una hoja de cálculo de "sí/no hay enlace". El modelo de datos es el archivo: dice qué es cada campo, cómo se llama cada elemento y con qué etiqueta se clasifica. Un grafo de BBDD necesita las dos cosas — topología Y significado — conviviendo.*
+
+## 7.4 Primera solución
+
+La versión ingenua (la que probablemente ya estés pensando): **todo es texto, el id es la posición, y las aristas son pares de nombres**.
+
+```rust
+// Solución ingenua: "todo son strings".
+struct GrafoSimple {
+    nodos: Vec<HashMap<String, String>>,  // id = índice en el Vec
+    ady: HashSet<(usize, usize)>,          // (origen, destino) como bits
+}
+```
+
+Define a Ana, guarda sus datos y... los tests pasan. El minigrafo "funciona". Es *exactamente* el grafo de bits y de strings del Vol.I, vestido de base de datos.
+
+## 7.5 Sus límites
+
+La solución ingenua se rompe por los cuatro flancos a la vez:
+
+1. **El tipo viaja donde se guarda, no donde se define.** `age: "36"` se ordena mal, no se suma y confunde a quien lo lea. El momento en que haces `if node.edad_as_texto > "30"` ya es tarde: el hoyo lo cavaste al tipar.
+2. **La arista es invisible.** `HashSet<(usize,usize)>` guarda "existe enlace", pero no permite decir que la flecha es `KNOWS`, ni que nació en 2020. Olvídate de ponderar el camino de Dijkstra en el cap. 22: no hay dónde guardar el peso.
+3. **La identidad muere con el borrado.** Reubicar el nodo del medio recicla su índice; compáralo con el principio del cap. 3 — "el id estable no se recicla".
+4. **No hay etiquetas.** No puedes clasificar a Ada como `Person` *y* `Author` para una búsqueda, porque no existe la idea de "carpeta".
+
+Las cuatro son el mismo fallo de fondo: **no hay modelo de datos** — solo colecciones de bits. Codd tenía razón: hay que tipar, nombrar y clasificar.
+
+## 7.6 Solución evolucionada
+
+La solución (la de Neo4j, la retomada por el estándar GQL ISO 39075) es el **property graph** con cuatro decisiones firmes:
+
+1. **`Value` es una unión tipada** (un enum Rust), no un string camuflado. Cada valor *sabe qué es*.
+2. **La identidad es un campo separado**: `NodeId`/`EdgeId` = `usize` por ahora (pedagógico), con la promesa explícita de migrar a IDs generacionales (`slotmap`) en el cap. 3.
+3. **Labels vs props**: las etiquetas clasifican (`Vec<String>`, varias por nodo), las propiedades describen (`HashMap<String, Value>`).
+4. **La arista es una entidad de primera clase**: con su propio `id`, su `source`, su `target`, su **label de relación** (`String`, el "verbo") y sus propiedades.
+
+Y encima de todo, un **`PropertyGraph`** que guarda nodos y aristas en arrays y mantiene dos índices de adyacencia — `adj_out` y `adj_in` como listas de `EdgeId` — para poder recorrer "quién sale" y "quién entra" sin buscar en todo el grafo. Esta es la estructura de datos que *retiene propiedades* (a diferencia de la matriz de bits, que solo retiene topología).
+
+## 7.7 Código explicado
+
+El código vive en `liradb-workspace/crates/vol2-liradb/src/cap07_modelo.rs` (284 líneas). Recórrelo conmigo, no lo copies: está en tu workspace. Primero, el tipado de valores.
+
+### El corazón: `Value`
+
+```rust
+pub enum Value {
+    Null,        // ausencia explícita de valor
+    Bool(bool),
+    Int(i64),    // entero de 64 bits
+    Float(f64),  // IEEE 754
+    String(String), // UTF-8
+    Bytes(Vec<u8>), // opacos, binarios
+}
+```
+
+Esta es la respuesta a la pregunta crítica del capítulo: *¿cómo tipar `Value` para soportar string/int/bool/list/map?*. Fíjate en lo que *no* está: **no hay `List` ni `Map`** en esta versión. LiraDB empieza por los seis primitivos — `Null` explícito, booleano, dos números, texto y bytes — y deja listas/mapas anidados para un tipo `Value::List`/`Value::Map` cuando el modelado lo pida. Decidir los *seis* no es arbitrario: cubren los que cualquier `Edge`/`Node` real necesitará (el `Null` de Codd, `HashSet`→`Bool`, `Vec`→`Bytes`, fechas→`String`/`Int`), sin la complejidad de la recursión infinita del "map genérico".
+
+Y es **extensible por diseño**: `Value` implementa `Debug, Clone, PartialEq` pero no `Copy` — los strings y bytes son «grandes». Añadir una variante mañana es posible, pero el código lo avisa con un comentario clave: *añadir una variante es un bump de versión del formato (cap. 9)*. Volverás a esto: la extensibilidad del modelo **no es gratis** — cada variante nueva cambia cómo se codifican los datos en disco.
+
+Sobre el `list/map` de la pregunta crítica: merecen un apunte. Un `Value::List(Vec<Value>)` o `Value::Map(HashMap<String, Value>)` es tentador e inevitable algún día, pero introduces **recursión**: un `Map` puede contener listas que contienen maps... y entonces `Value` deja de ser plano y tu `type_name`, tu comparación y tu futura codificación (cap. 9) tienen que decidir la profundidad. La posición de LiraDB es deliberada: **empezar con seis primitivos y añadir el contenedor cuando el modelado lo exija, con su bump de versión**. Apostar por lo mínimo que cubre a los nodos y aristas reales —y migrar con un plan— es mejor que construir una maraña recursiva el día uno. (Comprueba el corolario: algo como una dirección, que "parece" un map, se modela aquí como un `String`; si necesitas buscar por ciudad, lo resolverás con etiquetas o un nodo intermedio, no con `Value::Map`.)
+
+Dos métodos lo hacen útil: `type_name(&self) -> &'static str` (qué variante soy, para depurar) y `is_null(&self)`.
+
+### La identidad: `NodeId` y `EdgeId`
+
+```rust
+pub type NodeId = usize;
+pub type EdgeId = usize;
+```
+
+Dos `type alias`. Y aquí está la nota pedagógica honrada: *en el cap. 3 (Vol.II) se sustituirán por IDs generacionales (`slotmap`)*. Hoy `usize` nos deja hacer `id = índice` y ver la aritmética con claridad; el cap. 3 — el de "Identidad, referencias y datos estables" — demostrará por qué esa aritmética se vuelve peligrosa al borrar y cómo `slotmap` la salva. Guardar los dos alias en un único punto significa que migrar tocará un lugar, no cien.
+
+### `Node`, `Edge` y `Element`
+
+```rust
+pub struct Node {
+    pub id: NodeId,
+    pub labels: Vec<String>,
+    pub props: HashMap<String, Value>,
+}
+
+pub struct Edge {
+    pub id: EdgeId,
+    pub source: NodeId,
+    pub target: NodeId,
+    pub label: String,      // el "verbo": KNOWS, WORKS_AT...
+    pub props: HashMap<String, Value>,
+}
+```
+
+- **`Node.labels` es `Vec<String>`** — un nodo puede ser `Person` y `Author` a la vez. El helper `has_label` permite filtrar por categoría sin abrir ninguna propiedad.
+- **`Edge.label` es un solo `String`** — es el *tipo de relación*, el verbo de la frase. Que una arista tenga un único label (a diferencia del nodo) es una decisión deliberada: "Ana CONOCE a Bo" tiene un verbo, no tres. (La clasificación compleja se resuelve con nodos intermedios, que verás en modelado.)
+- Los builders `Node::new(id, label)`, `.with_prop(key, value)` y `Edge::new(id, source, target, label)` hacen al código legible: construyes una ficha entera en una línea.
+
+### El contraste que debes tener claro: LPG vs RDF
+
+Una pregunta crítica del capítulo es *cuál es la diferencia entre LPG y RDF*. Ambos son "grafos", y es fácil confundirlos. La diferencia práctica y duradera es la **granularidad de la arista**:
+
+- En el **LPG** (lo que construyes hoy), la **arista es un objeto de primera clase**: tiene su propio `id`, su `label` (el verbo `KNOWS`), su `source` y `target`, y sus `props`. "Ana conoce a Bo desde 2020" es una arista con `props["since"]`. Tú acabas de construir eso.
+- En el **RDF** (Linked Data / Web Semántica, Vol.III), todo es un **triple** sujeto-predicado-objeto: `Ana KNOWS Bo`. No hay "arista con propiedades" — para decir "desde 2020" necesitas un *nodo* intermedio (reificar el objeto: crear un nodo `conocimiento:anas-bo` y enlazarlo). Es un modelo más puro y distribuible, pero a costa de verbosidad.
+
+GQL (ISO 39075) y Cypher son del mundo LPG: aristas tipadas con propiedades. RDF/SPARQL son del otro. **LiraDB es LPG** — eliges aristas de primera clase. (Este contraste se formaliza en el Vol.III; aquí solo necesitas decidir cuál eliges y por qué.)
+
+### El sum type `Element`
+
+Y el **sum type** que cosifica el elemento:
+
+```rust
+pub enum Element { Node(Node), Edge(Edge) }
+```
+
+`Element` es la semilla de algo que usarás en capítulos de algoritmos y consultas (cap. 17+): un recorrido genérico que puedes preguntar `id()` sin hacer un `match`. Cuando cap. 20 (modelo Volcano) itere sobre resultados, agradecerás que la unión existiera desde aquí.
+
+### El grafo: `PropertyGraph`
+
+```rust
+pub struct PropertyGraph {
+    pub nodes: Vec<Node>,
+    pub edges: Vec<Edge>,
+    pub adj_out: Vec<Vec<EdgeId>>,  // aristas que SALEN de cada nodo
+    pub adj_in: Vec<Vec<EdgeId>>,   // aristas que LLEGAN a cada nodo
+}
+```
+
+- **`nodes`/`edges`** guardan los objetos con sus datos.
+- **`adj_out[u]`** es la lista de ids de las aristas que salen de `u`; **`adj_in[u]`** la de las que entran. Son la "dos caras" de una arista dirigida — y por guardar *`EdgeId`* (no destinos a pelo) puedes recuperar el `Edge` entero detrás de cada adyacencia, con su label y sus props. *Esta* es la diferencia respecto a la matriz de bits: aquí la vecindad no solo dice "sí hay enlace", dice *cuál*.
+
+El detalle que encierra la sabiduría del capítulo está en `add_node`:
+
+```rust
+let duplicado = id < self.nodes.len() && self.nodes[id].id == id;
+if duplicado { return false; }
+// estirar arrays, rellenando con "veneno":
+self.nodes.resize(id + 1, Node::new(usize::MAX, "_placeholder"));
+```
+
+Tres lecciones:
+
+1. **`add_node` rechaza duplicados** devolviendo `false` en vez de sobreescribir: el `id` es un nombre estable, no un hueco que se pueda pisar.
+2. **El "veneno" `usize::MAX`** distingue un hueco no ocupado de un "agujero" entre ids. Re-insertar el id 3 cuando ya existe el 3 y el 5 llenará el hueco del 4 con un placeholder que «no cuenta como nodo».
+3. **`num_nodes` se deriva**, no se lleva en cabeza: cuenta los que *no* son `usize::MAX`. Con Codd y con LiraDB: los invariantes se calculan de los datos, no se memorizan.
+
+`add_edge` comprueba que `source` y `target` existen (mira si el id coincide, no solo si el índice cae fuera), y `neighbors_out`/`neighbors_in` devuelven la vecindad con un `&[]` vacío si el nodo no existe.
+
+## 7.8 Prueba de fuego
+
+La prueba de fuego es que el modelo respira: se tipa, se construye, se puebla y se recorre por ambos lados. El test **`graph_add_and_neighbors`** construye `Ada→Bo` y `Bo→Ada` con aristas `KNOWS`, y comprueba:
+
+- `num_nodes() == 2`, `num_edges() == 2`;
+- `neighbors_out(0).len() == 1` y `neighbors_in(0).len() == 1` (y lo mismo para `1`): cada nodo ve su saliente Y su entrante.
+
+Apoya la identidad con dos tests más: **`graph_add_rechaza_duplicado`** (re-insertar el id 0 devuelve `false`, y `num_nodes()` sigue en 1) y **`node_with_props`** (un nodo conserva su `id` y su label aunque tengas que filtrar `has_label`). El código, explícito:
+
+```bash
+cargo test -p vol2-liradb --lib cap07_modelo
+# 6 tests: value_type_names, node_with_props, edge_basic,
+#          graph_add_and_neighbors, graph_add_rechaza_duplicado, element_enum_id
+```
+
+Si este capítulo se te olvidara, tus datos serían `HashMap<String,String>`, tus aristas no tendrían propiedades y el capítulo 9 no tendría qué codificar — acabarías inventando "todo-strings" y arrastrándolo toda la obra. Ese es el síntoma: **no puedes ordenar un Int, no puedes pesar un `Edge`, y cada capítulo futuro tropieza con lo mismo**.
+
+## 7.9 Las trampas (ojo, cuidado con…)
+
+- **Confundir `id` con índice.** El id es un nombre estable; el índice es un hueco. El síntoma de mezclarlos: leer `usize::MAX` como un nodo real, o reutilizar un índice tras un borrado. Recuerda el cap. 3.
+- **`Value` no es "un string disfrazado".** El momento en que ordenas "36" como texto es tarde. El tipo se decide *aquí*, o se paga un refactor masivo después.
+- **Label vs propiedad.** Clasificar va en `labels` (lo consultas en un bucle, sin abrir la ficha); describir va en `props`. Meter la categoría en `props["type"]` obliga a escanear todas las propiedades para filtrar.
+- **Extender `Value` como "otra línea más".** Añadir una variante cambia el formato en disco: es un bump de versión (cap. 9). La extensibilidad tiene precio, y hay que planearla.
+
+## 7.10 Lo que te llevas
+
+- Un grafo de BBDD necesita un **modelo de datos**: `Value` (tipos), identidad estable (`id`), y `labels` que clasifiquen.
+- **`Value` es una unión tipada** (enum Rust), no "todo strings": `Null/Bool/Int/Float/String/Bytes`, con `type_name`/`is_null`.
+- **El `id` existe aunque no haya propiedades**, y `add_node` rechaza duplicados porque la identidad no se sobreescribe.
+- **La arista es de primera clase**: `id + source + target + label + props`.
+- **`adj_out`/`adj_in` guardan `EdgeId`, no bits**: la vecindad retiene el `Edge` entero — la diferencia con la matriz de bits del Vol.I.
+- **`Element` (Node|Edge)** cose la unión que algoritmos y consultas (cap. 17+) usarán.
+
+## 7.11 Una historia pequeña
+
+Cuando empezamos LiraDB, antes de este capítulo, un nodo era un `HashMap<String, String>` y una arista un par de números en un `HashSet`. Funcionó un día. Al siguiente, Ana quiso ordenar a sus contactos por edad y el resultado fue `1, 10, 2` — porque "36" y "102" son textos. Después quiso saber *desde cuándo* conocía a cada uno, y no había sitio en un bitset para "desde 2020". Escribimos el modelo de datos ese mismo fin de semana. La lección no fue "usar enums", fue **"decidir el tipo antes de escribir el dato"**. Codd lo descubrió para las tablas en 1970; nosotros lo redescubrimos para los grafos en nuestra propia mesa de trabajo, 55 años después.
+
+## Ejercicios resueltos
+
+**1. ¿Por qué `Null` es una variante explícita de `Value` y no "un string vacío" o "una columna vacía"?**
+
+Porque `Null` es *significado*, no *ausencia de campo*. Un `Value::Null` te dice "este valor está representado como la ausencia *explícita* de valor" — es una decisión del modelo, la misma distinción que Codd introdujo con el `Null` relacional. `String("")` es una cadena de longitud cero (un dato); `Bytes(vec![])` lo mismo; ninguno es "no hay valor". Y como `Value` define `Null` como constructor, `is_null()` lo distingue de forma exhaustiva (`match` en `Value`), sin adivinar. Compare: una "columna vacía" solo existe en una tabla; en un grafo, que *no exista la clave* en `props` y que exista con `Value::Null` son estados distintos — y el modelo decide que prefieres tener la opción.
+
+**2. En `PropertyGraph`, ¿por qué `add_edge` comprueba `id` y no solo que `source` caiga dentro de `nodes.len()`?**
+
+Porque un hueco rellenado con el placeholder `usize::MAX` *cae dentro* de `nodes.len()` (el array está estirado) pero **no es un nodo real**: su `id` es `usize::MAX`, la firma del "veneno". La comprobación correcta es doble: que `source < nodes.len()` **y** que `nodes[source].id == source` (el id coincide con el índice = hueco ocupado por un nodo legítimo). Si solo miraras el tamaño, permitirías crear una arista que cuelga de un hueco vacío — y el recorrido produciría vecinos fantasma. Es el mismo principio de `num_nodes`: la *verdad* se deriva comprobando, no asumiendo que el array está lleno de extremo a extremo.
+
+## Ejercicios propuestos
+
+**Esencial (recordar).** Sin mirar el código, escribe de memoria las seis variantes del enum `Value` y la función `type_name()`. Luego ejecuta `value_type_names` y compara. Pistas: (1) ¿cuál es la "ausencia"?; (2) los dos números son `i64` y `f64`; (3) ¿qué constructor envuelve un `Vec<u8>`? Criterio: tu `type_name` devuelve exactamente `"Null"`, `"Bool"`, `"Int"`, `"Float"`, `"String"`, `"Bytes"` para cada variante, y el test pasa.
+
+**Intermedio (analizar — spacing Vol.I cap. 2 / Vol.II cap. 4).** Toma el grafo de la prueba de fuego (`Ada→Bo`, `Bo→Ada`). Dibuja `adj_out` y `adj_in` como dos tablas, y explica por qué guardar **`EdgeId`** (no destinos a pelo) en cada lista es lo que conecta el recorrido con el *dato* de la arista (su label y sus props). Verificación: `graph_add_and_neighbors`. Pistas: (1) ¿qué hay dentro de `adj_out[0]`?; (2) para obtener el `Edge`, ¿qué índice necesitas?; (3) ¿qué perderías si guardaras solo `[1]` en vez de `[0]`?
+
+**Experto (crear — interleaving cap. 8).** Añade a `PropertyGraph` el método `neighbors_out_by_label(&self, u: NodeId, label: &str) -> Vec<NodeId>` que devuelva los destinos de las aristas salientes de `u` cuyo label coincida, usando `neighbors_out`, el `Edge` real y un bucle. Escribe un test con dos labels de arista (p.ej. `KNOWS` y `WORKS_AT`) y comprueba que filtra correctamente. Pistas: (1) ¿qué te da `neighbors_out(u)` — ids o el `Edge`?; (2) ¿dónde consultas `edge.label`?; (3) ¿qué haces con `edge.target` para poblar el resultado? (Es exactamente la clase de filtro que el `trait GraphStore` del cap. 8 necesitará por diseño.)
+
+## Para profundizar
+
+- **E. F. Codd**, *A Relational Model of Data for Large Shared Data Banks*, CACM 13(6), 1970 — el modelo de datos y los dominios tipados: la raíz de todo.
+- **I. Robinson, J. Webber, E. Eifrem**, *Graph Databases*, 2ª ed., O'Reilly/Neo4j, 2015 — la definición canónica del *property graph*: nodos etiquetados + aristas de primera clase con instrucciones.
+- **ISO/IEC 39075:2024**, *Graph Query Language (GQL)* — el estándar que formaliza los property graphs y las aristas con propiedades, aprobado en 2024.
+- **N. Francis et al.**, *Cypher: An Evolving Query Language for Property Graphs*, SIGMOD 2018 — cómo el modelo de datos condiciona el lenguaje de consulta.
+- Dentro del libro: **cap. 3** (por qué `usize` migrará a `slotmap`), **cap. 9** (el encoding de `Value` y su versionado), **cap. 8** (el puerto `GraphStore` que este modelo alimentará), Vol.I **caps. 2 y 4-5** (las representaciones y la matriz de adyacencia que contraste).
+
+## Mini-diálogo: en guardia nocturna
+
+> — O sea, que "modelo de datos" es... ¿decidir que el id no es la posición y que un Int no es un string?
+>
+> — Exacto. E "identidad separada de los datos" significa que el `id` existe aunque la ficha esté vacía. Todo lo demás —decidir que una arista tiene label y props, que puedes recorrerla por los dos lados, que los duplicados se rechazan— cuelga de esas dos preguntas: *qué tipo tiene cada valor* y *qué es lo que se nombra*.
+>
+> — Pero un bitset "hacia dónde enlaza" era tan simple...
+>
+> — Simple y mudo. La matriz de bits te dice que hay un enlace; este modelo te dice *cuál* es, *de qué tipo*, y *desde cuándo*. Un grafo de bits es una topología; un property graph es un modelo de datos que *además* tiene topología. Cuando mañana quieras pesar una arista para Dijkstra, entenderás qué habría pasado con el bitset.
+
+---
+
+*(Próximo capítulo: 8 — Diseñar una API antes de persistir (trait `GraphStore`). Aquí el modelo existía como estructura; ahora veremos cómo exponerlo para que el resto del motor cree, mire y recorra grafos sin conocer su representación interna.)*
+# Capítulo 8 — Diseñar una API antes de persistir (trait `GraphStore`)
+
+> *«No escribas el código de guardar primero. Escribe primero la cara con la que vas a pedirle las cosas. La cara es el contrato; el código de detrás puede cambiar mil veces.»*
+
+## 8.0 La anécdota de la esquina
+
+A finales de los 90, Alistair Cockburn se preguntaba por qué los sistemas empresariales seguían siendo tan difíciles de mantener cuando cada pieza, por separado, parecía razonable. Y dio con algo que hoy parece obvio pero entonces era una herejía: **no son los componentes los que se rompen, son las uniones entre componentes**. El código que MUY dentro sabía "cómo se guarda un dato" estaba enganchado hasta el cuello con el código que "pide el dato", y bastaba cambiar el fondo de la mesa para que saltara toda la mesa.
+
+Su respuesta fue la **arquitectura hexagonal** (la llamó *ports and adapters*, puertos y adaptadores): separemos el contrato —"esto es lo que el negocio necesita pedir"— de los muertos —"esto es de dónde sale". El negocio habla con un **puerto**, una interfaz limpia. Y detrás del puerto puedes enchufar cualquier **adaptador**: memoria, disco, red, un mock para tests. Cuando cambias el adaptador, el negocio no se entera.
+
+Este capítulo es ese momento, en miniatura, dentro de LiraDB. Vamos a diseñar el **puerto** de nuestro grafo — la API `GraphStore` — ANTES de escribir un solo byte en disco. Y será la decisión que haga que los capítulos 9 y 10 (el encoding y la persistencia) sean simples *adaptadores* de algo que ya existe. Porque la historia de la persistencia no empieza cuando aprendes a escribir bytes: empieza cuando decides **qué cara le vas a poner al mundo**.
+
+## 8.1 Objetivo
+
+Al terminar este capítulo habrás diseñado **el contrato de toda la persistencia de LiraDB**: el trait `GraphStore`, la interfaz que dice *qué* se puede hacer con un grafo sin decir ni una palabra sobre *cómo* se guarda.
+
+En concreto:
+
+1. Definirás el trait `GraphStore` con sus once operaciones (put/get/adjacency/count/delete/iter) y su error tipado `StoreError`.
+2. Implementarás en memoria un primer adaptador (`MemoryStore`) que cumple el contrato: `Vec<Option<...>>` + listas de adyacencia.
+3. Entenderás por qué las firmas son semántica (quién devuelve `Result`, quién `bool`, quién `Option`), por qué `delete_node` **detona una cascada**, y por qué los ids nunca se re-numeran.
+
+La tesis que sostiene al capítulo: **los capítulos 9 y 10 construirán la persistencia como un adaptador de ESTE mismo puerto, sin tocar a ningún cliente del grafo.**
+
+## 8.2 Problema
+
+Del capítulo 7 ya tienes el modelo: `Node { id, labels, props }`, `Edge { id, source, target, label, props }`, con `NodeId = usize` y `EdgeId = usize`. Tienes grafos en la cabeza, algoritmos de recorrido en la manga. Y llega el momento: *"guardemos esto en disco"*.
+
+Pero espera. Antes de "guardar", contesta una pregunta tonta pero tramposa: **¿qué operaciones necesita cualquier aplicación sobre un grafo, sea cual sea el cajón donde viva?** Dirás las obvias: poner un nodo, poner una arista, recuperar un nodo, recuperar una arista, saber sus aristas salientes y entrantes, contarlos, borrarlos, recorrerlos.
+
+Y ahora la trampa, en un escenario real. Imagina que escribes esto "a pelo", en memoria, y dejas que el cliente gestione el detalle:
+
+```rust
+// PELIGRO: para borrar un nodo, el cliente debe recordar borrar sus aristas.
+fn borrar_nodo(slots: &mut Vec<Option<Node>>, edges: &mut Vec<Option<Edge>>, id: usize) {
+    for e in edges {
+        if let Some(ed) = e {
+            if ed.source == id || ed.target == id {
+                *e = None;            // el cliente borra las aristas A MANO
+            }
+        }
+    }
+    slots[id] = None;
+}
+```
+
+¿Ves el problema? No el código en sí — que borra "bien". El problema es que **esta función vive FUERA del concepto de grafo**, y cada programador la escribiría distinta y se le olvidaría la mitad. Dentro de dos capítulos, cuando "guardar" sea ir al disco, nadie va a reescribir solo esta función: reescribirá *todas las llamadas a su alrededor*, y cada una con su criterio sobre qué significa borrar un nodo.
+
+La raíz del problema: **mezclamos el *qué* (las operaciones que un grafo debe soportar) con el *cómo* (memoria, disco, páginas).** Y esa mezcla es la que convierte "cambiar de backend" en "reescribir la aplicación".
+
+## 8.3 Modelo mental
+
+Piensa en una **cafetería con mostrador de pedidos**:
+
+- El **cliente** se planta en el **mostrador** y pide con una cara fija: "un café con leche", "otro igual", "cuántos llevas". Nunca entra a la cocina.
+- El **mostrador es el puerto** (`GraphStore`): la lista fija de pedidos que se pueden hacer.
+- Detrás hay **varias cocinas — los adaptadores**: la cocina de la RAM (`MemoryStore`), mañana la cocina de disco, pasado la de páginas. Todas sirven *el mismo menú*; solo cambia lo que hay detrás.
+
+```
+    ┌──────────────────────────────┐
+    │        Tu aplicación         │   (cliente)
+    └──────────────┬───────────────┘
+                   │  pide con la cara del trait
+    ┌──────────────▼───────────────┐
+    │         GraphStore            │   (el MOSTRADOR / puerto)
+    │   put_node put_edge get_*     │
+    │   out_edges in_edges count    │
+    │   delete_node delete_edge     │
+    │   iter_nodes iter_edges       │
+    └──────────────┬───────────────┘
+                   │
+      ┌────────────┼────────────┐
+      ▼            ▼            ▼
+  MemoryStore   Disk (cap 10)  Pages (cap 11)  (ADAPTADORES)
+```
+
+Dos reglas talladas en el mostrador:
+
+1. **El cliente nunca sabe qué cocina hay detrás.** Solo conoce la cara del mostrador.
+2. **Cada cocina cumple el mismo contrato al pie de la letra.** Si el mostrador dice "borra este nodo y sus aristas", TODAS las cocinas lo hacen igual, aunque por dentro hagan cosas completamente distintas.
+
+Y una aclaración de lenguaje para no marearnos: llamamos **puerto** (o *trait*, o *interfaz*) al mostrador — el contrato; y **adaptador** (o *backend*) a cada cocina. Decir "el grafo", sin más, es hablar del puerto. Decir "el `MemoryStore`" es hablar de una cocina concreta.
+
+El momento ¡ajá!: **la API por la que pides los datos es la MISMA tanto si los datos viven en un `Vec` de RAM como si viven en 40.000 páginas de disco.** Lo que cambia es lo que hay detrás del mostrador. Y por eso puedes escribir los capítulos 9 y 10 sin tocar a nadie que use el grafo.
+
+## 8.4 Primera solución
+
+Empecemos por lo más simple que puede funcionar, sin trait, sin cascada, sin "diseño": un montón de funciones sueltas sobre arrays planos.
+
+```rust
+// Solución ingenua: el "grafo" es dos Vec y unas funciones a mano.
+type NodeId = usize;
+
+struct Stores {
+    nodes: Vec<Option<Node>>,
+    edges: Vec<Option<Edge>>,
+}
+
+// Insertar es fácil (pero ya empezamos a decidir tonterías nosotros):
+fn put_node(st: &mut Stores, n: Node) {
+    st.nodes[n.id] = Some(n);         // ¿y si ya estaba? ¿lo sobreescribimos callado?
+}
+```
+
+Y para borrar un nodo, el cliente tiene que acordarse de barrer las aristas (como vimos en 8.2), y luego decidir qué devuelve si no existía... nada, no devuelve nada, ¿cómo sabes si borró algo?
+
+Los tests felices pasan. Poner un nodo: funciona. Leerlo: funciona. Borrarlo con una función que a ti te parece razonable: funciona *en tu cabeza*.
+
+## 8.5 Sus límites
+
+Hasta que llega el caso real, y la solución ingenua se enfrenta a un muro de cuatro aristas:
+
+1. **El borrado es una promesa, no un recuerdo.** Tu `borrar_nodo` barre las aristas *si el que la escribió se acuerda*. En una app real, el borrado lo pide el frontend, lo ejecuta el servicio, lo reaprovecha otra función... cada sitio decide a su manera. Aparecen **aristas colgantes**: un `Edge` cuyo `source` apunta a un nodo que ya no existe. Y nadie lo avisa.
+2. **No sabes qué falló.** Pones un nodo y ya estaba. ¿Me avisas? ¿Sobreescribes callado? ¿Y si pido una arista entre dos nodos que no existen? Con estas funciones, el cliente no tiene forma de distinguir "ya está" de "lo puse yo primero" de "me estás pidiendo algo imposible".
+3. **No hay cara estable.** Cambias "guardar en `Vec`" por "guardar en disco", y de golpe tienes que tocar *todas* las llamadas, con librerías de E/S, errores de io::Error en la cara. La aplicación entera se contagia de cómo se implementa el almacenamiento.
+4. **Sin dirección de recorrido.** ¿Las aristas que ENTRAN en un nodo? Con dos `Vec` a pelo, cada algoritmo las calcula escaneando todo. Los algoritmos del Vol. I (BFS, Dijkstra) necesitan `out_edges` barato; pronto querrás también `in_edges`.
+
+La conclusión duele: **un grafo no es "un `Vec` con funciones sueltas". Es un CONTRATO de operaciones, implementable de muchos modos.** La primera solución no es solo corta; es corta *en la dimensión equivocada*.
+
+## 8.6 Solución evolucionada
+
+La solución es, literalmente, el patrón de Cockburn: extraer el mostrador. En Rust, el mostrador se escribe con la palabra clave **`trait`**.
+
+Un trait es simplemente una **lista de firmas** (qué acepta cada operación y qué devuelve), sin una línea de implementación. Cualquier tipo que quiera ser "un mostrador" declara `impl GraphStore for ElTipo` y llena las firmas. Eso es exactamente un **puerto hexagonal**: la interfaz desacoplada del cómo.
+
+```rust
+/// API principal de un grafo de propiedades (en memoria o en disco).
+/// El diseño hexagonal (ports & adapters): cualquier backend (memoria,
+/// disco, red) implementa este trait. La aplicación que usa el grafo
+/// permanece agnóstica al backend.
+pub trait GraphStore {
+    fn put_node(&mut self, node: Node) -> Result<(), StoreError>;
+    fn put_edge(&mut self, edge: Edge) -> Result<(), StoreError>;
+    fn get_node(&self, id: NodeId) -> Option<&Node>;
+    fn get_edge(&self, id: EdgeId) -> Option<&Edge>;
+    fn out_edges(&self, u: NodeId) -> Vec<EdgeId>;
+    fn in_edges(&self, u: NodeId) -> Vec<EdgeId>;
+    fn node_count(&self) -> usize;
+    fn edge_count(&self) -> usize;
+    fn delete_node(&mut self, id: NodeId) -> bool;
+    fn delete_edge(&mut self, id: EdgeId) -> bool;
+    fn iter_nodes(&self) -> Box<dyn Iterator<Item = &Node> + '_>;
+    fn iter_edges(&self) -> Box<dyn Iterator<Item = &Edge> + '_>;
+}
+```
+
+Hay tres ideas que no se ven a primera vista, y que son las que venden el contrato.
+
+**Idea 1 — Las firmas son semántica.** Fíjate en cómo cada operación *devuelve*: `put_node -> Result<(), StoreError>`, `get_node -> Option<&Node>`, `delete_node -> bool`. No es capricho, es la máquina escribiéndonos la regla de cuándo usar cada cosa:
+
+- `put_*` devuelve **`Result`** porque insertar puede ser un *fallo tipado* que el llamador debe poder distinguir: `DuplicateNode` (ese id ya está), `UnknownNode` (esa arista no apunta a nadie), `InvalidEdgeEndpoints` (la arista conecta con nodos que no están en el grafo). El cliente hace `match` y responde con criterio.
+- `get_*` devuelve **`Option<&Node>`** porque "no existe" aquí es un *hecho normal*, no un error: pedir un nodo que no está te da `None`, y te pega la referencia (sin copiar las props, `&`).
+- `delete_*` devuelve **`bool`** porque borrar una clave inexistente es *idempotente*: `true` = "existía, lo borré", `false` = "no existía". No es un fallo; no merece un `Result`.
+
+Tras esta mesa de firmas:
+
+| Operación | Qué dice "no sale bien" | Por qué esa forma |
+|---|---|---|
+| `put_node` / `put_edge` | `Result<(), StoreError>` | El fallo es TIPADO y el llamador debe responder |
+| `get_node` / `get_edge` | `Option<&T>` | "No existe" es un hecho normal; te pego la referencia |
+| `delete_node` / `delete_edge` | `bool` | "Ya no estaba" es idempotente; nadie necesita un error |
+
+**Idea 2 — `delete_node` DETONA una cascada.** El contrato dice: *"Elimina un nodo (y todas sus aristas)"*. Fíjate en el paréntesis: **no es un recordatorio para el cliente, es una obligación del mostrador.** Cualquier cocina que quiera ser un `GraphStore` está obligada a que, al borrar un nodo, desaparezcan también sus aristas adyacentes. Así el cliente pide "borra este nodo" y el grafo queda consistente sin que el cliente mueva un dedo. Esa es justo la promesa que la solución ingenua dejaba al azar de la memoria.
+
+**Idea 3 — `&mut self` en escrituras, `&self` en lecturas.** Y aquí llega el regalo escondido. En Rust, toda escritura pide `&mut self` (exclusivo) y toda lectura `&self` (compartido). El compilador, desde el primer día, **te prohíbe tener dos `&mut` vivos a la vez**: no puedes llamar a `put_node` mientras otra referencia mutable recorre el grafo. Eso significa que el trait lleva tatuada la invariante de "**un solo escritor a la vez**".
+
+No es un detalle administrativo: es el germen de la transacción que veremos en el capítulo 27. La base de datos real necesita asegurarse de que dos procesos no escriban a la vez sobre el mismo estado, y aquí —sin hilos, sin locks— el propio préstamo del compilador ya separó el "escribir" (exclusivo) del "leer" (compartido). Lo que en 27 será "único escritor / transacción" empieza como `&mut self`.
+
+El contrato además devuelve vistas de iteración con `Box<dyn Iterator<Item = &T> + '_>`: no materializa y clona todos los nodos; te da un iterador **perezoso** sobre los slots ocupados, cuya vida (el `+ '_`) está atada al borrow del propio store — o sea, no puedes mutar el grafo mientras lo recorres, y eso te lo dice el compilador también.
+
+## 8.7 Código completo ejecutable
+
+El código vive en `liradb-workspace/crates/vol2-liradb/src/cap08_graph_store.rs`. Ya viste el trait; ahora la pieza que mueve el menú: cómo un adaptador de memoria lo cumple.
+
+### El error tipado
+
+```rust
+#[derive(Debug, Clone, PartialEq)]
+pub enum StoreError {
+    DuplicateNode(NodeId),
+    DuplicateEdge(EdgeId),
+    UnknownNode(NodeId),
+    UnknownEdge(EdgeId),
+    InvalidEdgeEndpoints { source: NodeId, target: NodeId },
+}
+```
+
+Un `enum` con **datos por variante**. No es un string: `DuplicateNode(0)` guarda *cuál* era el id duplicado. Y al implementar `Display` y `Error`, el cliente puede hacer `match` y, aparte, imprimirlo bonito (`duplicate node id 7`). Es la diferencia entre "quien hace error"(sin información) y "quien describe el fallo" (con la información para responder).
+
+### La estructura interna del adaptador
+
+```rust
+pub struct MemoryStore {
+    pub nodes: Vec<Option<Node>>,
+    pub edges: Vec<Option<Edge>>,
+    pub adj_out: Vec<Vec<EdgeId>>,
+    pub adj_in: Vec<Vec<EdgeId>>,
+}
+```
+
+Dos decisiones que están *dentro de la cocina* y que el cliente no necesita conocer — pero que explican mucho:
+
+1. **`Vec<Option<T>>`, no `Vec<T>`** — porque los ids NO se re-numeran. `nodes[i]` es el slot del nodo `id = i`; si borras el 2, el slot se queda `None` (un **tombstone**: la clave `2` queda *enterrada*, no reciclada). Una arista cuyo `source == 2` nunca apuntará a otro nodo por accidente. (Reciclar claves sin un número de generación es lo que un esquema serio evita; eso es el capítulo 3, con generational IDs.)
+2. **Dos listas de adyacencia** (`adj_out` y `adj_in`) — porque `out_edges(u)` e `in_edges(u)` deben ser O(grado), no O(todas las aristas). El coste es que hay que mantenerlas sincronizadas al borrar (lo verás en `delete_edge`).
+
+Y el dibujo de los slots, con tombstones:
+
+```
+nodes:  [Some<#0>] [ None ] [Some<#2>]
+                └──────┬────┘
+          edges: [Some<#0>]   ← la arista 0 va de 0 a 2
+                 adj_out[0] = [0]     adj_in[2] = [0]
+```
+
+### Las operaciones, con su porqué
+
+```rust
+fn put_node(&mut self, node: Node) -> Result<(), StoreError> {
+    let id = node.id;
+    if self.node_exists(id) {
+        return Err(StoreError::DuplicateNode(id));   // fallo TIPADO
+    }
+    self.ensure_node_capacity(id);
+    self.nodes[id] = Some(node);
+    Ok(())
+}
+```
+
+`put_node` mira primero si ya existía: si sí, devuelve `Err(DuplicateNode(id))`. Ese es el `Result` en acción: no sobrescribe callado (la solución ingenua) ni inventa una cadena de error, sino que le dice al llamador *exactamente* qué falló y con qué id. De paso, `node_exists` comprueba `is_some()` — derivar, no llevar la cuenta en una columna (patrón que ya viste en slotted pages).
+
+```rust
+fn put_edge(&mut self, edge: Edge) -> Result<(), StoreError> {
+    // 1º ¿ya hay una arista con este id?
+    if id < self.edges.len() && self.edges[id].is_some() {
+        return Err(StoreError::DuplicateEdge(id));
+    }
+    // 2º ¿y sus extremos existen? Si no, es una arista imposible.
+    if !self.node_exists(edge.source) || !self.node_exists(edge.target) {
+        return Err(StoreError::InvalidEdgeEndpoints { source, target });
+    }
+    // 3º registra en las dos adyacencias y en edges[id].
+    self.adj_out[edge.source].push(id);
+    self.adj_in[edge.target].push(id);
+    self.edges[id] = Some(edge);
+    Ok(())
+}
+```
+
+Aquí está la clave del `put_edge -> Result`: una arista que conecta con **nodos que no están** es un error que el cliente debe poder distinguir (`InvalidEdgeEndpoints`), porque tiene una manera de corregirlo (insertar antes los nodos). Si devolviera `bool`, no sabría si falló por duplicado o por huérfana.
+
+```rust
+fn delete_node(&mut self, id: NodeId) -> bool {
+    if !self.node_exists(id) {
+        return false;                          // no existía: "no" normal
+    }
+    // COLECTA las aristas que tocan a `id` (salientes + entrantes)...
+    let edges_to_remove: Vec<EdgeId> = self.adj_out.get(id)... 
+        .chain(self.adj_in.get(id)...).collect();
+    // ... y se las pasa a delete_edge, que limpia TODO (slot + adyacencias).
+    for eid in edges_to_remove {
+        self.delete_edge(eid);
+    }
+    self.nodes[id] = None;                     // el tombstone del nodo
+    self.adj_out[id].clear();
+    self.adj_in[id].clear();
+    true
+}
+```
+
+**Ahí está la cascada.** No es un detalle de implementación: es el contrato cumpliéndose. `delete_node` no borra solo el slot del nodo; junta sus aristas salientes y entrantes y las borra *todas* vía `delete_edge`. Como el cliente pidió "borra el nodo", el grafo entero queda consistente. Cero aristas colgantes, y el cliente no tuvo que recordar nada. (`bool` aquí = "existía, lo borré" — idempotente.)
+
+Y `delete_edge`, el que hay que cuidar por todas partes:
+
+```rust
+fn delete_edge(&mut self, id: EdgeId) -> bool {
+    if let Some(Some(edge)) = self.edges.get(id) {
+        // quita el slot ...
+        self.edges[id] = None;
+        // ... y SACA el id de las dos listas de adyacencia, o quedarán huérfanos:
+        self.adj_out[edge.source].retain(|&e| e != id);
+        self.adj_in[edge.target].retain(|&e| e != id);
+        true
+    } else {
+        false
+    }
+}
+```
+
+`retain` recorre la lista de adyacencia y deja solo los ids que NO son el borrado. Si te olvidaras de esto, `out_edges` seguiría devolviendo una arista *ya eliminada* — una mentira silenciosa. Las lecturas:
+
+```rust
+fn get_node(&self, id: NodeId) -> Option<&Node> {
+    self.nodes.get(id).and_then(|n| n.as_ref())   // Option<&Node>, sin copiar
+}
+fn out_edges(&self, u: NodeId) -> Vec<EdgeId> {
+    self.adj_out.get(u).cloned().unwrap_or_default()
+}
+```
+
+Recuperar devuelve una referencia (`&Node`) sin clonar las props; la adyacencia devuelve los ids copiados a un `Vec` (barato: son `EdgeId`). Contar deriva del contenido:
+
+```rust
+fn node_count(&self) -> usize { self.nodes.iter().filter(|n| n.is_some()).count() }
+fn edge_count(&self) -> usize { self.edges.iter().filter(|e| e.is_some()).count() }
+```
+
+**Derivar, no llevar en cabeza**: el contador se calcula filtrando los `Some`, como en las slotted pages del cap. 11 se derivaba `free_space`. Nunca una columna de contadores que pueda mentir.
+
+## 8.8 Prueba de fuego
+
+La prueba de fuego no es "los tests pasan", es **"el contrato se cumple aunque el cliente no mueva un dedo"**. Tres tests del workspace lo demuestran:
+
+```rust
+// La cascada es CONTRATO, no cortesía del cliente:
+let mut s = MemoryStore::new();
+s.put_node(Node::new(0, "A")).unwrap();
+s.put_node(Node::new(1, "B")).unwrap();
+s.put_edge(Edge::new(0, 0, 1, "X")).unwrap();
+assert!(s.delete_node(0));
+assert_eq!(s.node_count(), 1);   // quedó solo el nodo 1
+assert_eq!(s.edge_count(), 0);   // la arista X desapareció SOLA (cascada)
+```
+
+Ese es `delete_node_elimina_aristas`. Fíjate en lo que NO hay: el cliente no llamó a `delete_edge`. El mostrador se ocupó. Es exactamente el fallo de la solución ingenua (arista colgante) convertido en un test que ahora pasa.
+
+Y la semántica tipada:
+
+```rust
+// El error es TIPADO y matcheable:
+s.put_node(Node::new(0, "A")).unwrap();
+assert_eq!(
+    s.put_node(Node::new(0, "B")),
+    Err(StoreError::DuplicateNode(0))   // no: false, no: "ups", sino esto
+);
+```
+
+`put_node` de un id ya usado devuelve `Err(DuplicateNode(0))` — el llamador puede hacer `match` y saber que el `0` ya estaba. Y `memory_store_basico` cierra: con un nodo `0`, un `1` y la arista `KNOWS`, `node_count()==2`, `edge_count()==1`, `out_edges(0)==[0]` e `in_edges(1)==[0]`.
+
+**Síntoma si este capítulo se te olvidara**: en el capítulo 10 no tendrías dónde conectar el backend de disco; cada programa volvería a decidir a mano cómo borrar un nodo y con qué retorno; y —lo peor— el `&mut self` de escritor único que el capítulo 27 necesita como germen no existiría como contrato estable.
+
+## 8.9 Qué hemos sacrificado
+
+Todo diseño paga un precio. Aquí es especialmente honesto, porque el objetivo del capítulo es justo que el precio quede *dentro de la cocina*:
+
+1. **`&mut self` en toda escritura = sin escritura concurrente.** Para la memoria, un solo mutador a la vez (el compilador lo impone). Es una limitación a propósito: la concurencia real (hilos, transacciones, MVCC) es material de la Parte VI (cap. 27+). Aquí la exclusión es gratuita y correcta, y el germen queda.
+2. **Las adyacencias duplican información**: cada arista vive en `edges[..]`, en `adj_out[source]` y en `adj_in[target]`. Eso 3× espacio de ids y la obligación de sincronizar al borrar. Lo pagamos por `out_edges`/`in_edges` baratos (los algoritmos del Vol. I lo exigen).
+3. **`usize` como id = sin reciclaje seguro.** Los tombstones (`None`) dejan huecos que nunca se reutilizan. Para pedagogía es perfecto; en producción, los ids generacionales (cap. 3) y los slots reciclables con número de generación lo resolverían.
+4. **Devuelve `Vec<EdgeId>` en `out_edges`** (copia el vec de adyacencia). Es barato, pero si en el futuro fueran millones de aristas por nodo querrías un iterador o un slice. El contrato lo permite evolucionar porque la firma es del puerto, no del adaptador.
+
+## 8.10 Cómo lo hace una BBDD real
+
+El patrón "puerto detrás del cual cuelgo distintos motores" es, literalmente, cómo funcionan las bases de datos reales:
+
+- **SQLite** separa el **VDBE** (Virtual Database Engine, el "motor" que ejecuta las sentencias SQL) de la capa de E/S llamada **VFS** (*Virtual File System*), expuesta como `sqlite3_vfs`. El VFS es un puerto: puedes enchufar un adaptador que lea de ficheros nativos, de un dispositivo en memoria (`:memory:`), de un socket o de un sistema remoto — *sin tocar el SQL*. Cuando tú "pides" con `SELECT`, el VDBE emite ops primitivas por un puerto estable, y el VFS decide de dónde saca los bytes. A LiraDB le pasa igual: el `GraphStore` es nuestro VFS.
+- **SQLite prepara las consultas** (*prepared statements*): compila el `SELECT` a un programa de bytecode del VDBE, y se ejecuta contra el mismo puerto de almacenamiento. Es la misma idea de desacoplar "qué consulta el usuario" de "dónde vive el dato", en una escala mayor.
+- **MySQL** separa su **storage engine** (InnoDB, MyISAM, Memory...) de la capa de consultas: el optimizador pide "dame el registro con clave X" a través de una interfaz de handler, y cada motor la implementa distinto con ITS propios algoritmos (B-Tree, hash, Memoria, TTSI). La capa de SQL no sabe qué motor tiene detrás.
+- **El motor (cockburniano)**: Alistair Cockburn, *Hexagonal Architecture* / ports-and-adapters — el puerto desacopla el "contrato del negocio" de los "adaptadores de infraestructura", para que cambiar infraestructura no toque el negocio.
+
+**Retos para el lector — y para nuestra cocina:**
+
+- *Esencial*: en el caso de la estrella del test, ¿por qué al borrar el nodo `0` desaparece la arista `0` sin que el cliente la borre? ¿Qué pasaría si `delete_node` no hiciera esa cascada? Ponlo en palabras de "contrato" no de "código".
+- *Intermedio*: mira `delete_edge` y reta a tu compañera: "si quito el `retain` en `adj_out[source]`, ¿qué test del §8.8 falla y con qué síntoma?" Rastrea por qué `out_edges` mentiría.
+- *Experto*: ¿qué le pasaría al diseño si quisiéramos leer el grafo desde dos hilos a la vez? ¿Qué parte del trait (`&self` vs `&mut self`) lo hace seguro, y qué necesitaríamos para permitir escritura concurrente? (Anota tu respuesta; el cap. 27 la contrastará.)
+
+## 8.11 Lo que te llevas
+
+- La **API es el contrato**, la implementación es la cocina: nombra el puerto (`GraphStore`) y deja que los backends (memoria, disco, páginas) sean adaptadores.
+- **Las firmas son semántica**: `put_* -> Result` (fallo tipado), `get_* -> Option<&T>` (ausencia normal), `delete_* -> bool` (idempotente). No uses `Result` para todo.
+- **`delete_node` detona una cascada**: borrar un nodo borra sus aristas adyacentes *por el mostrador*, no por el recuerdo del cliente.
+- **Los ids nunca se re-numeran**: `Vec<Option<T>>` con tombstones, la clave queda estabilísimo o enterrada (`None`).
+- **`&mut self` / `&self`**: el compilador ya separó escritor (exclusivo) de lector (compartido) — el germen del único escritor del cap. 27.
+- **Derivar, no llevar en cabeza**: `node_count`/`edge_count` se calculan de los `Some`, no se mantienen en una columna.
+
+## 8.12 Ojo, cuidado con…
+
+- **Escribir primero el almacenamiento y "sacar el trait después".** El trait saldría moldeado a la memoria y no serviría para disco. El capítulo entero es la lección contraria: contrato ANTES de cocina.
+- **`Result` para todo.** Si `delete_node` devolviera `Result`, cada borrado exigiría `?` y `match` para un "no" que no es error. Regla: ¿es un hecho normal (→`bool`/`Option`) o un fallo a distinguir (→`Result`)?
+- **Re-numerar o compactar los ids al borrar.** `Vec<T>` con shift rompe los `source`/`target` de las aristas: colisión silenciosa. Regla: clave estable; borrar es dejar `None`.
+- **Olvidar mantener `adj_out`/`adj_in` sincronizadas en `delete_edge`.** Solo tocar `edges` deja que `out_edges` siga contando aristas muertas. Detección: `out_edges` devuelve un id que `get_edge` ya no encuentra.
+- **Hacer que el cliente confíe en la cocina.** Si tu código cliente usa `MemoryStore.nodes` directamente, has perdido el desacoplamiento. El contrato gana cuando el cliente solo conoce el puerto.
+
+## 8.13 Pin de batalla
+
+> *«La persistencia no empieza cuando escribes bytes. Empieza cuando decides la cara con la que le vas a pedir las cosas al mundo — porque esa cara no va a cambiar, aunque detrás cambie mil veces.»*
+
+## 8.14 Si solo lees 30 segundos
+
+El soporte de un grafo es un **contrato** (el trait `GraphStore`) y no un montón de funciones sueltas. El contrato dice *qué* se hace (once operaciones), no *cómo*: `put_node`/`put_edge` devuelven `Result` con error tipado si hay duplicado o endpoints inválidos; `get_*` devuelve `Option<&Node>`; `delete_*` devuelve `bool` y **`delete_node` detona la cascada** que borra las aristas adyacentes. Los ids no se re-numeran: se guardan en `Vec<Option<T>>` con tombstones. Las escrituras piden `&mut self` y las lecturas `&self` — el compilador ya te da el único escritor. Ese puerto es el que los capítulos 9 y 10 implementarán como adaptador de disco, sin tocar a los clientes.
+
+## 8.15 Una historia pequeña
+
+Cuando empezamos LiraDB, antes de este capítulo, "guardar un grafo" significaba abrir un fichero y escribir lo que se nos ocurriera en el momento. El código de borrado vivía en la función que llamaba el frontend, y cada función vecina tenía su propio criterio sobre qué significaba borrar un nodo. La primera vez que borramos "Ana", la arista `Ana–CONOCE–Bob` siguió allí, apuntando a un nodo que ya no existía, y nadie se enteró hasta que un algoritmo de caminos se quedó en bucle buscando a Ana para siempre. El problema no era un `if` olvidado: era que **nunca habíamos decidido la cara con la que le íbamos a pedir las cosas al grafo**. El trait llegó como una percha: pon todo aquí debajo, y el cliente solo pregunta por esta cara. Desde entonces, borrar un nodo significa una cosa, para todos, siempre.
+
+## Ejercicios resueltos
+
+**1. ¿Por qué `delete_node` devuelve `bool` en lugar de `Result<(), StoreError>`?**
+
+Porque borrar una clave que no existe es un **hecho normal** (idempotencia), no un fallo a tipar. `true` = "existía y lo borré"; `false` = "no existía, nada que hacer". Un `Result` obligaría a `?`/`match` para distinguir casos que al llamador no le importan. En cambio `put_node` SÍ usa `Result`, porque ahí el fallo es tipado y el cliente debe saber si fue por `DuplicateNode`, `UnknownNode` o `InvalidEdgeEndpoints`. La regla: ¿es un "no" normal o un error que debo distinguir? delete→bool, get→Option, put→Result.
+
+**2. ¿Qué es exactamente la "cascada" de `delete_node` y qué garantiza?** 
+
+Cuando llamas a `delete_node(0)`, el método **no solo** pone `nodes[0] = None`. Reúne primero todas las aristas que tocan al nodo — las de `adj_out[0]` (salientes) y las de `adj_in[0]` (entrantes)— y se las pasa a `delete_edge`, que elimina cada una de `edges`, `adj_out` y `adj_in`. El contrato exige que **borrar un nodo borra sus aristas adyacentes**. Garantiza que no quede ninguna arista colgante (una arista cuyo `source` o `target` apunte a un nodo borrado). El cliente pide "borra este nodo" y el grafo entero queda consistente: eso lo demuestra `delete_node_elimina_aristas` (el `edge_count()` cae a 0 sin que el cliente borre la arista a mano).
+
+## Ejercicios propuestos
+
+**Esencial.** Sobre la estrella `0→{1,2,3}` (nodos 0,1,2,3; aristas `0→1`, `0→2`, `0→3`), escribe un test que: (1) prediga —antes de ejecutar— `out_edges(0)`, `in_edges(1)`, `node_count`, `edge_count`; (2) llame `delete_node(0)` y verifique que `edge_count()` queda en `0` y `get_node(0) == None`. Explica, en palabras de contrato (no de código), por qué la arista `0→1` desapareció sin que tú la borraras.
+
+**Intermedio.** (Spacing al cap. 7.) Usando `Node::with_prop` y `Value` del modelo del cap. 7, construye dos nodos `Person` con props (`nombre`, `edad`) y una arista `KNOWS`, e insértalos **a través del store** (no a mano). Luego: (1) ¿dónde viven esas props, en el `Node` o en el trait, y por qué?; (2) borra el nodo origen y razona qué pasaría con la arista `KNOWS` en un `iter_edges` **si el store no detonara la cascada**; (3) ¿tu programita depende de `MemoryStore` en concreto o del `dyn GraphStore`? Modifica el código para que no mencione `MemoryStore` en la lógica del cliente.
+
+**Experto.** Implementa desde cero un segundo adaptador `HashMapStore` (sin `adj_out`/`adj_in`: haz que `out_edges`/`in_edges` escaneen los `Edge` con `retain`) que cumpla `GraphStore`, y escribe UN test genérico —contra `&mut dyn GraphStore`— que corra la misma batería (poblar, recorrer, cascada `delete_node`, `Duplicate`) contra ambos `MemoryStore` y `HashMapStore`. Hints: (1) sin adyacencias, la cascada de `delete_node` borra barriendo todos los `Edge` y quedándose con los que no tocan el nodo; (2) la firma `get_node(&self, id) -> Option<&Node>`—¿con qué método del `HashMap` devuelve referencia mutable?; (3) si el mismo test genérico pasa para los dos backends, has demostrado que tu lógica no sabe qué cocina hay detrás.
+
+## Para profundizar
+
+- **Alistair Cockburn**, *Hexagonal Architecture* (2005) y su patrón de *ports and adapters* — la formulación original del puerto que desacopla el "qué" del "cómo".
+- **Código fuente de SQLite**, `os.h` / `sqlite3_vfs` (Virtual File System) y los *prepared statements* del VDBE (`vdbbe.c`): cómo un motor separa el "que consulta" del "dónde vive el dato".
+- **Código fuente de MySQL**: la interfaz de *handler* de storage engines (InnoDB vs MyISAM vs Memory), y cómo la capa de SQL no sabe qué motor tiene detrás.
+- **"Designing Data-Intensive Applications" (Martin Kleppmann)**, cap. 3 — por qué separar "modelo lógico" (tu API) de "modelo físico" (tu almacenamiento) es la disciplina que mantiene viva una BD.
+
+## Mini-diálogo: en guardia nocturna
+
+> — O sea, que todo este capítulo es... declarar un machote de funciones y que nadie entre en la cocina.
+>
+> — Casi. Declarar el machote es la parte fácil; lo difícil es que ese machote sea *semántica*: por qué esto devuelve `bool`, esto `Option` y aquello `Result`.
+>
+> — ¿Y por qué tanto lío antes de escribir el primer byte?
+>
+> — Porque "escribir el primer byte" es la parte que casi no cambiará. Lo que cambia es lo de detrás: disco, páginas, otro motor. Si el mostrador está bien puesto, cambiarlo de cocina no te obliga a reescribir tu aplicación ni a volver a decidir qué significa borrar un nodo. El contrato es lo que dura; el código de guardar, es del día a día.
+>
+> — Entonces... ¿ya puedo escribir bytes?
+>
+> — Puedes. El mostrador está en una mesa de firmas que se sostiene sola, y mañana —en el capítulo 9— vas a descubrir que los bytes también tienen su orden y su trampa.
+
+---
+
+*(Próximo capítulo: 9 — Del objeto al byte. Aquí definimos el contrato con `Node` y `Edge` vivos; ahora veremos cómo se convierten en un `Vec<u8>` sin ambigüedad — encoding, endianness y versionado — para que el mismo puerto, con otro adaptador, llegue al disco.)*
+# Capítulo 9 — Del objeto al byte (encoding, endianness, versionado)
+
+> *«Un fichero no guarda nodos ni aristas. Guarda bytes. Si no decides tú cómo se traducen los unos en los otros, lo decidirá el azar.»*
+
+## 9.0 La anécdota de la esquina
+
+Todo el debate del byte venía de una novela de 1726. En «Los viajes de Gulliver», Jonathan Swift describe la guerra eterna entre los Liliputienses que rompían el huevo por el lado *grande* (*Big-Endians*) y los que lo rompían por el lado *pequeño* (*Little-Endians*). Doscientos cincuenta años después, cuando los primeros estándares de red tuvieron que fijar el orden de los bytes entre computadoras que hablaban idiomas distintos, los ingenieros recuperaron los nombres de Swift para algo que NO era una metáfora.
+
+En los años 60 y 70, cada fabricante escribía los números en disco como le parecía: DEC y las máquinas de Intel-heredado en *little-endian* (el byte menos significativo primero), IBM y Motorola en *big-endian*. La diferencia no era académica. Un fichero binario escrito en un IBM y abierto en un DEC se leía **distinto, sin ningún error**: el `u16` `0x0A0B` viajaba como los bytes `0A 0B` en un lado y `0B 0A` en el otro, y el número aparecía falseado. Por eso los protocolos de Internet acabaron fijando un *network byte order* (big-endian) como idioma común entre máquinas: cuando dos sistemas no comparten convención, alguien tiene que traducir a una única que todos conozcan.
+
+Y con los formatos de fichero pasó algo parecido, medio siglo después. En los años 90, el RFC 1925 de Ross Callon titulado *«The Twelve Networking Truths»* —y con él la cultura que popularizó **Peter Deutsch** en sus buenas prácticas de estado persistente— resumió la lección que nos importa hoy: un formato de fichero **es una promesa con una versión estampada**. No basta con que tú lo leas hoy: debe sobrevivir a tu máquina, a tu equipo y a tu esquema de datos. La primera red de defensa para lograrlo es ponerle una firma y un número de edición arriba del todo.
+
+Ese es el tema de este capítulo. Quizá no haya vuelos espaciales ni batallas de huevos; pero cuando acabes, entenderás que **un `Value` solo existe en disco si decides, byte a byte, cómo se traduce —y pones la versión para que esa traducción no se rompa mañana**.
+
+## 9.1 Objetivo
+
+Al terminar este capítulo podrás llevar las estructuras del **cap. 7** (`Value`, y por extensión `Node` y `Edge`) a una secuencia de bytes **reversible**: codificar y decodificar a mano, sin ninguna crate, los seis tipos de `Value` de forma que un mismo valor produzca siempre los mismos bytes.
+
+En concreto, construirás cuatro piezas (todas en `cap09_encoding.rs`):
+
+1. Primitivas explícitas: `encode_u32_le`, `encode_i64_le`, `encode_f64_le` (y sus `decode_*`).
+2. `encode_string`/`decode_string` — strings con length-prefix.
+3. `encode_value`/`decode_value` — el enum `<Data>` del cap. 7 completo.
+4. `encode_header`/`decode_header` — el magic + `FORMAT_VERSION` que firma un fichero.
+
+## 9.2 Problema
+
+Ya tienes un `Value::String("Ana")` en memoria. Pregunta trampa: **¿qué es exactamente lo que guardas en disco?**
+
+- Un `String` de Rust ES UTF-8, es decir, ya son bytes. «Perfecto», dices, «escribo los 3 bytes `A`, `n`, `a`». Pero cuando lo leas: **¿dónde acaba?** Si el siguiente `Value` empieza justo después, no tienes manera de saber cuántos bytes eran suyos.
+- Un `i64` en memoria son 8 bytes. Pero su **orden** depende de la máquina: en tu x86 es little-endian; en un ARM o un MIPS de otra generación podría ser big-endian. Escribir «los 8 bytes del número» sin decir en qué orden es escribir **sin contrato**.
+- Un `f64` (el `Float` de IEEE 754) son 8 bytes, pero interpretados según el estándar de coma flotante — y ahí no todo es recuperable igual de fácil (NaN, precisión).
+- Y un `enum` `Value` puede ser cualquiera de seis variantes. Sin una **etiqueta** al principio, el que lee no sabe si lo que sigue es un `Int`, un `Float` o un `String`.
+
+El problema central, en una frase: **mezclamos el objeto (con sus tipos) con el flujo de bytes (sin tipos)**. La máquina en memoria conoce el tipo de cada variable; el fichero no. Alguien tiene que traducir, y esa traducción tiene que ser **decidida y documentada**, no dejada al azar del compilador.
+
+## 9.3 Modelo mental
+
+Piensa en **una carta que debe cruzar el mundo y ser leída dentro de veinte años, por un archivador que no te conoce**.
+
+- **El sobre** lleva la firma y el número de edición: `[magic 0x4C444231][FORMAT_VERSION=1]`. El archivador, antes de abrir, comprueba que el sobre es TUYO y que edición es. Si no reconoce la firma, no intenta leer: lo dice. Eso es `encode_header`/`decode_header`.
+- **El orden de lectura** está pactado: `little-endian`, el primer byte es el **menos significativo**. Ambos lados (el que escribe y el que relee, quizá una máquina distinta) siguen el mismo orden. Sin ese pacto, la carta es galimatías: los dos bytes `0A 0B` escritos en un IBM (big-endian) y abiertos en un DEC (little-endian) se leen como `0B0A` — el número que pretendías, falseado en silencio.
+- **Los campos de longitud variable** llevan su longitud escrita DELANTE: `[4][h][o][l][a]`. El archivador sabe que el texto ocupa exactamente 4 bytes, aunque el texto contenga un carácter raro (incluso un carácter «de fin de línea», del que en una carta normal esperarías que terminara — en nuestro formato no existe el fin de línea reservado).
+- **Los datos polimórficos** llevan una etiqueta al principio: `[3][8 bytes del float]`. El archivador mira el 3 y sabe «esto es un Float, léeme 8 bytes».
+
+Los diagramas de los dos casos que más te importan:
+
+```
+Value::Int(-1)  →  tag=2  [FF FF FF FF FF FF FF FF]   (i64, little-endian: -1 = todos los bits a 1)
+Value::String("hola")  →  tag=4  [04 00 00 00] [h][o][l][a]   (u32 len + 4 bytes UTF-8)
+Value::Float(PI)  →  tag=3  [los 8 bytes LE del IEEE 754 de PI]
+
+Fichero:
+[4C 44 42 31] [01 00 00 00]  ...   ← magic "LDB1"  +  FORMAT_VERSION = 1
+```
+
+El momento «¡ajá!»: **`encode` no está «convirtiendo a binario»: está REDACTANDO una carta con reglas que un desconocido debe poder releer byte a byte, sin darte la mano.** Si el byte 1 no significa lo mismo para el que escribe y el que lee, el dato no sobrevivió el viaje — aunque ambos creyeran haberlo guardado.
+
+## 9.4 Primera solución
+
+La versión ingenua, la que escribe cualquiera al principio:
+
+```rust
+// Solución ingenua: guardar el Value "a secas".
+fn guardar(s: &str) -> Vec<u8> { s.as_bytes().to_vec() }
+fn guardar_num(n: i64) -> [u8; 8] { n.to_ne_bytes() }   // ← ojo con esto
+```
+
+En tu portátil los tests pasan. `"Ana"` se guarda como `[41 6E 61]`, y `guardar_num(-1)` escribe sus 8 bytes «a lo nativo». Incluso podrías caer en la tentación de serializar con `format!("{:?}", v)` o `v.to_string()`: legible, cómodo… y ambiguo. Al releer `Value::Float(3.14).to_string()` — `"3.14"` — ¿de dónde sacas los 8 bytes binarios del IEEE 754? Un `f64` y su representación decimal legible NO son lo mismo.
+
+## 9.5 Sus límites
+
+La solución ingenua se rompe —en silencio— en cuanto dejas de mirar:
+
+1. **El string no delimita su final.** `guardar("hola")` devuelve `[68 6F 6C 61]`. Sin longitud escrita, `decode` no sabe si el `Value` termina en `a` o si hay tres bytes más escondidos después. Y si introduces un delimitador (`\0`, el «fin de línea» de C), el problema vuelve por la puerta de atrás: ¿y si tu texto contiene un `\0`? (Veremos en §9.6 por qué el length-prefix gana siempre.)
+2. **`to_ne_bytes` es una bomba de relojería.** Funciona en el x86 que lo escribió. El fichero viaja; se abre en una máquina big-endian; y ahora `Int(-1234567890)` se lee como un número gigante y absurdo, sin ningún error. Corrupción total y silenciosa. Este es exactamente el modo de fallo que ataca el cap. 11 cuando dice «nunca `to_ne_bytes`».
+3. **El tag del enum no se deduce.** Un `Vec<u8>` de `Value::Int(42)` y uno de `Value::Float(42.0)` pesan lo mismo (8 bytes) pero significan cosas distintas. Si no escribes la etiqueta, `decode` adivina — y a veces acierta. Eso es lo peor: «casi-bien» es indetectable en un debug rápido.
+4. **El fichero es para siempre… hasta que ya no.** Añades una variante nueva a `Value` (verás esta idea en el cap. 7) y `decode` se encuentra un byte que antes no existía. A menos que haya un `FORMAT_VERSION`, no tienes la menor idea de si el fichero que estás leyendo se escribió con la versión nueva o la vieja.
+
+## 9.6 Solución evolucionada
+
+La solución de verdad tiene **cinco reglas** — las mismas cinco desde los 90, y las que usan SQLite, PostgreSQL y cualquier motor serio:
+
+1. **Endianness explícita** (little-endian, LE). `encode_u32_le` = `value.to_le_bytes()`; el primer byte es el menos significativo. Del otro lado, `u32::from_le_bytes` recompone el número. Por qué LE: porque x86 (la máquina de casi todo el mundo, y la de LiraDB) es little-endian desde los 8086, y porque es **reversible byte a byte**: el primer byte del stream es, siempre, el byte de menor peso, así que «recorrer bytes en orden» es «recorrer dígitos de menor a mayor», sin saltos. (Las redes históricamente prefirieron big-endian — el *network byte order* — por herencia de los primeros prototipos; nosotros somos un fichero de disco, la endianness de nuestra arquitectura es LE.)
+
+2. **Length-prefix, no delimitador.** `encode_string` escribe `u32 longitud` seguido de los bytes UTF-8. `decode_string` lee los 4 primeros bytes (la longitud) y luego exactamente `len` bytes de payload. No hay byte prohibido: un string puede contener `\0`, `"`, `0x00`, lo que sea, porque sabemos su longitud EXACTA de antemano. Un delimitador obligaría a escapar esos bytes, y cada escape es una oportunidad de corrupción silenciosa. (Es la misma batalla del cap. 11 §11.6, pero aquí desde el ángulo del *encoding de un valor*: el `\0` no existe como término de línea en nuestro flujo.)
+
+3. **Tag por variante.** Antes de cada `Value` va un `u8` (0..5) que dice qué variante es. El decodificador lee el tag, y con él sabe CUÁNTOS bytes leer y cómo interpretarlos.
+
+```rust
+match tag {
+    0 => (Value::Null, resto),
+    1 => ... Bool (un byte, 0 o 1) ...
+    2 => ... Int (8 bytes LE) ...
+    3 => ... Float (8 bytes LE IEEE 754) ...
+    4 => ... String (u32 len + payload) ...
+    5 => ... Bytes (u32 len + payload) ...
+}
+```
+
+4. **Format versioning.** `encode_header` escribe `[magic 0x4C444231]` («LDB1» en ASCII) + `[FORMAT_VERSION]`. `decode_header` **comprueba** el magic antes de devolver nada: si no lo reconoce, `Err("magic mismatch")`. El día que el formato cambie (p.ej. añadas una variante), subes `FORMAT_VERSION` y el lector sabe con qué reglas leer. Un fichero viejo no se rompe: se detecta.
+
+5. **Fallos ruidosos y resto.** Cada `decode_*` devuelve `Result`, y **nunca** entrega datos a medias como válidos: `"too short"`, `"payload truncated"`, `"tag {n}"` son errores reales. Y cada decode devuelve el resto del buffer (`&[u8]`): así los `Value`s pueden encadenarse uno tras otro en un mismo flujo — exactamente lo que necesitará una página (cap. 11).
+
+### El `Float` y el IEEE 754
+
+El `Float(f64)` no es especial para nosotros (lo codificamos con `encode_f64_le`, 8 bytes LE igual que el `Int`), pero merece su propio aviso: esos 8 bytes se interpretan bajo el **estándar IEEE 754** (1 bit de signo, 11 de exponente, 52 de mantisa). Tres consecuencias que verás en el capítulo:
+
+- **La precisión es finita.** `0.1 + 0.2` no es `0.3`; es `0.30000000000000004`. Codificar y recodificar no lo arregla: es intrínseco al formato binario del estándar. Por eso comparar floats con `==` exacto en el roundtrip es una trampa (salvo por los bytes, que sí son deterministas).
+- **Los NaN no son iguales a sí mismos.** El IEEE 754 define que `NaN != NaN`. Si guardas un `NaN`, el roundtrip «funciona» (los bytes vuelven), pero `assert_eq!(dec, v)` fallará si comparas los `Value` directamente y uno contiene NaN. Nuestro test aparta el caso a propósito: comparamos el `Float(PI)` exacto, no un NaN.
+- **Reversibilidad byte a byte sí existe**, en tanto que los 8 bytes LE de un float dado son siempre los mismos. Eso es lo que el determinismo pide, y es la base de los CRC del cap. 10.
+
+## 9.7 Código completo ejecutable
+
+El código está en `liradb-workspace/crates/vol2-liradb/src/cap09_encoding.rs`. Lo leemos por partes, porque cada línea tiene un porqué.
+
+### Primitivas
+
+```rust
+pub const FORMAT_VERSION: u32 = 1;
+
+pub fn encode_u32_le(value: u32) -> [u8; 4] { value.to_le_bytes() }
+pub fn decode_u32_le(bytes: &[u8; 4]) -> u32 { u32::from_le_bytes(*bytes) }
+
+pub fn encode_i64_le(value: i64) -> [u8; 8] { value.to_le_bytes() }
+pub fn decode_i64_le(bytes: &[u8; 8]) -> i64 { i64::from_le_bytes(*bytes) }
+
+pub fn encode_f64_le(value: f64) -> [u8; 8] { value.to_le_bytes() }
+pub fn decode_f64_le(bytes: &[u8; 8]) -> f64 { f64::from_le_bytes(*bytes) }
+```
+
+Tres primitivas idénticas en forma, distinta semántica. `to_le_bytes()` y `from_le_bytes()` son las únicas vías: **nunca** `to_ne_bytes()`. El tipo de retorno (`[u8; 4]` vs `[u8; 8]`) fija de cuántos bytes consta cada número, y el par encode/decode es exactamente reverso.
+
+### Strings con length-prefix
+
+```rust
+pub fn encode_string(s: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + s.len());
+    out.extend_from_slice(&encode_u32_le(s.len() as u32));
+    out.extend_from_slice(s.as_bytes());
+    out
+}
+
+pub fn decode_string(bytes: &[u8]) -> Result<(String, &[u8]), String> {
+    if bytes.len() < 4 {
+        return Err("string: too short".into());          // sin ni siquiera la longitud
+    }
+    let mut lb = [0u8; 4];
+    lb.copy_from_slice(&bytes[..4]);
+    let len = decode_u32_le(&lb) as usize;
+    if bytes.len() < 4 + len {
+        return Err("string: payload truncated".into());   // la longitud promete más de lo que hay
+    }
+    let s = std::str::from_utf8(&bytes[4..4 + len])
+        .map_err(|e| e.to_string())?
+        .to_string();
+    Ok((s, &bytes[4 + len..]))                             // devolvemos el resto del buffer
+}
+```
+
+Fíjate en las **dos comprobaciones defensivas** antes de tocar el slice: `bytes.len() < 4` (aunque no haya siquiera campo de longitud) y `bytes.len() < 4 + len` (la longitud promete más bytes de los presentes — `payload truncated`). Nunca indexamos `&bytes[4..4+len]` sin saber que existe. Y el `from_utf8` es otra capa: si el payload no es UTF-8 válido, error, no string basura.
+
+### El enum `Value` (cap. 7) completo
+
+```rust
+pub fn encode_value(v: &Value) -> Vec<u8> {
+    let mut out = Vec::new();
+    match v {
+        Value::Null   => out.push(0),
+        Value::Bool(b) => { out.push(1); out.push(u8::from(*b)); }
+        Value::Int(i) => { out.push(2); out.extend_from_slice(&encode_i64_le(*i)); }
+        Value::Float(f) => { out.push(3); out.extend_from_slice(&encode_f64_le(*f)); }
+        Value::String(s) => { out.push(4); out.extend_from_slice(&encode_string(s)); }
+        Value::Bytes(b) => { out.push(5); out.extend_from_slice(&encode_u32_le(b.len() as u32)); out.extend_from_slice(b); }
+    }
+    out
+}
+```
+
+La belleza está en la simetría. El tag `u8` va primero; `Null` no lleva más nada; `Bool` un byte; `Int`/`Float` ocho bytes LE; `String`/`Bytes` un `u32 len` + payload. El `decode_value` es el espejo exacto.
+
+### La cabeza del fichero
+
+```rust
+pub fn encode_header() -> [u8; 8] {
+    let mut out = [0u8; 8];
+    out[..4].copy_from_slice(&encode_u32_le(0x4C_44_42_31));  // magic "LDB1"
+    out[4..].copy_from_slice(&encode_u32_le(FORMAT_VERSION));
+    out
+}
+
+pub fn decode_header(bytes: &[u8; 8]) -> Result<u32, String> {
+    let magic = decode_u32_le(bytes[..4].try_into().unwrap());
+    if magic != 0x4C_44_42_31 {
+        return Err(format!("magic mismatch: got {magic:#x}"));
+    }
+    Ok(decode_u32_le(bytes[4..].try_into().unwrap()))
+}
+```
+
+El magic `0x4C444231` es «LDB1» en ASCII: unos bytes con todos los bits alternados a propósito, improbables de aparecer por casualidad (recuerda el «magic raro» del cap. 11). `decode_header` **exige** el magic; si falla, error inmediato. Ese `if magic != ...` es tu red contra «abrí un fichero de otra versión y lo leí como si fuera mío».
+
+## 9.8 Prueba de fuego
+
+La prueba de fuego es el **roundtrip**: codificar y decodificar debe devolver exactamente lo mismo, y el buffer debe quedar vacío (`rest.is_empty()`), una prueba de que el límite del `Value` se respetó a la perfección:
+
+```rust
+for v in [
+    Value::Null, Value::Bool(true), Value::Bool(false),
+    Value::Int(42), Value::Int(-1234567890),
+    Value::Float(std::f64::consts::PI),
+    Value::String("hola, mundo!".into()),
+    Value::Bytes(vec![1, 2, 3, 4, 5]),
+] {
+    let enc = encode_value(&v);
+    let (dec, rest) = decode_value(&enc).unwrap();
+    assert_eq!(dec, v);        // idénticos
+    assert!(rest.is_empty());  // el Value ocupó TODO el buffer, ni uno de sobra ni falta
+}
+```
+
+Y los casos de fallo son tan importantes como el camino feliz: `string: too short`, `payload truncated`, `float: need 8 bytes`, `value: tag {other}`. **Si se te olvidara este capítulo, el síntoma lo notarías en el siguiente**: al meter un `Value` en una página (cap. 11) no sabrías dónde termina cada uno, y los strings se leerían recortados o con basura pinchada, o los números cambiarían de valor al releer el fichero.
+
+## 9.9 Qué hemos sacrificado
+
+Toda solución paga un precio. Nuestro encoding no es gratis; esto es lo que cedes a cambio de la reversibilidad:
+
+1. **4-5 bytes de sobrecarga por `Value`** (el tag + el length-prefix). Para valores diminutos el overhead es proporcionalmente alto. Es el precio de tener un formato autodescriptivo.
+2. **Sin referencias ni aliasing**: codificar duplica los datos en memoria. No «apuntamos» a un node ya guardado: lo reinterpretamos a bytes cada vez.
+3. **Sin compresión**: un string se guarda como está. La compresión está fuera de alcance (será parte de la optimización, nunca del capítulo 9).
+4. **Texto UTF-8, no otro encoding**: asumimos `String` UTF-8 de Rust. Otros encodings son una decisión futura, no una obligación.
+5. **Un `u32` de longitud sacrifica algo de compatibilidad** para strings mayores de 4 GB: teóricamente un `usize` de 64 bits cabría más, pero 4 GB por valor es más que suficiente para el modelo de datos y mantiene el prefijo en 4 bytes.
+
+## 9.10 Cómo lo hace una BBDD real
+
+Los patrones que acabas de construir no son invención nuestra; son la base de todo el almacenamiento de datos:
+
+- **SQLite** abre sus ficheros con un **magic string** —exactamente *"SQLite format 3\0"* al comienzo— seguido de campos de versión. Es la misma idea que `decode_header`: una firma que `SQLite` comprueba antes de interpretar cualquier byte. Su [file format](https://www.sqlite.org/fileformat.html) documenta byte a byte (encabezados, lengths varint con prefijo de longitud, etc.) lo que aquí hacemos a mano.
+- **PostgreSQL** usa length-prefixes y encabeza todo con una cabecera de formato; su modelo de **TOAST** y el catálogo `pg_type` son la demostración del mismo principio a escala de tipos: un mecanismo que dice «este tipo es tal, esta versión vale esto» antes de interpretar. El formato de fila y el encoding son explícitos y versionados.
+- **IEEE 754** gobierna el `Float` como nosotros lo codificamos; es el estándar que todas las CPUs implementan. Su historia (1985, revisado en 2008 y 2019) explica por qué un `f64` son 8 bytes y qué pasa con NaN y la precisión.
+- **El paper de Deutsch y las buenas prácticas de los 90** (formato de fichero estable pero versionado) siguen siendo, tres décadas después, el contrato de todo motor: *«design for change; put a version on it»*.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: ¿cuántos bytes ocupa `Value::Bytes(vec![0u8; 100])` en total (tag + length + payload)? Escribe la cuenta a mano.
+- *Intermedio*: `encode_string` usa `u32::from(s.len() as u32)`. ¿Qué pasa si el string mide más de 4 GB? ¿Es un peligro real en el modelo de datos? ¿Qué alternativa tendrías?
+- *Experto*: diseña un length-prefix **varint** (como el de SQLite) donde `0-127` quepan en UN byte y valores grandes usen varios. Compara el espacio total para strings de 3, 300 y 30.000 bytes.
+
+## 9.11 Lo que te llevas
+
+- **La endianness es un contrato, no un detalle**: little-endian explícito (`to_le_bytes`), jamás `to_ne_bytes`, para que el formato sea portable e independiente de la máquina.
+- **Length-prefix > delimitador**: escribir la longitud ANTES del dato permite cualquier byte en el payload y evita la corrupción silenciosa por escapes.
+- **Un tag por variante**: el `Value` del cap. 7 se codifica con `[tag][payload]` y el decodificador sabe exactamente cuántos bytes leer.
+- **Magic + `FORMAT_VERSION`**: se firma el fichero; si no es nuestro o es otra versión, se DETECTA antes de interpretar.
+- **Determinismo**: un mismo `Value` produce siempre los mismos bytes — el requisito previo de cualquier checksum (cap. 10).
+- **Fallos ruidosos y resto explícito**: decode devuelve `Result` y el resto del buffer, para encadenar valores en un solo flujo.
+
+## 9.12 Ojo, cuidado con…
+
+- **`to_ne_bytes`**: la tentación de «lo nativo». Funciona en tu máquina y corrompe en todas las demás. Regla: *si el código no decide LE o BE en un punto visible, es sospechoso.*
+- **Usar un delimitador para strings** (el `\0` o un `0xFF`): el dato puede contenerlo; entonces hay que escaparlo, y un escape mal hecho es corrupción.
+- **Confundir bytes con números**: `decode_f64_le` devuelve un `f64` cuya precisión es finita (IEEE 754). Comparar floats con `==` exacto es una trampa; los NaN ni siquiera son iguales a sí mismos.
+- **Indexar el slice sin comprobar la longitud**: el `payload truncated` existe; nunca hagas `&bytes[4..4+len]` sin haber verificado que el buffer lo contiene.
+- **Creer que el fichero es para siempre**: un formato sin versión es un fichero que, el día que cambies el esquema, se leerá «casi-bien» (peor que mal). `FORMAT_VERSION` es tu válvula.
+
+## 9.13 Pin de batalla
+
+> *«Un fichero que se lee distinto según la máquina que lo abrió no es una base de datos: es un accidente que aún no ha ocurrido.»*
+
+## 9.14 Si solo lees 30 segundos
+
+Para que un `Value` sobreviva en disco necesitas decidir CUATRO cosas: **el orden de los bytes** (little-endian, `to_le_bytes`), **dónde termina cada dato de longitud variable** (length-prefix: la longitud DELANTE), **qué variante es** (un tag `u8` al principio), y **qué versión de formato es** (magic + `FORMAT_VERSION`). Con eso, `encode_value` y `decode_value` son reversos exactos: un mismo valor produce siempre los mismos bytes. Esa frase —«siempre los mismos bytes»— es lo que permite que mañana un checksum (cap. 10) pueda decir «esto no se ha corrompido».
+
+## 9.15 Una historia pequeña
+
+Corría el primer intento de LiraDB de guardar un grafo en un fichero. «El encoding es obvio», dijimos, y escribimos cada propiedad con `format!("{:?}", v)` — legible, simple. El grafo se guardaba y releía… hasta que Ana añadió a un nodo una bio de 2 KB con un salto de línea y dos caracteres raros. Al releer, el nodo siguiente aparecía al revés y un `Float(3.14)` se transformó en los bytes de su patrón de bits, leídos como si fueran un `Int` gigante y absurdo. No había error: solo datos ligeramente incorrectos, exactamente el peor tipo de fallo. Reconstruir ese nodo nos llevó una tarde. El culpable no era la bio: era que **no habíamos decidido dónde termina cada valor y en qué orden se escriben sus bytes**. El encoding binario del capítulo 9 fue la respuesta. Hoy, Ana guarda una bio de 2 KB y el roundtrip queda intacto, byte a byte.
+
+---
+
+## Ejercicios resueltos
+
+**1. ¿Cuántos bytes ocupa en total `Value::Int(42)` codificado por `encode_value`?**
+
+`encode_value` empieza con `out.push(2)` (un byte, el tag). Luego `out.extend_from_slice(&encode_i64_le(42))`, que aporta 8 bytes. Total: **9 bytes**. Una sola prueba mental con el test `value_roundtrip`: al decodificar, `decode_value` gasta 1 byte leyendo el tag, 8 bytes del payload, y `rest.is_empty()` confirma que no sobraba nada.
+
+**2. ¿Por qué `decode_value` puede confiar en el tag para saber cuántos bytes leer?**
+
+Porque `encode_value` escribió el tag primero y, según el tag, el payload tiene un número de bytes CONOCIDO: 0 (Null), 1 (Bool), 8 (Int/Float), o `u32 len + len` (String/Bytes). El decodificador no adivina nada: el formato lo *declara*. Y si el buffer no contiene los bytes prometidos, `decode_*` devuelve `Err("payload truncated")` en lugar de entregar un `Value` incompleto como si fuera válido. Esa **validación defensiva** —el formato lleva su propio contrato y lo comprueba— es la misma filosofía del cap. 11.
+
+## Ejercicios propuestos
+
+**Esencial.** En papel (o en un comentario), escribe a mano la secuencia HEX exacta que produce `encode_value` para los tres `Value`s: `Int(-1)`, `Bool(true)` y `String("ab")`. No ejecutes hasta haberlo escrito. Verifica luego contra `cargo test -p vol2-liradb cap09`.
+
+**Intermedio.** Explica, para `decode_value` recibiendo `[2, 0xFF, 0xFF, ...]`: (a) cómo sabes que es el tag 2 (Int); (b) cuántos bytes de payload lees y por qué ESOS y no otros; (c) por qué el length-prefix del string es variable (u32) mientras el del Int/float es fijo (8). Pista: mira `decode_value` para los tags 2 y 4. Este ejercicio conecta con el cap. 11 §11.6: mismas reglas de length-prefix, distinto ángulo.
+
+**Experto.** Añade la variante `Value::U64(u64)` con tag 6 a `cap07_modelo::Value`, implementa su encode/decode en `encode_value`/`decode_value`, y sube `FORMAT_VERSION` a 2. Escribe un test que: (a) `Value::U64(7)` hace roundtrip; (b) `decode_header` de un fichero v1 sigue devolviendo `1` (los ficheros viejos se siguen leyendo); (c) un fichero v2 no se confunde con uno v1. Explica por qué ese bump de versión protege a las bases existentes.
+
+## Para profundizar
+
+- **"Database Internals" (Alex Petrov)** — capítulos sobre encoding de formatos de página y registros: la misma mecánica de length-prefix y endianness llevada a producción.
+- **The SQLite File Format** — la [documentación oficial](https://www.sqlite.org/fileformat.html) detalla byte a byte un motor real: magic string, versión, varints. Compara con tu `decode_header`.
+- **IEEE 754-2019** — el estándar de coma flotante; por qué un `f64` son 8 bytes y qué significan NaN/infinitos/precisión.
+- **El paper de Peter Deutsch, «PERSISTENT STATE (Internet Best Practices)»** — las «cosas que ya no hay que hacer» en diseño de formatos de fichero, incluida la endianness y el versionado.
+- **PostgreSQL: TOAST y `pg_type`** — cómo un motor maduro versiona y discrimina sus tipos de dato ante de interpretarlos en disco.
+
+## Mini-diálogo: en guardia nocturna
+
+> — En serio, ¿un capítulo entero para escribir cuatro bytes?
+>
+> — Cuatro bytes QUE NADA NI NADIE PUEDE LEER MAL. El `String`, el `Int` y el `Float` de tu `Value` no llevan un rótulo en la memoria que diga «yo soy un float». En disco, la máquina que relea no sabe qué eras: lo ha de deducir de los bytes. Cada regla que escribimos —el orden, la longitud, el tag, la versión— es una promesa: *cuando releas, vas a leer esto igual que yo lo escribí*.
+>
+> — ¿Y el `FORMAT_VERSION`? ¿No es paranoia?
+>
+> — No. Es el seguro. Es el único palito que nos impide, el día que añadamos `U64` al `Value`, que todos los ficheros viejos se corrompan en silencio. Mejor que un fichero se niegue a abrir que se abra «casi-bien».
+
+---
+
+*(Próximo capítulo: 10 — Persistencia append-only. Ahora un `Value` es bytes reversibles; veremos cómo esos flujos se van escribiendo uno tras otro en un fichero que jamás reescribe el pasado, y cómo tu determinismo permite que un CRC lo vigile.)*
+# Capítulo 10 — Persistencia append-only
+
+> *«No borres nunca una línea de la bitácora: cuando el mar se pone feo, lo único que puedes hacer es añadir al final.»*
+
+## 10.0 La anécdota de la esquina
+
+En 1978 un investigador de IBM llamado Jim Gray publicó una tesis que parecía aburridísima: trataba de **logs**, de cómo los sistemas transaccionales tenían que dejar constancia escrita de lo que hacían antes de hacerlo. La idea no nació de una oficina con UNIX, sino de algo más viejo: las **bitácoras de los barcos** y las **tarjetas perforadas de los mainframes**, donde la disciplina era la misma que la de un contable — *nunca tachar lo escrito; añade una línea nueva*. Cuando un día se quemó un disco en un sistema de reservas de vuelos (un fallo que, a mitad de una escritura, dejaba alterado el fichero principal), la única forma de saber qué existía realmente era leer el **log**: la secuencia de cambios bien formada que se había ido apéndizando por delante.
+
+Gray formalizó eso que hoy llamamos **write-ahead log** (WAL, 1981): *escribe el cambio en el log ANTES de tocar los datos*. Y hay un detalle más sutil que el propio Gray remarcó: el log no te salva *a pesar de* las escrituras a medias, sino que es inmune a ellas. Si un registro del log queda a medias (cortó la luz), las filas anteriores siguen **íntegras** — porque nunca pisaste ninguna. LiraDB no inventa nada aquí: este capítulo es la semilla más pequeñita de esa idea, y la vas a plantar tú, en Rust, antes de que existan las páginas, el buffer pool o las transacciones.
+
+## 10.1 Objetivo
+
+Al terminar este capítulo sabrás **por qué una base de datos no reescribe los datos en sitio cuando algo cambia**, y habrás implementado la pieza de bajo nivel que lo resuelve: un **log append-only** donde cada cambio es un **registro** — con un *framing* que dice dónde termina cada uno y un **CRC32** que detecta si algo se rompió.
+
+En concreto, vas a construir cinco piezas en `liradb-workspace/crates/vol2-liradb/src/cap10_append_only.rs`:
+
+1. `RecordKind` — el tipo de cambio (PutNode, PutEdge, DeleteNode, DeleteEdge, Commit).
+2. `LogRecord` — el cambio en memoria (kind + id + payload).
+3. `encode_log_record` / `decode_log_record` — el formato en bytes, **length-prefix + CRC32**.
+4. `crc32_simple` — el checksum estándar, a mano.
+5. `AppendOnlyLog` + `LogIterator` — el log y su iterador que **para limpio** ante la corrupción.
+
+## 10.2 Problema
+
+Imagina que ya sabes convertir un `Node` en bytes (capítulo 9). Ahora viene la pregunta incómoda: **cuando Ana y Luis añaden una arista, ¿dónde y cómo guardas ese cambio en el fichero?**
+
+La primera idea que se le ocurre a todo el mundo es **sobrescribir en sitio**: abro el fichero, voy al byte donde vive esa arista, escribo el byte nuevo encima y cierro. Rápido. Barato. Y funciona… hasta que ocurre un **corte de luz a mitad de la escritura**.
+
+Y aquí está el problema que el capítulo quiere que sientas antes de resolverlo. Resulta que "escribir un byte" **no es una operación atómica a nivel físico**: el disco escribe en unidades de **sector** (512 bytes o más), y si la electricidad se va justo en el instante en que el brazo está cambiando ese sector, lo que queda en la mitad puede ser un estado intermedio — una mezcla del dato viejo y del nuevo, a mitad de bit. Peor aún: como "pisaste" la versión buena, **ya no tienes de dónde saber cuál era**. La arista podría estar medio escrita, o escrita dos veces con una mitad de cada una. Y el programa no se entera.
+
+Encima, guardar datos de longitud variable (un nodo con una descripción larga, otro con solo un nombre) tiene el problema que ya viste con las páginas del capítulo 11: si el nuevo contenido es más largo que el hueco, tienes que **desplazar todos los bytes que vienen detrás** — O(n) por cambio y muchas más oportunidades de escritura a medias.
+
+La conclusión duele: **sobrescribir en sitio convierte un crash en corrupción silenciosa**. Necesitamos una estrategia en la que un corte de luz no pueda embarrar lo ya guardado.
+
+## 10.3 Modelo mental
+
+Piensa en el **cuaderno de bitácora del barco** (y en su descendiente moderno: el log de escritura anticipada de Gray). El contramaestre nunca borra una línea ni reescribe una fecha encima: **añade cada observación al final**. Cuando llega la tempestad y todo se va al carajo, la guardia anterior queda **íntegra y en orden**, porque nadie la pisó. Lo único "raro" que puede quedar es **la última línea a medio escribir** — y precisamente por eso es *visiblemente* rara: le falta el final, o su sello de verificación no cuadra.
+
+```
+ESCRITURA EN SITIO (el barco reescribiendo la línea 3 del censo):
+  ┌──────┬──────┬──────┬──────┐
+  │reg 1 │reg 2 │reg 3 │      │      ← el crash pisa reg 3 a mitad: CORRUPCIÓN
+  └──────┴──────┴──╳───┴──────┘        ya no sabes cuál era el reg 3 bueno
+
+LOG APPEND-ONLY (el barco apéndizando):
+  reg1 │ reg2 │ reg3 │ ...  ← el crash deja una cola →  reg4 a medias
+  └────┴─────┴─────┴────┘                                                   
+        íntegro y en orden (nadie pisó nada)
+                                  [reg4 a medias] se detecta (CRC) y se
+                                  descarta: vuelven a valer reg1..reg3
+```
+
+Este es el momento ¡ajá! del capítulo: **la durabilidad no se gana haciendo las escrituras más fuertes, sino haciéndolas imposibles de hacer mal.** Si nunca pisas lo ya escrito, un corte de luz solo puede *cortarte el final*, y el final se detecta solo.
+
+## 10.4 Primera solución
+
+Empecemos por lo que escribiría un novato. Iba a abrir el fichero y modificar en sitio el byte donde vive el nodo:
+
+```rust
+// Solución ingenua (NO es esto lo que construimos): sobrescribir en sitio.
+fn actualizar_en_sitio(fichero: &mut File, nodo: &Node) -> io::Result<()> {
+    let pos = buscar_posicion_del_nodo(nodo.id);
+    fichero.seek(SeekFrom::Start(pos))?;
+    let bytes = encode_node(nodo);           // cap. 9
+    fichero.write(&bytes)?;                  // ESCRIBE ENCIMA del viejo
+    Ok(())
+}
+```
+
+Parece perfecto: busca, y escribe encima. Los tests pasan. Nadie se queja. Durante un rato.
+
+## 10.5 Sus límites
+
+Hasta que alguien tira de la corriente en el momento justo. Los límites de **sobrescribir en sitio** son tres y los tres son serios:
+
+1. **Una escritura a medias pisa lo bueno.** La física del sector hace que "cambiar un byte" pueda quedar a mitad de camino. Como pisaste la versión buena, **no hay forma de reconstruir el estado anterior**. Es la corrupción silenciosa e irreparable.
+2. **Los cambios de longitud variable desplazan todo.** Si el nodo que llega es más largo que el que había, los bytes posteriores hay que moverlos. Cada movimiento es más escritura en sitio, más posibilidades de mitad.
+3. **No dejas rastro de orden.** "¿Qué cambió primero? ¿Qué es lo último válido?" Sin un historial, no hay *redo*, no hay *undo*, no hay forma de "arrancar de nuevo" desde algo que se sabe bueno.
+
+La conclusión: **necesitamos una escritura que nunca pise lo que ya está**. Esa es exactamente la propiedad del log append-only.
+
+## 10.6 Solución evolucionada
+
+La idea tiene décadas — es el corazón de la recuperación transaccional que Bernstein, Hadzilacos y Goodman formalizaron en 1987 (los *redo/undo logs*) y que Gray ligó al write-ahead log desde 1981. Es esta:
+
+**Cuando algo cambia, no busques dónde vivía y pisa: encadena al final del fichero un registro completo del cambio.** Cada registro se **enmarca** (le decimos de antemano cuántos bytes mide) y se **sella** (le colgamos un checksum). Así:
+
+1. Para añadir: `append(record)` — escribes los bytes al final. El fichero crece, no se pisa nada.
+2. Para leer: caminas **siguiendo los length-prefix**, sin escanear contenido.
+3. Para detectar un crash: verificas el **CRC32** de cada registro; si no cuadra, está a medias.
+
+El layout exacto de un registro, el mismo que vas a ver reflejado en el código, es:
+
+```
+[record_len: u32 LE]   ← cuántos bytes cubre TODO lo que sigue (framing)
+[kind: u8]             ← el tipo: 1 PutNode, 2 PutEdge, 3 DeleteNode, 4 DeleteEdge, 5 Commit
+[id: u32 LE]           ← el id del nodo/arista (u32 estable, cap. 3 Vol. I)
+[payload_len: u32 LE]  ← cuántos bytes de payload
+[payload bytes...]     ← el contenido (aquí, meramente conceptual)
+[crc32: u32 LE]        ← el «cubre-roñoso»: verifica kind||id||payload_len||payload
+```
+
+Fíjate en dos decisiones finas del framing:
+
+- **`record_len` NO cuenta sobre el payload:** cuenta sobre el "inner" (todo lo que sigue al propio prefijo de 4 bytes). Así el iterador sabe exactamente cuánto saltar (`pos += 4 + inner_len`).
+- **El CRC cubre `kind || id || payload_len || payload`, NO el `record_len`.** El prefijo de longitud es la frontera: si un byte del prefijo se corrompe, la lectura ya falla por `truncated` (o el CRC del registro siguiente lo atrapa). Cubrir el prefijo también valdría, pero es cómputo añadido para casi nada.
+
+Y el formato es **little-endian** — igual que el capítulo 9. El log entero se edifica sobre `encode_u32_le`/`decode_u32_le`: una sola convención endian para todo el motor.
+
+## 10.7 Código completo ejecutable
+
+El código vive en `liradb-workspace/crates/vol2-liradb/src/cap10_append_only.rs`. Lo leemos por partes, porque cada línea tiene un porqué.
+
+### El tipo de registro: `RecordKind` y `LogRecord`
+
+```rust
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RecordKind {
+    PutNode = 1,    // insert/update de un nodo
+    PutEdge = 2,    // insert/update de una arista
+    DeleteNode = 3,
+    DeleteEdge = 4,
+    Commit = 5,     // commit point (checkpoint para recovery)
+}
+```
+
+Cuatro tags de escritura más un `Commit`. Este enum es **la semilla deliberada** de lo que el capítulo 27 llamará `Operacion`. Fíjate en el nombre del tipo y en el orden de los tags: no es casual que PutNode/PutEdge/DeleteNode/DeleteEdge mapeen 1-1 a las variantes de la `Operacion` del capítulo 27. Se planta ahora el shape para que, cuando el capítulo 28 serialice el *buffer* de operaciones de una transacción al **WAL**, lo haga **sin reinterpretar** — el comentario del propio `cap28_wal.rs` lo declara explícito: *«la semilla era deliberada»* (línea 33) y *«los tags 1-4 replican el orden del `RecordKind` del cap. 10»* (línea 402).
+
+El registro en memoria:
+
+```rust
+pub struct LogRecord {
+    pub kind: RecordKind,
+    pub id: u32,
+    pub payload: Vec<u8>,
+}
+```
+
+`payload` aquí es un `Vec<u8>` conceptual, no un `Value` ni un `Node`: en capítulo 10 todavía no hay transacciones. El capítulo 27 llenará ese payload con la `Operacion` completa.
+
+### El formato: `encode_log_record` y `decode_log_record`
+
+```rust
+pub fn encode_log_record(rec: &LogRecord) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.push(rec.kind as u8);
+    body.extend_from_slice(&encode_u32_le(rec.id));
+    body.extend_from_slice(&encode_u32_le(rec.payload.len() as u32));
+    body.extend_from_slice(&rec.payload);
+
+    let crc = crc32_simple(&body);
+    let mut inner = body;
+    inner.extend_from_slice(&encode_u32_le(crc));
+
+    let len_prefix = encode_u32_le(inner.len() as u32);
+    let mut out = Vec::with_capacity(4 + inner.len());
+    out.extend_from_slice(&len_prefix);
+    out.extend(inner);
+    out
+}
+```
+
+El `cuerpo` (kind + id + payload_len + payload) se convierte en el "inner" añadiéndole el CRC; y el inner se abre con el length-prefix. La decodificación es la parte crítica y la más defensiva:
+
+```rust
+pub fn decode_log_record(bytes: &[u8]) -> Result<(LogRecord, &[u8]), String> {
+    if bytes.len() < 17 { return Err(format!("record: need at least 17 bytes, have {}.", bytes.len())); }
+    let inner_len = decode_u32_le(bytes[..4].try_into().unwrap()) as usize;
+    if bytes.len() < 4 + inner_len { return Err(format!("record: truncated ...")); }
+    let inner = &bytes[4..4 + inner_len];
+    // ... verificar CRC sobre `body` (inner sin los 4 de CRC) ...
+    // ... parsear kind / id / payload_len / payload con comprobaciones en cada paso ...
+    Ok((LogRecord { .. }, &bytes[4 + inner_len..]))
+}
+```
+
+Tres comprobaciones defensivas obligatorias: el mínimo de 17 bytes, `bytes.len() < 4 + inner_len` (nada de `slice` fuera de rango -> `panic`), y `body.len() < 9 + payload_len`. Siempre devolvemos `Result`, nunca datos a medias "como si fueran buenos". Esto es la **lectura estricta**: cuando pides un registro concreto y está corrupto, lo sabes.
+
+### El CRC: `crc32_simple`
+
+```rust
+pub fn crc32_simple(bytes: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &b in bytes {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            let mask = if crc & 1 != 0 { 0xEDB8_8320 } else { 0 };
+            crc = (crc >> 1) ^ mask;
+        }
+    }
+    crc ^ 0xFFFF_FFFF
+}
+```
+
+CRC32 del **polinomio IEEE 802.3** (`0xEDB8_8320`), el estándar: lo usan Ethernet, zlib y la mayoría de formatos de red/fs. La versión aquí es didáctica — O(n) por byte, sin tabla de 256 entradas, sin dependencias. El banner lo confiesa: *«Para producción usaríamos `crc32fast`»*. Y los tests sujetan el algoritmo a los **valores canónicos del estándar**: `crc32("")` debe dar `0`, y `crc32("a")` debe dar `0xE8B7BE43`. Si tu implementación diera otra cosa, no es que "funcione de otra forma": es que no es CRC32 interoperable. (En un CPU de verdad habría una instrucción CRC32-C; la mayoría de las implementaciones de producción la usan.)
+
+### El log y su iterador de recuperación
+
+```rust
+pub struct AppendOnlyLog { bytes: Vec<u8>, count: usize }
+
+pub fn append(&mut self, rec: &LogRecord) -> usize {
+    let encoded = encode_log_record(rec);
+    let offset = self.bytes.len();
+    self.bytes.extend_from_slice(&encoded);   // APPEND: no se pisa nada
+    self.count += 1;
+    offset
+}
+```
+
+En RAM, el "disco" es un `Vec<u8>` y los registros se encadenan por length-prefix. El comentario del struct lo deja claro: *«En producción, el 'disco' sería un `File` con `O_APPEND`»*. El `O_APPEND` del sistema operativo es exactamente esta garantía: escribes al final, que el SO te lo promete.
+
+Y ahora la pieza que es **literalmente la semilla del WAL del capítulo 29**:
+
+```rust
+fn next(&mut self) -> Option<Self::Item> {
+    if self.pos >= self.bytes.len() { return None; }
+    match decode_log_record(&self.bytes[self.pos..]) {
+        Ok((rec, rest)) => { self.pos = self.bytes.len() - rest.len(); Some(rec) }
+        Err(_) => None,          // ← PARA LIMPIO: descarta la cola corrupta
+    }
+}
+```
+
+Contraste deliberado de dos filosofías de lectura:
+
+- **`decode_log_record` es ESTRICTA**: ante corrupción devuelve `Err` (truncated, crc mismatch, unknown kind). Cuando NECESITAS un registro concreto, la corrupción es un evento que debe saberse.
+- **`LogIterator` es la ITERACIÓN DE RECUPERACIÓN**: ante el primer error devuelve `None` y **para**. Entrega el prefijo íntegro y descarta la cola ilegible. En un corte de luz no quieres que la recuperación *falle* porque el último registro esté a medias: quieres que rescate todo lo válido y pare ahí.
+
+Eso es el comportamiento exacto del WAL del capítulo 29: *leer hasta el prefijo íntegro y descartar la cola*. El `cap28_wal.rs` lo explica con las mismas palabras (líneas 157-160: «`CrcInvalido` ... se LEE HASTA AQUÍ y se descarta la cola; el iterador para limpio, `decodificar_wal` lo grita»).
+
+Para simular el crash en RAM sin fichero, hay `truncate_to`:
+
+```rust
+pub fn truncate_to(&mut self, len: usize) { self.bytes.truncate(len); }
+```
+
+Es el análogo de un corte de luz a mitad de escritura: cortas el final del `Vec`. Con eso se testea la promesa central del capítulo.
+
+## 10.8 Prueba de fuego
+
+La prueba de fuego no es "los tests pasan" — es **"el prefijo sobrevive al crash"**. Veamos los seis tests de `mod tests_log`:
+
+```rust
+// Valores canónicos del estándar CRC32:
+assert_eq!(crc32_simple(b""), 0);
+assert_eq!(crc32_simple(b"a"), 0xE8B7_BE43);
+
+// Roundtrip: codificar → decodificar devuelve el mismísimo registro:
+let rec = LogRecord { kind: RecordKind::PutNode, id: 42, payload: vec![1,2,3,4] };
+let encoded = encode_log_record(&rec);
+let (decoded, rest) = decode_log_record(&encoded).unwrap();
+assert_eq!(decoded, rec);
+assert!(rest.is_empty());
+
+// Un único byte corrupto (el CRC) se DETECTA:
+let mut encoded = encode_log_record(&rec);
+encoded[encoded.len()-1] ^= 0xFF;
+assert!(decode_log_record(&encoded).is_err());
+
+// CRASH: truncar el log a la mitad y comprobar que el prefijo se lee:
+let mid = log.len() / 2;
+log.truncate_to(mid);
+let records: Vec<LogRecord> = log.iter().collect();
+assert!(!records.is_empty());      // al menos un registro íntegro antes del corte
+for r in &records {
+    assert_eq!(r.kind, RecordKind::PutNode);   // y todos son válidos
+}
+```
+
+Los tres casos de fallo encapsulan las tres promesas del capítulo: **roundtrip fiel, corrupción detectada, prefijo íntegro rescado**. Si este capítulo se te olvidara, tu LiraDB escribiría los cambios pisando el fichero y — tras un corte de luz — leería un estado a medio cambiar sin saberlo. Ese es el síntoma: **corrupción silenciosa e irreparable tras un crash**.
+
+## 10.9 Qué hemos sacrificado
+
+Toda estrategia tiene un precio. El append-only no es gratis:
+
+1. **Desgaste de disco**: el fichero **solo crece**. Cada cambio añade bytes y nadie borra los antiguos. Si no compactas, un millón de `PutNode` sobre el mismo nodo ocupan un millón de registros. La respuesta (compactar, checkpoint, truncar el prefijo ya durable) es material del capítulo 16 y del capítulo 29. Este cap. la deja **documentada como deuda a saldar**, no la resuelve.
+2. **Releer es caro**: para encontrar el estado "actual" de un dato, un log puro obliga a recorrerlo desde el principio y quedarse con la última versión O(n). Por eso el log NO es el formato final de datos: es la pieza *de durabilidad*. Las páginas del capítulo 11 y el pager del capítulo 12 dan el acceso directo; el log da la crash-safety. Son dos formatos complementarios.
+3. **Sobrecarga por registro**: length-prefix + kind + id + payload_len + CRC ≈ 17 bytes de envoltura por registro. Para cambios diminutos es proporcionalmente mucho. Es el precio de poder leer y verificar cada uno de forma independiente.
+4. **Sin trueque de espacio**: el CRC detecta, pero no corrige (para corregir haría falta redundancia de *datos*, tipo RAID — no lo necesitas aquí).
+
+La elección de fondo es Wisdom del capítulo: un log plano, sin índices, **vale más que cualquier layout sofisticado** que aún no puede garantizar consistencia ante un crash. La simplicidad y la crash-safety pesan más — y el rendimiento del acceso directo lo aportarán las páginas del capítulo 11.
+
+## 10.10 Cómo lo hace una BBDD real
+
+El log por escritura anticipada es el estándar de hecho en casi todas:
+
+- **Jim Gray** (1978-1981) formalizó el **write-ahead log** y la idea de que la durabilidad se apoya en escribir el cambio al log *antes* de tocar los datos. Su trabajo con el "long lifetime" de los datos y las formas de fallo de los sistemas es la base de todo.
+- **Bernstein, Hadzilacos y Goodman** (1987), en *Concurrency Control and Recovery in Database Systems*, describen los **redo/undo logs**: un registro del cambio se puede re-aplicar (redo, tras un crash a mitad de commit) o deshacer (undo, si la transacción abortó). El capítulo 29 (ARIES) los combina.
+- **SQLite** es el ejemplo más cercano y didáctico: tiene **dos modos**. El *rollback journal* guarda la imagen antigua ANTES de cambiar la página para poder deshacer. El **WAL mode** guarda los cambios en un fichero separado append-only y *aplica* al fichero principal en un *checkpoint* (`wal_checkpoint`) — exactamente la misma separación de conceptos que aquí: un log que crece y un "lavado" posterior que integra.
+- El **CRC32** (IEEE 802.3) es el mismo checksum que usa Ethernet y zlib; en producción LiraDB usaría `crc32fast` (tablas + SIMD), no la versión de juguete — pero el formato en disco sería **interoperable** porque el polinomio es el estándar.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: ¿por qué `record_len` cubre el "inner" (todo excepto el propio prefijo) y no solo el payload? ¿Qué pasaría si el iterador avanzara con `pos += 4 + payload_len + crc` olvidando el kind y el id?
+- *Intermedio*: extiende el formato para que el payload lleve un `Value` real (cap. 9): añade un campo `tipo_payload` para distinguir nodo/arista. ¿Cómo cambia el layout y qué pisa ahora el CRC?
+- *Experto*: implementa `log_a_estado(log)` que recorra el `AppendOnlyLog` y devuelva el "estado final" aplicando los `PutNode`/`DeleteNode`/`PutEdge`/`DeleteEdge` en orden, ignorando la cola corrupta. Es el ancestro del *redo* del capítulo 28.
+
+## 10.11 Lo que te llevas
+
+- La **página del barco**: apéndiza cada cambio al final; no reescribes nunca.
+- El **layout**: `[record_len][kind][id][payload_len][payload][crc32]`, little-endian del cap. 9.
+- El log es **inmune a las escrituras a medias**: nunca pisa, y el CRC detecta la cola cortada.
+- **Length-prefix > end-marker** y **CRC32 > checksum de 1 byte**.
+- El **germen del WAL**: same framing y tags del cap. 10 se reutilizan en el cap. 28.
+
+## 10.12 Ojo, cuidado con…
+
+- **Tratar el log como un fichero de datos editable**: no muevas ni borres bytes del medio "para compactar". La compactación es un lavado aparte (caps. 16 y 29), no una edición in situ.
+- **Calcular el CRC sobre el prefijo**: el CRC cubre solo `kind||id||payload_len||payload`. Mantén el contrato del módulo, o el verificado no cuadrará.
+- **`to_ne_bytes` en vez de `encode_u32_le`**: funciona en x86 y corrompe todo en big-endian. El log es formato de disco: explícito, LE.
+- **No comprobar `bytes.len() < mínimo`**: un fichero truncado a 5 bytes paniquea en `bytes[4..]`. La validación defensiva no es opcional.
+- **Usar `decode_log_record` (estricto) donde debes usar `LogIterator` (recuperación)**: con un solo byte corrupto abortarías la recuperación entera.
+
+## 10.13 Pin de batalla
+
+> *«Un log append-only no hace las escrituras más fuertes: las hace imposibles de hacer mal. El resto —detección, recuperación, durabilidad— es consecuencia.»*
+
+## 10.14 Si solo lees 30 segundos
+
+Una base de datos no reescribe los datos en sitio: para cada cambio **apéndiza un registro nuevo al final** de un log append-only. Cada registro va **enmarcado** (un `record_len` de 4 bytes dice cuánto mide) y **sellado** (un `CRC32` sobre su contenido). Como nunca pisa lo ya escrito, un corte de luz solo deja un **prefijo íntegro** más una cola corrupta que el CRC detecta: el iterador lee el prefijo y **para limpio**. Ese framing y esos tags son la semilla exacta del **WAL** del capítulo 28.
+
+## 10.15 Una historia pequeña
+
+El día que arrancamos LiraDB con "guardar en sitio", Ana añadió 200 aristas y se fue a comer. Al volver, se había ido la luz a mitad del *segundo* y el fichero tenía un aspecto perfectamente válido — con aristas a medio escribir que parecían reales. No había ningún error: el programa leía, sonreía y devolvía silencio-tratado-de-datos. Tardamos la tarde en darnos cuenta de que el fallo no estaba en el algoritmo, sino en que **habíamos pisado lo bueno** y ya no existía forma de saber cuál era. El append-only fue la respuesta: ahora, cuando la luz se va, el fichero se ve *exactamente* correcto hasta el último registro íntegro, y el resto grita. No porque seamos más listos: porque ya no pisamos nada.
+
+## Ejercicios resueltos
+
+**1. ¿Cuántos bytes mide un `PutNode` con `id=7` y `payload=[1,2,3]`?**
+
+Layout: `record_len` (4) + kind (1) + id (4) + payload_len (4) + payload (3) + CRC (4) = **20 bytes**. El "inner" (lo que sigue al `record_len`) mide 1+4+4+3+4 = 16; por tanto `record_len` = 16, y el total es 4 + 16 = 20. Tras escribir `encode_u32_le(7)` (los 4 bytes `07 00 00 00` en LE) y el `payload_len` `03 00 00 00`, el CRC se calcula sobre esos 1+4+4+3 = 12 bytes de cuerpo. Puedes comprobarlo con `encode_log_record(...).len()`.
+
+**2. ¿Por qué `LogIterator::next` devuelve `None` ante un error, y no `Err`?**
+
+Porque un iterador en Rust `Option`/`Iterator` no propaga errores sin complicar el trait; y porque la semántica `None` es exactamente la correcta para la recuperación: "no hay más registros *válidos*". Ante una cola corrupta (un crash), quieres entregar los registros íntegros y **parar** — no hacer fallar la recuperación entera. Si necesitas saber *que* hubo corrupción, usas `decode_log_record` directo (estricto). Son dos herramientas con dos contratos.
+
+## Ejercicios propuestos
+
+**Esencial.** Codifica a mano, sin mirar el módulo, un `LogRecord` `PutNode` con `id=7`, `payload=[1,2,3]`: escribe la secuencia exacta de bytes (kind, id LE, payload_len LE, payload, y dónde iría el CRC) y verifica con `encode_log_record` que tu layout mide 20 bytes. *(Retrieval: re-construir de memoria el layout del cap. 10. Spacing: re-usa `encode_u32_le` del cap. 9.)*
+
+**Intermedio (mezcla caps. 9 y 10).** Como payload, usa un `Value::Float(PI)` codificado con `encode_value` del cap. 9 (8 bytes de `f64` LE). Explica qué pisa el CRC (los 17 bytes de kind+id+payload_len+payload, ahora con 8 bytes de float) y qué pasa si corrompes el byte de la parte exponencial: en `decode_log_record` (Err crc mismatch) vs en `LogIterator` (para y no entrega la cola). Verifica con `log_record_corrupto_falla` y `log_recovery_desde_offset`.
+
+**Experto.** Implementa `crcer_entero(log: &AppendOnlyLog) -> u32` (un CRC32 de toda la secuencia `log.as_bytes()`) y `truncar_sin_corromper(log, target_len)`: trunca SOLO a un límite de registro completo (un offset que sea exactamente `4 + inner_len` acumulado), nunca a mitad de un record. Escribe un test que pruebe que tras `truncar_sin_corromper` el iterador devuelve N registros completos y que un `truncate_to` a mitad de record deja `iter()` cortando limpio.
+
+## Para profundizar
+
+- **Jim Gray, "The Transaction Concept: Virtues and Limitations", 1981** — el WAL y por qué los logs son la pieza de durabilidad de las transacciones.
+- **Bernstein, Hadzilacos & Goodman, "Concurrency Control and Recovery in Database Systems", 1987** — redo/undo logs y la teoría de la recuperación, formal.
+- **Documentación oficial de SQLite, "Write-Ahead Logging"** — `wal_checkpoint`, WAL mode vs rollback journal: el mismo concepto visto en un motor de verdad, con el código a un clic.
+- **"Designing Data-Intensive Applications" (Martin Kleppmann), cap. 3** — por qué los logs y el append-only son ubicuos (desde mensajería hasta SSTables, el bisado con el cap. 15 de LiraDB).
+- **`crc32fast` (crate de Rust)** — la implementación de producción del CRC32 IEEE 802.3 con tablas y SIMD; mira su fuente para ver por qué la versión de juguete del cap. es solo didáctica.
+
+## Mini-diálogo: en guardia nocturna
+
+> — Espera. ¿Todo este capítulo es "escribir al final de un fichero"? ¿Tan simple?
+>
+> — Es tan barato de entender como caro de descubrir. Gray tardó años en darse cuenta de que la durabilidad no es hacer las escrituras *imponentes*, es hacerlas *irreversibles en la dirección correcta*. Nunca piso lo escrito.
+>
+> — ¿Y el CRC? ¿Es ese de verdad "el que no se calla"?
+>
+> — Detecta el byte que giró sin pedir permiso. Una cola a medias ya no es "datos que parecen válidos": es ruido que el iterador descarta sin drama. Con esto, un corte de luz ya no asusta: nos corta el final, y el final sabemos leerlo.
+>
+> — ¿Y esto qué pinta en una base de datos de grafos?
+>
+> — Es la semilla más chiquitita del WAL. Dentro de unos capítulos, cuando hablemos de transacciones y de recuperación, cada registro que escribimos aquí se volverá un `record` del *write-ahead log* con un LSN y un id de transacción. Y el formato ya estará plantado. La semilla se siembra antes de lo que parece.
+
+---
+
+*(Próximo capítulo: 11 — Páginas, bloques y slotted pages. Aquí persistimos cambio a cambio; ahora veremos en QUÉ UNIDAD se lee y escribe el fichero para no volvernos O(n) — la página de tamaño fijo que abre la Parte III, el motor de almacenamiento.)*
 # Capítulo 11 — Páginas, bloques y slotted pages
 
 > *«El disco no lee bytes. El disco lee bloques. Todo lo demás es una mentira piadosa que nos contamos para dormir tranquilos.»*
