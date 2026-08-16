@@ -214,6 +214,33 @@
 //!   rotación por tamaño. [`informe_acid_post_recovery`] re-valora ACID:
 //!   A y D siguen Parcial pero avanzan (A: falta el before-image; D: el
 //!   store de datos aún no tiene checkpoint independiente — cap. 37).
+//! - [`Ts`] / [`VersionNode`] / [`VersionEdge`] / [`MvccStore`] /
+//!   [`NivelAislamiento`] / [`Recurso`] / [`GrafoEspera`] /
+//!   [`informe_acid_post_mvcc`] —
+//!   **Snapshots y concurrencia (MVCC limitado)** (cap 30, CIERRA la Parte VI):
+//!   la capa de versionado que resuelve la anomalía histórica del Vol.II
+//!   — el modelo «un único escritor por el borrow checker» del cap. 27
+//!   impedía que DOS lectores leyeran a la vez sin bloquear al escritor.
+//!   `MvccStore` mantiene, POR ELEMENTO, una cadena de versiones
+//!   `ts_begin` / `ts_end?` / valor; las lecturas con snapshot
+//!   (`leer_nodo`, `leer_arista`, `iter_nodos`, `iter_aristas`) clonan
+//!   la versión visible al `ts` del lector y NO bloquean al escritor
+//!   (`&self` + clonar, sin locks). El commit asigna un `ts` nuevo,
+//!   RETIRA la versión actual si la había, APPENDIZA la nueva y aplica
+//!   al `inner` (delete-then-put para soportar sobreescritura sobre el
+//!   `MemoryStore` de inserción estricta del cap. 8). `gc(hasta)` purga
+//!   versiones retiradas cuyo `ts_end < hasta`. `NivelAislamiento`
+//!   cierra el vocabulario abierto por el `Anomalia` del cap. 27:
+//!   `Instantanea` (el de este capítulo) PROHÍBE lectura sucia y
+//!   actualización perdida — y DEJA PASAR write skew (la frontera que
+//!   Serializable SI con predicate locks cerraría). `GrafoEspera`
+//!   construye la estructura del wait-for graph para deadlocks
+//!   (detección O(V+E) por DFS con colores): aunque hoy no pueden
+//!   ocurrir (un único escritor), la pieza existe como anzuelo para
+//!   caps. futuros de concurrencia real. [`informe_acid_post_mvcc`]
+//!   re-valora ACID: I avanza significativamente (lectura sucia y
+//!   actualización perdida pasan a estar prohibidas) aunque write skew
+//!   sigue pasando.
 //!
 //! Organización del crate: cada capítulo vive en su propio módulo de origen —
 //! `cap07_modelo`, `cap08_graph_store`, `cap09_encoding`, `cap10_append_only`,
@@ -222,7 +249,7 @@
 //! `cap18_lexer_parser`, `cap19_plan_logico`, `cap20_volcano`,
 //! `cap21_optimizador`, `cap22_caminos_minimos`, `cap23_a_estrella`,
 //! `cap24_centralidad`, `cap25_comunidades`, `cap26_proyeccion`,
-//! `cap27_transacciones`, `cap28_wal` y `cap29_recuperacion` — y este
+//! `cap27_transacciones`, `cap28_wal`, `cap29_recuperacion` y `cap30_mvcc` — y este
 //! `lib.rs` es sólo el punto de entrada: declara los módulos y los re-exporta
 //! con `pub use capNN::*` para mantener una API pública plana
 //! (`vol2_liradb::Node`, `vol2_liradb::run`, ...). Cada módulo viaja con sus
@@ -251,6 +278,7 @@ mod cap26_proyeccion;
 mod cap27_transacciones;
 mod cap28_wal;
 mod cap29_recuperacion;
+mod cap30_mvcc;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -275,3 +303,4 @@ pub use cap26_proyeccion::*;
 pub use cap27_transacciones::*;
 pub use cap28_wal::*;
 pub use cap29_recuperacion::*;
+pub use cap30_mvcc::*;

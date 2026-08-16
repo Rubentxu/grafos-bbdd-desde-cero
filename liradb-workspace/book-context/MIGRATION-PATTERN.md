@@ -511,6 +511,91 @@ ARIES (Mohan et al. 1992): **Analysis-Redo-Undo**.
 
 ---
 
+## 35. Vol.II — Cap 30 (Snapshots y concurrencia — MVCC limitado; CIERRA la Parte VI)
+
+**Estado**: ALL_GREEN (707 → 728 tests workspace: +21 del cap 30, sin doctests).
+**Módulo**: `cap30_mvcc.rs` (~1.050 líneas). Sin crates externas. Ningún toque a
+caps anteriores: la MVCC es una CAPA sobre el `MemoryStore` del cap. 8 (hexagonal) y
+sobre la `Operacion` del cap. 27 — reutiliza sin duplicar. La validación de buffers
+del cap. 27 (`validar_buffer`) NO se usa porque asume inserción estricta; el cap. 30
+implementa `validar_mvcc` propia con semántica de SOBREESCRITURA.
+
+**Contexto**: el cap. 27 dejó el modelo «múltiples lectores, un único escritor» ejecutado
+por el borrow checker — no había concurrencia posible. Los caps. 28-29 resolvieron la
+durabilidad y la recuperación; pero el aislamiento REAL (varios lectores leyendo MIENTRAS
+un escritor escribe, sin lecturas sucias) exige algo distinto: una forma de que los lectores
+lean un ESTADO CONSISTENTE sin bloquear al escritor. Ése algo es MVCC: las escrituras
+crean NUEVAS VERSIONES en lugar de sobreescribir; los lectores toman una FOTO en un
+instante lógico y leen sólo las versiones visibles a esa foto.
+
+**Decisiones**:
+1. **Versionado por elemento**: cada nodo/arista lleva una cadena `VersionNode`/`VersionEdge`
+   `{ts_begin, ts_end?, valor}` ordenada por `ts_begin` ASC. La última entrada es la versión
+   actual (su `ts_end = None` hasta que otra la retire). Las escrituras RETIRAN la actual
+   (ponen su `ts_end`) y APPENDIZAN la nueva; los deletes RETIRAN la actual sin appendizar
+   (la ausencia es el estado). El `inner` (MemoryStore) refleja siempre la versión actual:
+   es el «espejo material» para queries no-MVCC.
+2. **Timestamp lógico `Ts = u64`**, asignado por `MvccStore::siguiente_ts()` al hacer commit.
+   No mide tiempo real: es el ORDEN de las escrituras. Un único mecanismo de asignación
+   (los `ts` no se reutilizan — la monotonicidad es por construcción).
+3. **Lecturas por snapshot SIN bloqueos**: `leer_nodo(id, ts)`, `leer_arista`, `iter_nodos`,
+   `iter_aristas` toman `&self` y CLONAN la versión visible al `ts` (la cadena es el cerrojo,
+   no un lock manager). `version_visible_node`/`edge`: el máximo `ts_begin ≤ ts` con
+   `ts_end > ts` o `ts_end = None` (recorrido inverso del vector, O(1) en la práctica
+   porque la cadena es append-only). La consistencia del snapshot es POR CONSTRUCCIÓN:
+   no hay un punto en el que el grafo «cambie» a mitad del recorrido.
+4. **Commit con UN SOLO timestamp por lote**: asigna el siguiente `ts`, RETIRA las
+   versiones actuales que toque, APPENDIZA las nuevas y APLICA al inner. La validación
+   (`validar_mvcc`) corre contra el inner + simulación del propio buffer y PERMITE
+   sobreescrituras (PutNode de un id existente es válido: crea nueva versión). Para
+   aplicar al inner (MemoryStore es de inserción estricta, cap. 8), el commit usa
+   `delete-then-put` en el inner — la cadena ya hizo su trabajo de versionado.
+5. **Garbage collection**: `gc(hasta)` purga versiones retiradas con `ts_end < hasta`
+   (ningún snapshot con `ts ≥ hasta` las puede ver — los `ts` son monótonos). Cuando una
+   cadena queda vacía, su entrada del mapa se elimina también.
+6. **Niveles de aislamiento como vocabulario**: `NivelAislamiento::LecturaSucia`/`Instantanea`/
+   `Serializable` con método `prohibe()`. Instantanea (el de este capítulo) PROHÍBE lectura
+   sucia y actualización perdida — y DEJA PASAR write skew (la frontera que Serializable SI
+   con predicate locks cerraría, queda documentada). Es el vocabulario que el cap. 27
+   abrió con `Anomalia::LecturaSucia`/`ActualizacionPerdida`.
+7. **Grafo de espera para deadlocks**: `GrafoEspera` con aristas `(TxIdLocal, TxIdLocal,
+   Recurso)` y `detectar_ciclo` por DFS con 3 colores (blanco/gris/negro) en O(V+E). Aunque
+   hoy no pueden ocurrir deadlocks (`&mut self` impide concurrencia de escritores), la pieza
+   existe como anzuelo para caps. futuros.
+8. **informe_acid_post_mvcc() re-valora**: I avanza significativamente (lectura sucia y
+   actualización perdida pasan a estar prohibidas por Instantanea) — pero write skew sigue
+   pasando (closer = 40). A sigue Parcial (closer = 31), C y D sin cambios.
+
+**Bugs propios corregidos durante la calibración** (lecciones):
+| Síntoma | Causa | Fix |
+|---|---|---|
+| 6 tests fallaban con `Validacion(DuplicateNode)` | `validar_buffer` del cap. 27 rechaza re-PutNode de id existente; la MVCC SOBREESCRIBE (legal) | validar_mvcc propia que permite la sobreescritura |
+| `commit` rechazaba buffer vacío en un test de validación | el validador iteraba pero no consideraba PutNode de ids nuevos | registrar PutNode en `sim_creados_nodos` para que PutEdges posteriores vean los extremos |
+| `leer_nodo(2, mv.reloj())` devolvía None | `mv.reloj()` es el SIGUIENTE ts a asignar, NO una snapshot válida | capturar `resumen.ts_asignado` o el ts del commit inicial |
+| chain de DeleteNode quedaba con length 1 (no 2) | el delete en MVCC RETIRA la versión actual sin appendizar — la ausencia es el estado | assertar `chain.len() == 1` y `chain[0].ts_end == Some(ts_despues)` |
+| clippy `unnecessary_map_or` | `ts_end.map_or(true, ...)` puede ser `is_none_or(...)` | edición trivial |
+| `let (mv, _) = store_basico()` + `mv.commit(...)` | `mv` no era `mut` para aceptar `commit(&mut self)` | `let (mut mv, _) = ...` |
+
+**Lecciones**:
+1. La MVCC es una CAPA hexagonal sobre el `GraphStore`: no toca el cap. 8, sólo lo
+   CONSUME. Esto permite cambiar el backend (FilePager+CSR del cap. 14, etc.) sin
+   modificar el versionado.
+2. La semántica de SOBREESCRITURA distingue la validación MVCC de la del cap. 27:
+   `validar_buffer` (cap. 27) asume inserción estricta (DuplicateNode = error);
+   `validar_mvcc` (cap. 30) permite la sobreescritura (crea nueva versión).
+   Reutilizar el validador del cap. 27 hubiera exigido cambiar el contrato de
+   MemoryStore — un error de fronteras. Validación propia es la decisión correcta.
+3. El `&mut self` del MvccStore es la ÚNICA escritura: lectores y escritor NO se
+   bloquean entre sí porque los lectores toman `&self` y clonan. Es el patrón que
+   convierte el «un único escritor por el borrow checker» en «N lectores concurrentes
+   con un escritor». El cap. 30 quita la única traba al paralelismo del Vol.II.
+4. Write skew queda abierto: la MVCC en Instantanea lo permite. Serializable SI
+   (PostgreSQL 9.1, CockroachDB, FoundationDB) lo cierra con predicate locks sobre
+   los predicados leídos — fuera del alcance del Vol.II por ahora (es trabajo de
+   caps. futuros de la Parte VII-VIII).
+
+---
+
 ## 13. Métricas de la Fase M3c-batch-5 (parcial)
 
 | Métrica | Valor |
