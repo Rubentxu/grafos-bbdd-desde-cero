@@ -5537,7 +5537,1803 @@ Dos razones que hay que separar. Primero, no cada Dijkstra lee las 11: el origen
 ---
 
 *(Próximo capítulo: 27 — Qué significa una transacción. Tu proyección es la foto de un instante… ¿pero quién garantiza que ese instante fue coherente, y que dos escritores no te rompan el store mientras analizas su foto? La Parte VI — ACID, WAL, recuperación — convierte la fe en contrato. Y más adelante, en el Vol.III, el cap. 51 montará GraphRAG sobre las piernas de éste: PPR multi-hop sobre proyecciones y fronteras de una base de conocimiento que no cabe en memoria.)*
-# Apéndice 0 — Manual de estilo unificado
+# Capítulo 27 — Qué significa una transacción (ACID)
+
+> *«"Commit" no es un botón: es una promesa. Y mientras el código no pueda distinguir un commit confirmado de un apply cortado, la durabilidad es un título que adorna un artefacto que todavía no la ha ganado.»*
+
+## 27.0 La anécdota de la esquina
+
+En junio de 1981, Jim Gray — por entonces en Tandem Computers, en Cupertino, California — presentó un paper invitado en la conferencia VLDB titulado «The Transaction Concept: Virtues and Limitations». En las primeras líneas resumía en una frase lo que llevaba años cocinándose en IBM Research: *una transacción es una transformación de estado que tiene tres propiedades: atomicidad (o todo o nada), durabilidad (los efectos sobreviven a los fallos) y consistencia (una transformación correcta)*. Y para ilustrar por qué el concepto importaba, no citaba ningún teorema: citaba **vuelos de avión**, transferencias electrónicas de fondos y alquileres de coches — esos sistemas donde una reserva que se queda «a medias» es un desastre.
+
+La génesis era más antigua. En System R, el prototipo relacional de IBM de mediados de los setenta, ya corría un Recovery Manager — documentado en 1981 en «The Recovery Manager of the System R Database Manager» (Gray y coautores) — y los *predicate locks* de Eswaran, Gray, Lorie y Traiger ya hablaban de consistencia e aislamiento en 1976. Pero faltaba la palabra. El acrónimo **ACID** no lo acuñó Gray: fue Theo Härder y Andreas Reuter quienes lo consolidaron en 1983, en «Principles of Transaction-Oriented Database Recovery» (ACM Computing Surveys 15(4), pp. 287-317), donde lo llaman el *«ACID principle»*.
+
+Detente en el giro que encierra esta historia: la atomicidad, la consistencia y la durabilidad existían como *problema* antes que como nombre. El nombre llegó después, como pegamento, para que cuatro términos hablasen de un único paradigma. Lo que haremos aquí es lo contrario: **despegar el acrónimo** y preguntar, para LiraDB, qué significa *de verdad* cada letra.
+
+## 27.1 Objetivo
+
+Al terminar este capítulo sabrás **qué es realmente una transacción**, y habrás construido en Rust la primera maquinaria que la representa. Cuatro piezas en `cap27_transacciones.rs`:
+
+1. **`GarantiaAcid` + `NivelGarantia` + `InformeAcid`** — el vocabulario ACID como *tipo* y como *informe ejecutable* que los tests verifican. No es prosa: es un artefacto auditable que dice, de cada letra, hasta dónde llega hoy y qué capítulo la cerrará.
+2. **`Transaccion` — el ciclo de vida `begin → stage* → commit|rollback`** — la transacción como *objeto* que acumula operaciones en un buffer y solo las aplica al commit, validándolas todas de golpe.
+3. **`Operacion`** — la operación de escritura como *dato* (`PutNode/PutEdge/DeleteNode/DeleteEdge`), la pieza que hace posible el staging.
+4. **`autocommit` e `informe_acid`** — que hacen visibles, una como función y otra como reporte, las dos caras de la moneda: el modo por defecto de los capítulos 7-26 era autocommit, y ninguna letra del ACID está completa todavía.
+
+Y la lección que lo vertebra: **la honestidad**. `informe_acid()` te dirá que la A es parcial, que la C es parcial y trivial, que la I es parcial — *por diseño* — y que la D es ninguna. Aprender a decir eso, y a ejecutarlo en tests, es más importante que fingir ACID en un banner.
+
+## 27.2 Problema
+
+LiraDB lleva veintiséis capítulos escribiendo grafos. Mira el modo en que ha escrito desde el capítulo 7: cada `put_node`/`put_edge`/`delete_*` del `GraphStore` (cap. 8) te devuelve su `StoreError` si algo falla... y sigues. Pero fíjate en lo que tienes sembrado sin darte cuenta. Piensa en una arista entre **dos nodos nuevos**, ambos creados en la misma ráfaga:
+
+```rust
+store.put_node(Node::new(0, "A"))?;   // ok
+store.put_node(Node::new(1, "B"))?;   // ok
+store.put_edge(Edge::new(0, 0, 1, "KNOWS"))?;  // ok… ¿siempre?
+```
+
+Hoy, si la primera falla, las demás ni se intentan — pero nada te *agrupó* esas tres como una unidad. Cada `put_*` es su propia transacción: lo que una base de datos real llama **autocommit**. Y el autocommit tiene una debilidad concreta: un *lote* de diez operaciones en el que la quinta falla deja las cuatro anteriores aplicadas. Tu grafo queda **a medias**.
+
+Tres síntomas aparecen:
+
+1. **Un lote de 10 nodos que falla en el 5 deja 4 nodos en el store.** Nadie te pidió eso. Nadie sabe que eran «un lote».
+2. **Dos operaciones relacionadas (arista + sus nodos) no se pueden agrupar** sin que un fallo entremedias las deje huérfanas.
+3. **No sabes ni siquiera qué *es* «lo que pediste».** No tienes vocabulario para decir «esto son cinco operaciones que deben aplicarse juntas, o ninguna».
+
+El problema de fondo: **el store aplica lo que le dices, cuando se lo dices**. No hay una unidad intermedia que te permita decir «reúne esto primero; cuando te diga, aplícalo todo de una vez». Y sin esa unidad, no hay transacción — solo una serie de comandos sueltos.
+
+## 27.3 Modelo mental
+
+Piensa en el **bloc de notas del contable** que solo escribe en el libro mayor cuando firma al final.
+
+El contable tiene dos objetos físicos. Un **libro mayor** — el único con valor legal, donde se pasan a limpio los asientos. Y un **bloc de notas** — desechable, donde *anota* los asientos mientras los revisa. Las reglas son:
+
+- Cada asiento se **anota en el bloc** primero (`stage`). El libro mayor no se toca todavía.
+- Cuando el contable **firma** (`commit`), pasa a limpio el bloc **entero**, en un solo trazo.
+- Si algo del bloc estaba mal — un asiento descuadrado, una fecha imposible — **no firma** y tira el bloc (`OperacionInvalida`). La transacción muere sin escribir nada.
+
+Y hay dos detalles que se parecen sospechosamente a lo que vamos a programar:
+
+- **La puerta del despacho tiene un único cerrojo** (`&mut`). Mientras el bloc está abierto, *nadie* puede tocar el libro mayor — ni otro contable ni un inspector que solo viniera a mirar. No es el resultado de un protocolo sofisticado: es un candado físico en la puerta.
+- Si el contable **muere con el bloc abierto**, su caída *es* el descarte: la transacción muere sin haber escrito nada.
+
+Pero el problema de este capítulo aparece exactamente donde el modelo se rompe: cuándo el contable **está a media firma** — pasando a limpio el bloc — y se le **cae el bolígrafo** (`ApplyFallido`). Los tres primeros asientos ya están en el libro, el cuarto no, y *no hay forma de saber cuánto llegó*. Ese es el hueco que el WAL del cap. 28 cerrará: un bloc con **copia de cada trazo registrada antes de tocar el libro**.
+
+El diagrama del ciclo de vida, con el `&mut` como barra de la puerta:
+
+```
+   &mut store (el cerrojo)
+   │
+   ▼ ┌────────────────────────────────────────────────┐
+begin │  buffer (bloc) = Vec<Operacion>               │
+──►   │  stage(op1); stage(op2); … — NUNCA toca el store │
+      │   stage inválida → se expulsa, la tx sigue viva  │
+      │   commit() → valida TODO →→→ apply → libro mayor │
+      │      (si algo falla: A MEDIAS — cap. 28)         │
+      │   rollback() → descarta buffer (gratis)          │
+      └────────────────────────────────────────────────┘
+```
+
+**El momento ¡ajá!**: *«commit» no es un botón, es una **promesa** — y mientras el código no pueda distinguir un commit confirmado de un apply cortado, la D no existe. Hasta entonces, la A es «o todas o ninguna frente a la validación», no «o todas o ninguna frente al universo». El WAL del cap. 28 cerrará la distancia entre la promesa y el universo.*
+
+## 27.4 Primera solución
+
+La primera solución *ya la tienes y funciona*: es la de los capítulos 7-26. Cada `put_node`/`put_edge`/`delete_*` del `GraphStore` es su propia transacción. El test `autocommit_equivalente_a_la_operacion_directa` lo clava: `store.put_node(n)` a pelo y `autocommit(store, Operacion::PutNode(n))` dejan el **mismo grafo** — `node_count()` y `edge_count()` idénticos. O sea: la forma en que LiraDB ha escrito hasta hoy no es un modo distinto del nuevo mecanismo; es **una transacción de una sola operación**, con el begin y el commit implícitos.
+
+Para escrituras sueltas, es perfecto. El autocommit no es un error: es un caso particular.
+
+## 27.5 Sus límites
+
+El problema no es una escritura suelta. El problema es **agrupar operaciones que dependen unas de otras**. Cuatro límites concretos:
+
+1. **Un lote de 10 operaciones en el que la 5ª falla deja las 4 anteriores aplicadas.** El grafo queda a medias — un estado intermedio que nadie decidió.
+2. **Dos operaciones relacionadas no se pueden agrupar.** Una arista cuyos extremos son dos nodos NUEVOS es válida solo si los tres entran juntos. Con autocommit, un fallo entremedias deja la arista huérfana o los nodos sin conectar — exactamente lo que el staging evitará.
+3. **No hay manera de «deshacer» ni siquiera lo que aún no se aplicó.** Si te equivocas en la operación 3 de 5, ¿revientas las 2 primeras? No hay transacción que descartar; ya escribiste.
+4. **No puedes saber *qué* prometes.** Sin un `InformeAcid`, «tenemos transacciones» es una afirmación sin matices — y el matiz es todo.
+
+Y la pregunta incómoda que plantea el límite: **¿qué significa «a medias»?** Para contestarla con rigor no basta con escribir código; hay que construir el vocabulario para decir *cuánto está completo* cada promesa. Empecemos por ahí.
+
+## 27.6 Solución evolucionada
+
+La evolución tiene dos mitades que se complementan, tal y como manda el contrato del capítulo: **el vocabulario honesto** y **la primera maquinaria**.
+
+**Primera mitad — el vocabulario típado.** La tesis es que el ACID no es un interruptor que la base de datos enciende. Es un conjunto de **cuatro promesas independientes**, cada una con su nivel. Eso exige un tipo de tres valores — `NivelGarantia::Ninguna | Parcial | Completa` — y no un booleano: un bool esconde *cuánto falta*. Y exige que el informe sea un **artefacto ejecutable**: `informe_acid()` devuelve estructura que los tests comparan. Si la documentación prometiera más que el código, los tests lo delatarían.
+
+**Segunda mitad — la transacción como objeto, con staging.** `Transaccion::begin(&mut store)` toma el préstamo exclusivo del store. Las operaciones se **acumulan** como `Operacion` en un `Vec<Operacion>` privado — el buffer. Cada `stage` valida **eager** contra el store *más las operaciones anteriores* (un replay sobre una `Simulacion`): si la operación es inválida, se **expulsa** con `OperacionInvalida{indice, causa}` y la transacción **sigue viva con su prefijo válido**. El `commit` re-valida el buffer **entero** (el punto de no retorno, segunda cerradura) y, solo si todo es válido, lo aplica operación a operación. El `rollback` descarta el buffer — y como nada se aplicó, es **gratis por construcción**.
+
+Y una pieza de honestidad crítica: si el **apply real** falla a mitad — el store dice «no» a algo que la simulación aprobó, o el proceso muere entre dos escrituras — el `commit` devuelve `ApplyFallido{indice, aplicadas, causa}`: te dice *cuántas* operaciones llegaron, pero **no puede deshacerlas**. Ese hueco es el motor del próximo capítulo.
+
+## 27.7 Código completo ejecutable
+
+El código vive en `liradb-workspace/crates/vol2-liradb/src/cap27_transacciones.rs` (~1.460 líneas, 28 tests), abriendo la Parte VI. Léelo por partes — cada decisión tiene un porqué.
+
+### El vocabulario ACID como tipo
+
+```rust
+pub enum GarantiaAcid { Atomicidad, Consistencia, Aislamiento, Durabilidad }
+pub enum NivelGarantia { Ninguna, Parcial, Completa }
+pub struct EntradaAcid { pub garantia: GarantiaAcid, pub nivel: NivelGarantia,
+    pub como_esta_hoy: &'static str, pub capitulo_que_la_cierra: u8 }
+```
+
+Cinco decisiones que valen un porqué cada una:
+
+- **Cada letra es una variante de `GarantiaAcid`** que sabe su letra (`'A'…'D'`), su nombre largo y su **definición PARA LiraDB** — no la de un manual genérico. El test `garantia_acid_letra_nombre_definicion` lo exige.
+- **`NivelGarantia` tiene tres niveles, no un bool.** La tesis del capítulo es que **ninguna** letra está completa todavía; un bool te diría «sí tengo ACID» y ocultaría el progreso. Tres niveles permiten decir, con precisión, «parcial», «ninguna».
+- **`EntradaAcid.capitulo_que_la_cierra`** apunta a qué capítulo de la Parte VI construye lo que falta. El informe no solo dice *dónde* estás: dice *hacia dónde*.
+- **El informe es ejecutable**: `informe_acid()` devuelve las cuatro entradas, y el test `informe_acid_tiene_las_cuatro_letras_en_orden` exige que la concatenación de letras sea exactamente «ACID». Una promesa de base de datos que no se ejecuta en tests es marketing; aquí, mentir **rompe CI**.
+- **`Display` del informe** imprime cada entrada en el formato `A — Atomicidad: parcial / naive: … (cap. 28 lo cierra)` y cierra con la línea honesta: *«(W: nada de esto es durable sin WAL — cap. 28)»*.
+
+### El informe honesto
+
+El test `informe_acid_es_honesto_sobre_el_estado_actual` es la **tesis ejecutada**:
+
+```rust
+// A: PARCIAL — staging «o todo o nada» frente a VALIDACIÓN; un fallo durante
+//    el APPLY real deja el store a medias. La cierra el cap. 28.
+// C: PARCIAL y trivial — solo invariantes ESTRUCTURALES, sin restricciones
+//    declarativas; la C es un contrato COMPARTIDO con la app. Cap. 30.
+// I: PARCIAL por diseño — no hay CONCURRENCIA; el préstamo &mut ES el cerrojo
+//    (borrow checker). Cap. 30.
+// D: NINGUNA — commit() muta RAM; hay sync/flush pero falta el protocolo WAL.
+//    Cap. 28.
+```
+
+Fíjate en el juego de palabras que el tipo permite: la A **parcial** (frente a la validación sí, frente al apply no), la C **parcial y trivial** (no hay esquema, solo invariantes estructurales; la C es un contrato *compartido* entre motor y aplicación), la I **parcial por diseño** (no hay motores de locks que construir — el `&mut` lo hace gratis), y la D **ninguna** (hay piezas a disco, pero no protocolo; confundir piezas con protocolo sería la mentira más cara del capítulo). El test asegura que la prosa coincide con el código: busca los strings «apply», «estructurales», «concurrencia» y «RAM» dentro del informe.
+
+### Las anomalías, como vocabulario
+
+```rust
+pub enum Anomalia { LecturaSucia, ActualizacionPerdida }
+```
+
+Hoy **no pueden ocurrir** — `por_que_no_pasa_hoy()` lo dice: *«no hay concurrencia: mientras vive una Transaccion, el préstamo exclusivo &mut del store impide que cualquier otro lector o escritor lo toque»*. Pero el cap. 30 las hará posibles y las combatirá con MVCC/2PL. La lógica es la del cap. 22 con `NegativeCycle`: **primero se nombra el enemigo, luego se construye la defensa**. Si dejásemos el enum para el cap. 30, el lector llegaría al MVCC sin saber qué está combatiendo.
+
+### La operación como dato
+
+```rust
+pub enum Operacion {
+    PutNode(Node),
+    PutEdge(Edge),
+    DeleteNode(NodeId),
+    DeleteEdge(EdgeId),
+}
+```
+
+Es la pieza clave del staging. Mientras las operaciones son **valores** que se acumulan en un buffer, la transacción puede validarlas **todas juntas** antes de tocar el store — y descartarlas limpio en rollback. Y hay una herencia deliberada escondida aquí: **el mismo shape que `RecordKind` del cap. 10**. El append-only log que construiste entonces anticipa el formato; la `Operacion` de este capítulo es su heredera directa. Eso no es una coincidencia: el cap. 28 serializará *exactamente esto* al WAL, y como la forma ya existe, no habrá que reinterpretar nada. El comentario del módulo lo llama «la semilla del WAL».
+
+### La transacción como objeto — y el ciclo de vida en los tipos
+
+```rust
+pub struct Transaccion<'a> { store: &'a mut dyn GraphStore, buffer: Vec<Operacion> }
+pub fn begin(store: &'a mut dyn GraphStore) -> Self { … }            // toma el cerrojo
+pub fn commit(self)   -> Result<ResumenCommit, TransaccionError> { … }  // consume self
+pub fn rollback(self) -> ResumenRollback { … }                       // consume self
+```
+
+La decisión más hermosa de todo el módulo está en **dos letras**: `self`. `commit` y `rollback` **consumen** la transacción. **no existe el objeto «transacción cerrada»** — usarla tras su cierre es error de compilación, no de runtime; y **anidar dos transacciones sobre el mismo store no compila** — `begin` pide `&mut dyn GraphStore`, así que el préstamo exclusivo del modelo «un único escritor» del brief lo **ejecuta el borrow checker**, gratis, sin una línea de locking (el test `transacciones_secuenciales_el_prestamo_se_libera` demuestra la única forma de encadenar: `commit`/`rollback` consumen la tx y liberan el préstamo).
+
+Y otra propiedad que fluye del diseño sin código extra: **`Drop` de una transacción activa es rollback implícito y seguro por construcción** (el test `drop_implicito_es_rollback_seguro`). Como nada se aplica fuera del commit, abandonar el scope (un `?` temprano, un pánico, un olvido) simplemente descarta el buffer — el store no se tocó.
+
+### El staging: valida eager, y el commit revalida por inducción
+
+```rust
+pub fn stage(&mut self, operacion: Operacion) -> Result<(), TransaccionError> {
+    self.buffer.push(operacion);
+    match validar_buffer(self.store, &self.buffer) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            self.buffer.pop();   // el prefijo era válido: solo pudo fallar la última
+            Err(e)
+        }
+    }
+}
+```
+
+`stage` valida **eager**: si la operación añadida rompe una invariante, se **expulsa** y la transacción **sigue viva con su prefijo válido**. El test `stage_rechaza_duplicado_dentro_del_buffer_y_la_tx_sigue_viva` lo demuestra: metes un duplicado, recibes `OperacionInvalida{indice:1, causa:DuplicateNode(0)}`, y el buffer sigue con la operación válida que metiste antes — la transacción continúa usable.
+
+`commit` hará lo contrario: **revalida el buffer ENTERO** antes de tocar el store. Es redundante con `stage` (cada stage validó su prefijo, y nada externo puede cambiar el store mientras lo tenemos prestado), pero es **barata** (O(n)) y robusta a refactors que rompan la inducción. Visualiza el `commit` como la *segunda cerradura*: aunque un refactor futuro rompiera la re-validación por etapas del `stage`, el commit sigue siendo la única puerta responsable de la decisión todo-o-nada. Es por esto que el test de la «op 3 de 5» siembra el buffer a mano (el test vive dentro del módulo) y espera el error **en commit**, no en stage: ejercita manualmente esa segunda cerradura.
+
+### La validación como replay sobre una `Simulacion`
+
+El corazón de la atomicidad naive es `validar_buffer`: un **replay** del buffer sobre una vista simulada del store, respetando el **orden**.
+
+```text
+Simulacion: nodos_creados | nodos_borrados | aristas_creadas (con extremos) | aristas_borradas
+validar_buffer(store, buffer) → por cada op_k EN ORDEN:
+  valida contra (store real ∪ efecto de op_1..op_{k-1})
+  ├─ arista a nodo creado en el MISMO buffer: válida SI los nodos van ANTES
+  ├─ delete_node arrastra aristas del store (out ∪ in) Y del buffer
+  └─ si algo falla → OperacionInvalida{indice,causa}; no se aplica NADA
+```
+
+Tres decisiones dignas de nota:
+
+- **El orden del buffer es parte del contrato** (como el orden de un log). El test `edge_a_nodo_creado_en_la_misma_tx_es_valido` demuestra la mitad buena — arista a dos nodos del *mismo* buffer si los nodos van antes — y `el_orden_importa_edge_antes_de_sus_nodos_es_invalido` la estricta: la arista antes que sus nodos se rechaza, porque en la vista simulada los extremos aún no «existen».
+- **El `delete_node` arrastra aristas del store Y del buffer** (el test `edge_arrastrada_por_cascada_de_nodo_del_buffer` lo prueba). La cascada del cap. 8 no puede quebrarse a medio buffer: si creaste una arista en la tx y luego borras uno de sus nodos, esa arista del buffer muere también. Es la invariante del cap. 8, vista a través del tiempo.
+- **Coste O(n·(n+E))** por `stage` — una elección **naive y documentada**, a favor de la claridad. El WAL del cap. 28 validará incrementalmente; aquí manda la legibilidad.
+
+El test `error_en_la_operacion_3_de_5_no_aplica_nada` es la prueba de fuego de la A naive: buffer «a mano» con la op 3 inválida (edge 0→7 sin nodo 7), commit → `OperacionInvalida{indice:2, causa:InvalidEdgeEndpoints{0,7}}`, y el store **queda intacto** — `node_count()==0`. Atomicidad naive: funciona (frente a la validación).
+
+### El apply y el error honesto a mitad
+
+```rust
+pub fn commit(self) -> Result<ResumenCommit, TransaccionError> {
+    validar_buffer(self.store, &self.buffer)?;           // 2ª cerradura
+    let mut resumen = ResumenCommit::default();
+    for (indice, op) in self.buffer.iter().enumerate() {
+        let ya = resumen.total_operaciones();
+        match op {
+            Operacion::PutNode(n) => match self.store.put_node(n.clone()) {
+                Ok(()) => resumen.nodos_escritos += 1,
+                Err(causa) => return Err(TransaccionError::ApplyFallido {
+                    indice, aplicadas: ya, causa,          // ← honesto sobre "cuánto" }),
+            },
+            // … PutEdge / DeleteNode / DeleteEdge análogos …
+        }
+    }
+    Ok(resumen)
+}
+```
+
+Distinguir **dos errores que la naïveté del problema confunde** es la clave:
+
+- `OperacionInvalida` — un problema de **validación**, que se descubre en `stage` (y se re-descubre en `commit`). La transacción **no se aplicó**, el prefijo válido sobrevive. Nada que deshacer.
+- `ApplyFallido` — un problema del **apply real**: el store dijo «no» a lo que la `Simulacion` aprobó, o el proceso murió a mitad. Aquí `aplicadas` te dice **cuántas operaciones ya están escritas**. Y el store **quedó a medias** — sin log no hay vuelta atrás.
+
+`aplicadas` existe precisamente para que sepas si tienes que investigar el store o no: esa información se perdería si guardaras un único `Error` con un booleano.
+
+### El rollback barato vs el rollback imposible
+
+```rust
+/// ROLLBACK: descarta el buffer. El store no se ha tocado NUNCA…,
+/// así que el descarte es limpio por construcción.
+///
+/// Ésa es la lección del staging: deshacer es trivial ANTES de aplicar.
+/// Deshacer DESPUÉS de aplicar (un rollback de verdad, a mitad de
+/// escrituras) exigiría un log — cap. 28.
+pub fn rollback(self) -> ResumenRollback { … }
+```
+
+Esta es **la frontera exacta del capítulo**. Descartar el buffer — rollback *antes* de aplicar — es gratis por la propia estructura: nada se aplicó. Deshacer *después* de aplicar, a mitad de escrituras, **exige un log** — es la línea que el cap. 28 cruza. El test `rollback_no_aplica_nada` lo demuestra: la tx acumuló dos operaciones (un put y un delete), hace rollback, y el store queda **exactamente** como estaba.
+
+### `autocommit` como función ejecutable
+
+```rust
+pub fn autocommit(store: &mut dyn GraphStore, operacion: Operacion)
+    -> Result<ResumenCommit, TransaccionError>
+{ let mut tx = Transaccion::begin(store); tx.stage(operacion)?; tx.commit() }
+```
+
+`autocommit` no es código nuevo: es el modo por defecto de los caps. 7-26 hecho **visible y ejecutable**. `autocommit_equivalente_a_la_operacion_directa` demuestra la equivalencia exacta con `store.put_node(n)`; `autocommit_operacion_invalida_no_toca_el_store` que una operación inválida ni toca el store. Ya no tienes que *creer* que `put_node(n)` es una transacción de una sola operación: lo puedes ver.
+
+## 27.8 Prueba de fuego
+
+No basta con que el código compile: la tesis — *«ninguna letra está completa, y los límites son reales»* — debe poder **fallar** si miente. La prueba de fuego son cuatro tests:
+
+**TEST-TESIS A — `informe_acid_es_honesto_sobre_el_estado_actual`.** A=C=I=`Parcial`, D=`Ninguna`; ninguna `Completa`; los strings «apply», «estructurales», «concurrencia» y «RAM» aparecen — la prosa coincide con el código ejecutable.
+
+**TEST-TESIS B — `error_en_la_operacion_3_de_5_no_aplica_nada`.** La atomicidad naive FUNCIONA frente a la validación: buffer con la op 3 inválida, commit → `OperacionInvalida{indice:2, causa:InvalidEdgeEndpoints}`, store intacto.
+
+**TEST-TESIS C — `apply_fallido_deja_el_store_a_medias_gancho_al_cap_28`.** La atomicidad naive NO cubre el fallo del apply: `StoreQueFalla` (un decorador que falla en la 3ª escritura) hace que `commit()` devuelva `ApplyFallido{indice:2, aplicadas:2, causa:UnknownNode(usize::MAX)}` y el store tenga **2 nodos**. A medias, sin log. Es una **regresión inversa**: cuando llegue el WAL en el cap. 28, este test se *invertirá*.
+
+**TEST-TESIS D — `panic_a_mitad_de_apply_deja_el_store_a_medias`.** El «corte de luz» simulado: `StoreQueFalla` con `con_panic=true`, `catch_unwind` atrapa el pánico, y `node_count()==1`. La primera escritura llegó; las dos siguientes no. Sin WAL **no hay forma de saber** si ese nodo pertenecía a una transacción confirmada o a una que murió a medias.
+
+Otros tests citados, por si quieres seguir la verificación mientras lees: `informe_acid_tiene_las_cuatro_letras_en_orden`, `garantia_acid_letra_nombre_definicion`, `informe_acid_display_muestra_niveles_y_caps`, `anomalias_de_aislamiento_definidas`, `commit_aplica_todo_el_buffer`, `commit_vacio_es_noop_valido`, `stage_rechaza_edge_a_nodo_inexistente`, `delete_de_nodo_creado_en_la_misma_tx`, `delete_node_inexistente_rechazado`, `delete_edge_tras_cascada_de_delete_node_rechazado`, `recrear_nodo_tras_borrarlo_en_la_misma_tx`, `errores_display_y_std_error`, `resumenes_display`, `operacion_display`, `operaciones_vista_del_buffer`.
+
+**Síntoma si te saltas el capítulo**: tus lotes «de 10 nodos» quedan a medias cuando uno falla, no distingues un apply-fallido de una validación, crees que `commit` es durable (y es RAM), y llegas al cap. 28 sin vocabulario para pedirle al WAL lo que necesitas.
+
+## 27.9 Qué hemos sacrificado
+
+1. **La D — durabilidad — es cero.** `commit()` solo muta RAM. El camino a disco existe (`Pager::sync` del cap. 12, `BufferPool::flush` del cap. 13), pero lo que falta es el **protocolo** write-ahead — y confundir piezas con protocolo sería el peor modo de fallo de una BD: un «tenemos durabilidad» que un `kill -9` desmiente.
+2. **La A es naive.** «O todo o nada» vale frente a la **validación**; frente a un fallo del apply real a mitad, el store queda a medias (`ApplyFallido`). El staging no puede y *no pretende* arreglar eso.
+3. **Aislamiento sin motores de locks** (porque no hace falta): la I la da el borrow checker en single-thread. Con concurrencia real (cap. 30), se revisa.
+4. **Validación O(n·(n+E)) *por stage***, naive y documentada; un WAL valida incrementalmente. La C es «trivial»: solo invariantes estructurales, sin restricciones declarativas — en una BD real es un contrato *compartido* con la aplicación.
+
+## 27.10 Cómo lo hace una BBDD real
+
+Todo lo que aquí es «parcial», una base de datos real lo lleva el resto del camino — el de los tres capítulos que vienen:
+
+- **El WAL (cap. 28)** es el bloc con copia de cada trazo *antes* de tocar el libro mayor. El estándar de hecho se llama **ARIES** (Mohan et al., «ARIES», ACM TODS 17(1), 1992). La `Operacion` de este capítulo es **exactamente** lo que el WAL serializa, bajo el framing del cap. 10.
+- **La recuperación (cap. 29)** responde a la pregunta del test D — conservar o deshacer al arrancar. Härder & Reuter (1983, el paper que acuñó ACID) la formalizaron; ARIES la convirtió en replay con undo y redo.
+- **MVCC y 2PL (cap. 30)** convierten la I «parcial por diseño» en aislamiento real bajo concurrencia. Berenson et al. («A Critique of ANSI SQL Isolation Levels», SIGMOD Record 24(2), 1995) mostraron que las definiciones ANSI eran incompletas — por eso hoy se usa el vocabulario de anomalías más rico (lectura sucia, lost update, no repetible, fantasma) que este capítulo abrió.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: ¿por qué `apply` válida el buffer entero en `commit` si `stage` ya validó cada operación al acumularla?
+- *Intermedio*: dibuja los dos cortes de la línea de tiempo del apply que los tests C y D representan; ¿en qué se diferencian el error tipado `ApplyFallido` y el pánico del «corte de luz»?
+- *Experto*: ¿qué *es* exactamente «a medias»? Define el estado del store tras cada fallo, y justifica por qué ambos agujeros son irresolubles sin un log de lo ya aplicado.
+
+## 27.11 Lo que te llevas
+
+- **ACID no es un interruptor**: son cuatro promesas independientes, cada una con nivel (`Ninguna/Parcial/Completa`). `informe_acid()` es un artefacto **ejecutable** que los tests verifican — la documentación no puede prometer más que el código.
+- **La transacción es un objeto con ciclo de vida**: `begin → stage* → commit|rollback`. El staging acumula `Operacion` en un buffer; el commit valida todo y aplica; el rollback descarta.
+- **El ciclo de vida vive en los tipos**: `commit`/`rollback` consumen `self` — usar una tx cerrada o anidar dos no compila. Droppear una tx activa es rollback implícito seguro.
+- **El borrow checker es el cerrojo**: el «un único escritor» del brief lo ejecuta `&mut`, gratis, sin locking.
+- **El orden del buffer importa** (como el de un log): una arista a nodos del mismo buffer es válida si los nodos vienen antes; `delete_node` arrastra aristas del store y del buffer.
+- **Rollback barato ≠ rollback imposible**: deshacer antes de aplicar es descartar el buffer; deshacer después exige un log. Esa frontera es el cap. 28.
+- **Estado real hoy**: A parcial, C parcial y trivial, I parcial por diseño, D ninguna. Decirlo con honestidad es parte de la interfaz.
+
+## 27.12 Ojo, cuidado con…
+
+- **«Tengo ACID porque hice commit».** El commit no enciende nada: cada letra tiene su nivel, y `informe_acid()` es la pieza honesta. Si dices «tenemos transacciones», pregunta *cuál* letra y *hasta dónde*.
+- **Confundir validación con apply.** `OperacionInvalida` se rechaza en `stage` (la tx sigue viva con su prefijo válido); `ApplyFallido` se descubre en `commit` (el store quedó a medias). Son errores DISTINTOS con consecuencias DISTINTAS — trata cada uno como lo que es, no como «la tx falló».
+- **Esperar rollback completo.** El rollback de este capítulo es barato por construcción, *antes* de aplicar. El rollback real (después de aplicar) exige un log — no diseñes sistemas que asumen «rollback siempre funciona» sobre apply parcial.
+- **Confundir `commit` con durable.** `commit()` muta RAM. El corte de luz borra lo confirmado y no hay WAL que lo recite. La D no se adivina: se construye (cap. 28).
+- **Pensar que el aislamiento exige locks.** Con un solo hilo, el `&mut` *es* el cerrojo. No introduzcas un `Mutex` «por si acaso» — cuando llegue la concurrencia (cap. 30) se decidirá con criterio.
+
+*Precisión de lenguaje*: *transacción* (objeto con ciclo de vida) vs *operación* (`Operacion`, la unidad del buffer); *staging* (acumular en privado) vs *apply* (escribir al store); *commit* (firma del bloc) vs *rollback* (tirar el bloc); *buffer* (estado privado de la tx) vs *store* (libro mayor compartido); *validación* vs *apply*; *autocommit* (tx de una op) vs *tx explícita*; *informe ACID* (artefacto tipado) vs *ACID* (el acrónimo); *anomalía* (patrón de fallo) vs *garantía* (lo que la BD promete); *nivel* (Ninguna/Parcial/Completa) vs *letra* (A/C/I/D).
+
+## 27.13 Pin de batalla
+
+> *«Un "commit" que el código no puede distinguir de un apply cortado no es una promesa — es una esperanza. La durabilidad no se declara: se protocoliza.»*
+
+## 27.14 Si solo lees 30 segundos
+
+ACID no es un interruptor: son cuatro promesas independientes con nivel. `informe_acid()` (ejecutable, auditado por tests) dice la verdad: **A parcial, C parcial y trivial, I parcial por diseño, D ninguna**. `Transaccion::begin(&mut store)` toma el préstamo exclusivo del store; el staging acumula `Operacion` en un buffer sin tocar el store; `commit` revalida todo y aplica; `rollback` descarta (gratis, porque nada se aplicó). `commit`/`rollback` consumen `self`, así que el ciclo de vida vive en los tipos: usar una tx cerrada o anidar dos no compila. El borrow checker es el cerrojo del «único escritor». El orden del buffer importa (arista después de sus nodos). Y lo honesto: si el apply falla a mitad, `ApplyFallido{aplicadas}` te dice cuánto llegó — pero sin log no hay vuelta atrás. Ese es el gancho del cap. 28 (WAL).
+
+## 27.15 Una historia pequeña
+
+Ana llevaba tres días «arreglando» un bug que no era un bug. Su analítica del cap. 26 materializaba una proyección y, de vez en cuando, el grafo quedaba con nodos huérfanos — aristas que apuntaban a ids que no existían. Descubrió que el problema no estaba en su código de análisis: estaba en *cómo escribía*. Un script rellenaba un batch de vértices con `store.put_node(...)` en bucle, y cuando el vértice 5 de 10 era un duplicado, el script seguía — el grafo se quedaba con los cuatro primeros, sin la arista que los unía, sin que nadie lo hubiera pedido. LiraDB no «borraba» nada: nunca había tenido la noción de *unidad*. Tras este capítulo, su script abría una `Transaccion`, metía los diez vértices y *la arista* en el buffer, y hacía `commit`. Si el quinto era inválido, la transacción se descartaba entera — o, mejor, `stage` se lo decía en el acto sin tocar el store. La moraleja, gritada en la bitácora: *no era un bug de datos; era una ausencia de acuerdo sobre qué es «un lote».*
+
+## Ejercicios resueltos
+
+**1. El fallo en la operación 3 de 5.** Buffer `PutNode(0,"P"), PutNode(1,"P"), PutEdge(0,0,1,"KNOWS"), …`. ¿Por qué el commit *no* falla aquí aunque valide el buffer entero? Porque la validación es un replay **sobre la `Simulacion`**: cuando se valida la arista, los nodos 0 y 1 ya fueron creados por las operaciones anteriores del buffer. Los extremos *existen en la vista simulada*. Es exactamente el caso `edge_a_nodo_creado_en_la_misma_tx_es_valido`. En cambio, si la arista fuera **antes** que sus nodos, los extremos aún no están en la simulación → `OperacionInvalida{indice:0, causa:InvalidEdgeEndpoints}` — `el_orden_importa_edge_antes_de_sus_nodos_es_invalido`. El orden del buffer no es cosmética: es parte del contrato (como el orden de un log).
+
+**2. ¿Por qué el rollback del cap. 27 es gratis y el rollback «real» sería imposible sin log?** Porque nada se aplica fuera del commit. El buffer es privado y el store no se toca hasta la re-validación y el apply del `commit`. `rollback()` descarta el `Vec<Operacion>` — y como el store quedó intacto, no hay nada que deshacer (test `rollback_no_aplica_nada`). Deshacer *después* de aplicar es otro problema: si el apply ya escribió 2 de 5 operaciones y quieres revertirlas, necesitas saber *qué* se escribió y en qué orden — eso es un log. El `Log::append` del append-only cap. 10 es la pieza que falta: la única forma de «deshacer» es tener registrado lo que se hizo. Por eso `rollback()` pone la linde en «antes de aplicar»: más allá, la tarea ya es del WAL (cap. 28).
+
+## Ejercicios propuestos
+
+**Esencial (recordar/aplicar — predicción, no ejecución).** Sobre un store VACÍO, predice SIN ejecutar el resultado de commitear este buffer: `PutNode(0,"A"), PutEdge(0, 0, 1, "KNOWS"), PutNode(1,"B")`. Responde: (a) ¿tiene éxito el commit?; (b) si no, ¿qué variante de `TransaccionError`, con qué `indice` y qué `causa`; (c) el estado del store después. *Pistas*: (1) ¿existe el nodo 1 cuando se valida la arista (en el orden del buffer)?; (2) ¿el orden del buffer es libre?; (3) ¿la operación 3ª (que sí es válida por sí sola) llega a aplicarse si la 2ª falla? *Verificación*: `el_orden_importa_edge_antes_de_sus_nodos_es_invalido` (el caso que falla) y `edge_a_nodo_creado_en_la_misma_tx_es_valido` (cómo se corrige moviendo la arista al final). *Criterio*: predicción exacta + verificación corriendo ambos tests del workspace (`cargo test -p vol2-liradb --lib cap27`).
+
+**Intermedio (analizar — mezcla caps. 8 y 10).** El comentario del módulo llama a la `Operacion` del cap. 27 «la heredera del `RecordKind` del cap. 10» y «la semilla del WAL del cap. 28». Razona (a) qué se almacenaba en `RecordKind` (cap. 10) con la **misma forma** que `Operacion`, y por qué esa forma compartida permite que el cap. 28 serialice el buffer al WAL **sin reinterpretar**; (b) por qué `delete_node` arrastra aristas del store **Y del buffer** (test `edge_arrastrada_por_cascada_de_nodo_del_buffer`) — ¿qué invariante del cap. 8 lo hace obligatorio, y qué le pasaría a la simulación si no lo hiciera?; (c) por qué el rollback del cap. 27 es barato (descartar `Vec<Operacion>`) pero el rollback real *después* de aplicar sería imposible sin un log — y por qué `Log::append` (cap. 10) es exactamente el «antes» que el WAL del cap. 28 codificará. *Pistas*: (1) ¿qué variantes pintaba `RecordKind` y qué hacen `stage`/`apply`?; (2) ¿qué dice `StoreError` sobre la cascada al borrar?; (3) ¿dónde encaja `Log::append` respecto al `commit`? *Verificación*: `delete_edge_tras_cascada_de_delete_node_rechazado` y la sección §32 de `MIGRATION-PATTERN.md`. *Criterio*: razonar la conexión entre tres capítulos **sin mirar el código**.
+
+**Experto (crear — retrieval puro).** Parte 1, de memoria y sin pistas en el enunciado: reconstruye el `InformeAcid` COMPLETO del cap. 27 — las cuatro letras, su nivel (`Ninguna/Parcial`), su justificación honesta (qué garantiza hoy y qué no), y el capítulo que cierra cada brecha. Parte 2: escribe el test `nodo_recreado_despues_de_cascada_no_revive_sus_aristas` sobre el grafo 0→1 (edge 0) →2 (edge 1): tx `delete_node(1), put_node(1, "Renacido")`; `commit` verde; verifica `node_count()==2`, `edge_count()==0` y que las aristas muertas NO vuelven al recrear el nodo. *Pistas*: (1) ¿el `delete_node` arrastra las aristas adyacentes en la validación?; (2) ¿qué ve la `Simulacion` cuando vuelve a aparecer el id 1 — sus viejas aristas siguen en `aristas_borradas`?; (3) ¿cómo verifica el test que re-crear el nodo no re-crea la historia? *Verificación*: `recrear_nodo_tras_borrarlo_en_la_misma_tx` (base) + tu extensión propia. *Criterio*: informe exacto de memoria + test verde + la razón de por qué las aristas no se reviven.
+
+## Para profundizar
+
+- **Jim Gray, «The Transaction Concept: Virtues and Limitations» (VLDB 1981, pp. 144-154)** — el paper que abrió este capítulo: la transacción como transformación atómica, consistente y durable, con la anécdota de las reservas de vuelo y el agente de viajes. Fuente primaria de la anécdota de la esquina.
+- **T. Härder & A. Reuter, «Principles of Transaction-Oriented Database Recovery» (ACM Computing Surveys 15(4), 1983, pp. 287-317; DOI 10.1145/289.291)** — el paper que **acuñó el acrónimo ACID**. Formalización de los conceptos que los caps. 28-29 heredan.
+- **C. Mohan et al., «ARIES: A Transaction Recovery Method Supporting Fine-Granularity Locking and Partial Rollbacks Using Write-Ahead Logging» (ACM TODS 17(1), 1992, pp. 94-162; DOI 10.1145/128765)** — el estándar moderno de WAL + undo/redo, el destino del cap. 28 (y su recuperación en el 29).
+- **H. Berenson et al., «A Critique of ANSI SQL Isolation Levels» (SIGMOD Record 24(2), 1995, pp. 1-10; DOI 10.1145/223784.223785)** — por qué el vocabulario de anomalías (lectura sucia, lost update y compañía) que aquí abrimos es el que los niveles de aislamiento reales usan; base del cap. 30.
+- **Gray & Reuter, «Transaction Processing: Concepts and Techniques» (Morgan Kaufmann, 1993)** — la referencia canónica de ACID, recovery y aislamiento de la que estos capítulos son un recuerdo en miniatura.
+- **SQLite — documento oficial «Atomic Commit In SQLite»** — cómo un motor real, en producción, implementa atomicidad en una base de un solo fichero con un WAL; y **PostgreSQL docs, cap. 13 «Concurrency Control»** — aislamiento y niveles en el mundo real.
+- Los **comentarios del módulo** `cap27_transacciones.rs` funcionan como prosa verificable: cada límite que anuncian tiene un test encima.
+
+## Mini-diálogo: en guardia nocturna
+
+> — O sea, que «commit» no me hace durable. ¿Entonces para qué me sirve?
+>
+> — Para lo que sí promete. El commit es la diferencia entre «metí una arista colgada que nadie pidió» y «estas cinco operaciones entran juntas o ninguna». La A *frente a la validación* ya es tuya.
+>
+> — Pero dices que la D es *ninguna*. Menuda venta.
+>
+> — Lo honesto. Decir «durable» con un corte de luz que lo borra sería el peor error posible de una base de datos — peor que admitir que falta. El informe te dice exactamente cuánto tienes y quién lo completa. El cap. 28 construye el WAL que cierra la D. Y luego el 30, el aislamiento de verdad.
+>
+> — ¿Y si me da miedo el borrow checker? Pensé que necesitaba un motor de locks.
+>
+> — Ahí está la gracia. Tu cerrojo ya está puesto: es `&mut`. Mientras viva la transacción, ni un lector ni otro escritor tocan el store, y te lo verifica el compilador en vez de un runtime. El día que llegue la concurrencia, revisamos.
+
+---
+
+*(Próximo capítulo: 28 — Write-ahead log. Has visto el hueco: cuando el apply se corta a mitad, `node_count()==2` y «nadie recuerda» qué faltaba. El WAL es el bloc con copia de cada trazo — se escribe ANTES de tocar el store, sobrevive al crash porque `fsync` ya forma parte del protocolo, y su registro serializa exactamente la `Operacion` del cap. 27. Cuando llegue, los dos tests que aquí AFIRMAN el store a medias se invertirán: el log sí recuerda.)*
+# Capítulo 28 — Write-Ahead Log
+
+> *«El log se escribe antes que el dato. No como orden de paso: como promesa sobre la dirección de la recuperación.»*
+
+## 28.0 La anécdota de la esquina
+
+En 1992, un equipo de IBM en Almaden —C. Mohan, D. Haderle, B. Lindsay, H. Pirahesh y P. Schwarz— publicó un paper largas veces citado y pocas veces leído entero: «ARIES: A Transaction Recovery Method Supporting Fine-Granularity Locking and Partial Rollbacks Using Write-Ahead Logging» (ACM Transactions on Database Systems 17(1), marzo 1992, pp. 94-162). El paper cierra una pelea que llevaba quince años coleando en la industria: cuándo, dónde y cómo se le promete a un usuario que su `COMMIT` sobrevivirá a un corte de luz. Y lo hace con una frase que define un capítulo entero: «write-ahead logging — the log records for a change must be written to stable storage before the change itself is written to the database».
+
+Que el log se escriba ANTES que la página de datos suena a orden de pasos. No lo es. Es una promesa sobre la dirección de la recuperación. Si la promesa es «el log antes que el dato», entonces cuando el sistema despierta tras el fallo, el camino es RE-APLICAR lo que el log dijo que se confirmó (roll-forward / redo). Si la promesa es al revés —el commit se escribe al final del apply y los datos pueden estar ya en disco mientras el log sigue en RAM por un instante—, entonces la mitad desconocida del problema («¿qué sobrevivió?») NO se resuelve releyendo: se resuelve DESHACIENDO lo que se aplicó de más. Y deshacer requiere imágenes ANTES, lo que dobla el log y la maquinaria. Esa segunda mitad se llama UNDO; el capítulo que la construye es el 29. ARIES propuso las dos mitades (Analysis-Redo-Undo) y la decisión de CÓMO se ordenan. Aquí elegimos la mitad más simple, la que enseñamos primero y la que cierra la Parte VI del Vol.II en su primer tramo: sólo REDO, y el redo existe porque el log se escribió ANTES.
+
+La otra raíz, anterior, está en System R: Jim Gray documentó la «bitácora» en «Notes on Database Operating Systems» (IBM Research Report RJ 2188, 1978) y la convirtió en columna vertebral de la recuperación. Lo que el lector de hoy llama WAL es la versión 1992 de la bitácora de 1978 — con LSN monótono, con CRC, con el «log antes que el dato» como axioma. Y lo que hoy les voy a pedir que entiendan no es un detalle: es la decisión de la que viven los demás capítulos de la Parte VI.
+
+## 28.1 Objetivo
+
+Al terminar este capítulo sabrás **por qué** la transacción del cap. 27 (con su `commit` re-validando y aplicando) se rompía frente a un fallo del apply, y **cómo** un write-ahead log convierte ese «se quedó a medias y nadie recuerda qué faltaba» en «un log SÍ recuerda y el replay lo completa». Cinco piezas en `cap28_wal.rs`:
+
+1. **El registro del WAL** (`WalRecord`) — la pareja `(lsn, tx_id)` más `CuerpoWal = Begin | Operacion(op) | Commit | Rollback`, con el framing del cap. 10 (`length-prefix + CRC32`) y la `Operacion` del cap. 27.
+2. **El protocolo write-ahead** (`WalTransaccion::commit`) — el commit en dos fases: el log se escribe y sella CON UN `Commit` ANTES de tocar el store. Esa es la decisión del capítulo.
+3. **El redo idempotente** (`aplicar_para_redo` + `replay_wal`) — la regla por la cual re-aplicar lo ya aplicado es un no-op, y por la que el replay no necesita saber qué sobrevivió al fallo.
+4. **La política de flush** (`PoliticaFlush`) — `CadaEscritura` (la regla de oro literal) vs `SoloCommit` (un sync por transacción; semilla del group commit del cap. 30).
+5. **El truncado con contrato** (`truncar_hasta_lsn`) — poda del log BAJO FIRMA del llamador; los LSNs no se reinician.
+
+Y el hito que demuestra que el capítulo cierra el agujero del cap. 27: el `StoreQueFalla` con cuatro ops y fallo en la tercera, escenario IDÉNTICO al de aquél, termina con `node_count()==4` tras el replay.
+
+## 28.2 Problema
+
+El cap. 27 dejó una deuda escrita en el `Display` de su error:
+
+> *«fallo durante el APPLY de la operación #2 (…): 2 operaciones ya estaban aplicadas y sin log no se pueden deshacer — el store quedó a medias (cap. 28: WAL)»*
+
+Esa frase no es retórica: es el agujero que vino a cerrar este capítulo. Recordemos los dos escenarios que el `StoreQueFalla` del cap. 27 dejó como tests vivos:
+
+1. **Error del store a mitad del apply.** El buffer validó, las dos primeras escrituras pasan, la tercera falla. El `commit` devuelve `ApplyFallido{indice: 2, aplicadas: 2}` y el store queda con `node_count()==2`. La transacción «no ocurrió» PORQUE SU DECLARACIÓN está sólo en RAM; el siguiente open del proceso es un open con dos nodos y la mitad de la verdad perdida.
+2. **Pánico a mitad de apply.** El store «muere» eléc­tri­ca­mente (un `panic!("corte de luz simulado")` en la segunda escritura). `catch_unwind` rescata el hilo. El store quedó con un nodo. La memoria del proceso se evaporó; nadie sabe qué faltaba.
+
+En ambos casos, la transacción «no se completó» pero su ESFUERZO no se puede revertir limpiamente. El cap. 27 ya había decidido que sólo se aplica «o todo o nada» AL NÍVEL DEL STAGING (la validación de `stage()` expulsa la op mala y la tx SIGUE VIVA). Pero el apply real es otra cosa: cuando `put_node` se ejecuta de verdad contra el store, ya no hay rollback posible sin UNDO — y UNDO no existe en el motor.
+
+Y al lado de la atomicidad (A), la durabilidad (D) del cap. 27 era **Ninguna** — el `commit` vivía en RAM. Un close del proceso se llevaba la transacción confirmada, las páginas de datos, todo. La entrada D del `informe_acid()` del cap. 27 decía, textual, «en RAM, no durable (cap. 28)».
+
+La pregunta del capítulo: ¿cuál es la pieza que CONECTA las dos cosas — la atomicidad frente al apply real y la durabilidad del commit — sin pedir UNDO?
+
+## 28.3 Modelo mental
+
+Piensa en una **notaría con libro de entrada**.
+
+- Toda escritura del grafo que promete durabilidad PASA primero por la notaría. El notario abre un asiento nuevo, anota la operación y la «sella» con un número correlativo (LSN; entry `1`, `2`, `3`…). Tan sólo después de que la anotación está sellada y firmada contra el libro (el `sync`) se le da al cliente la copia que modifica el fichero físico de la notaría (apply al store).
+- Si en el momento de la firma el cliente sufre un infarto (el `StoreQueFalla` del cap. 27), la notación YA está en el libro; al día siguiente, nuevo notario, **relee el libro y completa la operación** (roll-forward). Las dos primeras escrituras del nodo ya estaban; la tercera se aplica al releer. La idempotencia del redactor hace que las escrituras duplicadas no dupliquen.
+- Si la firma no llegó (commit truncado por un corte de luz), el asiento existe pero el cliente no tiene sello: la operación «como si nunca hubiera ocurrido». El replay del día siguiente la descarta limpia.
+- Si alguien arrancó una página del libro (un CRC roto) o arrancó un folio de en medio (un hueco de LSN), el libro entero deja de ser confiable — la notaría no se inventa los huecos. El iterador para limpio en la cola rota; el modo estricto grita el LSN del registro dañado.
+
+```
+            commit en dos fases (commit-marker-ANTES-del-apply)
+  ┌──────────────────────────────┐   ┌──────────────────────────────┐
+  │  RE-VALIDAR                  │   │  ALTERNATIVA RECHAZADA       │
+  │  buffer con validar_buffer   │   │  marker al final del apply   │
+  │  (cap. 27, pub(crate))       │   │  → apply a medias sin commit │
+  ├──────────────────────────────┤   │  → rescate exige UNDO        │
+  │  log_write(op) por cada op   │   │  → ARIES, cap. 29            │
+  │  (sync según PolíticaFlush)  │   └──────────────────────────────┘
+  ├──────────────────────────────┤
+  │  log_write(Commit) + sync    │   ← EL PUNTO DE DURABILIDAD
+  ├──────────────────────────────┤
+  │  apply al store              │   ← puede fallar a medias
+  │  (si falla, replay_wal       │
+  │   rescue con roll-forward)   │
+  └──────────────────────────────┘
+```
+
+Y un detalle no obvio: el **LSN** es el sello notarial. Una vez asignado, no se reutiliza — ni aunque arranque una página nueva del libro. Por eso un sello de 2007 (`lsn=42`) puede seguir viviendo en el libro aunque las primeras 40 páginas ya se hayan borrado: la identidad de una anotación es su sello, no su posición en bytes. La identidad del redo «el nodo 7 que escribí en `lsn=42`» es estable a través del truncado.
+
+El momento ¡ajá!: «"el log antes que el dato" no es una orden de paso. Es una promesa sobre la dirección de la recuperación. Si el log se escribe ANTES, la mitad DESCONOCIDA del problema (qué sobrevivió al fallo) se resuelve con un re-leer. Si se escribe DESPUÉS, la mitad desconocida exige deshacer — y deshacer necesita imágenes ANTES, lo que dobla el log. La pregunta "¿UNDO o no?" se contesta ANTES de escribir la primera línea de código».
+
+## 28.4 Primera solución
+
+La solución ingenua ya la tienes y funciona: la del cap. 27. `Transaccion::commit` re-valida el buffer y aplica. Si el apply falla a medias, `ApplyFallido` y fin. La transacción era ACID en todo MENOS en D (durabilidad en RAM) y A frente al apply real (no frente a validación). El ERROR del cap. 27 es exactamente la motivación del cap. 28.
+
+Una segunda solución ingenua es tan tentadora como la primera: «pues hago que el apply sea atómico mágico» — operaciones tan pequeñas que nunca produzcan fallo a medias. No funciona: cualquier cambio a una página de 4.096 bytes es o SÍ o NO; no hay «a medias significativas». Y aunque funcionara, no resuelve la durabilidad: si el proceso muere justo después del apply, la operación se fue a RAM y se perdió.
+
+## 28.5 Sus límites
+
+Tres límites llevan del cap. 27 al cap. 28:
+
+1. **El apply real falla a medias y NO hay UNDO.** El `StoreQueFalla` del cap. 27 hace esto literalmente: falla en la N-ésima escritura y el store queda inconsistente. Sin UNDO no hay forma de sacar las dos operaciones que sí pasaron. Y UNDO exige imágenes ANTES, con la mitad de la complejidad y el doble del log.
+2. **El commit vive en RAM.** El `ResumenCommit` del cap. 27 decía, textual, «en RAM, no durable (cap. 28)». Un cierre del proceso se lleva la tx confirmada. La entrada D del `informe_acid()` era `NivelGarantia::Ninguna`.
+3. **El siguiente proceso que abre la BD no recuerda nada.** El store en RAM arranca de cero. La `Operacion` se construyó como dato precisamente para que algún día se pudiera serializar — pero ningún capítulo la había serializado todavía.
+
+El patrón común: **sin log no hay vuelta atrás**. El nombre técnico del agujero es «atomicidad frente al apply real», pero el síntoma — store a medias sin memoria — es lo que duele.
+
+## 28.6 Solución evolucionada: el log antes que el dato
+
+Una sola decisión de diseño cambia tres cosas a la vez. La decisión es del capítulo y es la siguiente:
+
+> **El registro `Commit` se escribe al log y se sella con un `sync` ANTES de que el apply toque el store.**
+
+A partir de esa decisión, todo lo demás se deduce:
+
+- El log crece con un orden FIJO: Begin, operaciones (cada una con su LSN), Commit. Cuando el apply arranca, TODO el intento ya es durable. Si el apply falla a medias, NO es un escenario perdido: el log contiene el Begin, las operaciones y el Commit. Un `replay_wal` las re-aplica (idempotente) y la transacción se completa.
+- El LSN es la dirección física del log y la identidad del redo. Monótono, consecutivo, nunca reutilizado. La duración del log y la posición de los registros son ortogonales: truncar mueve bytes, no toca LSNs.
+- El sólo hecho de escribir el log antes que el dato HACE que UNDO sea innecesario: el apply a medias es una operación INCOMPLETA, no una operación APLICADA. La idempotencia del redo se encarga del resto.
+
+La otra decisión — complementaria, no rival — es la política de flush. La regla de oro es simple: tras cada `log_write`, un `sync`. Es la opción por defecto del capítulo (`CadaEscritura`). Pero si la semilla del group commit (cap. 30) ya obligó a la observación de que las páginas de datos no se llevan a disco antes del commit, entonces un `sync` POR TRANSACCIÓN es correcto: justo antes del apply ya se sabe que las páginas de datos están en RAM y no pueden quedar pisadas por un fsync previo. Esa es la política `SoloCommit`, un sync por transacción, semilla del cap. 30.
+
+El código vive en `liradb-workspace/crates/vol2-liradb/src/cap28_wal.rs`. Vamos a leerlo por partes, porque cada tipo y cada `commit` tiene un porqué.
+
+### El formato del registro
+
+```rust
+pub type Lsn = u64;
+pub type TxId = u64;
+
+pub enum CuerpoWal {
+    Begin,
+    Operacion(Operacion),   // MISMA del cap. 27
+    Commit,
+    Rollback,
+}
+
+pub struct WalRecord {
+    pub lsn: Lsn,
+    pub tx_id: TxId,
+    pub cuerpo: CuerpoWal,
+}
+```
+
+Cuatro piezas básicas, tres reutilizaciones deliberadas:
+
+- **`Operacion(Operacion)`** es la misma del cap. 27 — y la misma forma que el `RecordKind` del cap. 10 anticipaba. La semilla del WAL estaba plantada dos capítulos antes.
+- Los strings y `Value` se serializan con el encoding del cap. 9 (`encode_string`, `encode_value`, `decode_*`).
+- El framing hereda el del cap. 10: `length-prefix u32` para saber dónde termina cada registro, **`CRC32` con `crc32_simple`** para detectar bytes modificados sin re-parsear.
+- Lo único nuevo: `u64` LE para LSN y TxId, porque el LSN exige un orden monótono y los ids del cap. 7 no cabían en `u32`.
+
+Un detalle cargadito de consecuencias: las props de un `Node` son un `HashMap`. La iteración de un `HashMap` **no es determinista** — dos llamadas pueden devolver orden distinto. Un log debe codificar SIEMPRE los mismos bytes para el mismo valor (porque el CRC se calcula sobre los bytes, no sobre la operación lógica), así que `encode_props` ordena las claves antes de serializar. Sin esta ordenación, el mismo grafo produciría dos logs distintos y los tests de roundtrip fallarían al azar.
+
+### El framing byte a byte
+
+```
+[record_len: u32 LE][lsn: u64 LE][tx_id: u64 LE][tag: u8][payload...][crc32: u32 LE]
+```
+
+El orden de las validaciones al decodificar importa y es la cadena del cap. 11 + cap. 10:
+
+1. **length-prefix** → sabemos si el registro está completo o truncado.
+2. **CRC32** sobre `body` (todo menos el CRC). Si no cuadra, NO parseamos el cuerpo: un byte rotado no debe «interpretarse» como un valor legal.
+3. **tag** → Begin/Operacion/Commit/Rollback.
+4. **payload** → `Operacion` completa, codificada con la misma `encode_operacion` que el commit también produce.
+
+El CRC se valida ANTES que el tag porque la corrupción es local: si el cuerpo está roto, no sabemos qué versión del payload es la «correcta». Esa cadena — length → CRC → parse — es la del cap. 11, y se hereda tal cual.
+
+### El WAL: el «disco» del capítulo
+
+```rust
+pub struct Wal {
+    bytes: Vec<u8>,         // concatenación de registros
+    next_lsn: Lsn,          // 1, 2, 3, … — nunca reinicia
+    next_tx_id: TxId,       // 1, 2, 3, … — nunca reinicia
+    syncs: u64,             // contador de "fsync"
+    politica: PoliticaFlush,
+}
+```
+
+En RAM (igual que el `AppendOnlyLog` del cap. 10, su germen directo): un `Vec<u8>` de registros encadenados por length-prefix. Un WAL de fichero real sería un `File` con `O_APPEND` y `sync_all` — el mismo `FilePager::sync` del cap. 12; el PROTOCOLO (qué se escribe, cuándo, y quién se lee al despertar) es lo que este capítulo construye. La `fsync` real es la del cap. 12; aquí la durabilidad es un CONTADOR que cuenta las veces que el protocolo manda llevarla a cabo. Lo que los tests verifican es que se LLAME cuando el protocolo lo exige — y eso es la pieza AUDITABLE.
+
+Tres invariantes que el capítulo sostiene y los tests verifican:
+
+- Los LSN son monótonos y consecutivos desde el 1, y NUNCA se reutilizan — ni después de truncar.
+- Los TxId también son monótonos desde el 1.
+- `sync()` cuenta las «fsync»: en RAM no hay nada que sincronizar, pero la PROMESA es verificable y los tests la cuentan.
+
+### El commit en dos fases
+
+```rust
+pub fn commit(self) -> Result<ResumenCommitWal, WalError> {
+    // 1. Re-validar el buffer entero (punto de no retorno)
+    validar_buffer(self.store, &self.buffer).map_err(WalError::Validacion)?;
+
+    // 2. FASE LOG: cada operación al log ANTES que al store
+    for op in &self.buffer {
+        self.wal.log_write(self.tx_id, CuerpoWal::Operacion(op.clone()));
+        if self.wal.politica() == PoliticaFlush::CadaEscritura {
+            self.wal.sync();
+        }
+    }
+    // 3. EL PUNTO DE DURABILIDAD: Commit + sync
+    let lsn_commit = self.wal.log_write(self.tx_id, CuerpoWal::Commit);
+    self.wal.sync();
+
+    // 4. FASE APPLY: el store puede fallar aquí; el log ya tiene TODO
+    for (indice, op) in self.buffer.iter().enumerate() {
+        // … (put_node / put_edge / delete_node / delete_edge) …
+    }
+    Ok(resumen)
+}
+```
+
+Cinco líneas que esconden las decisiones del capítulo:
+
+- **Línea 2** (`re-validar`): el mismo `validar_buffer` del cap. 27 (que pasa a `pub(crate)` en este capítulo para que el handshake sea limpio). El «punto de no retorno» del cap. 27 se hereda; el `commit` re-valida el buffer entero porque entre el `stage()` y el `commit` nada cambió — el borrow checker lo garantiza.
+- **Líneas 5-9** (FASE LOG): el write-AHEAD. Cada `Operacion` se serializa al log con su LSN. En `CadaEscritura`, cada `log_write` añade un `sync`. La política correcta es la del cap. 22: ruidosa, explícita, sin atajos silenciosos.
+- **Línea 11** (`Commit + sync`): el punto de durabilidad. El LSN de este registro es devuelto al llamador (`lsn_commit`), y queda escrito en `ResumenCommitWal.lsn_commit`. A partir de esta línea, la transacción existe aunque el proceso muera al siguiente tick.
+- **Líneas 14-24** (FASE APPLY): el store se toca. Puede fallar. Si falla, el llamador recibe `WalError::ApplyFallido{ indice, aplicadas, causa }` — la MISMA FORMA que el `TransaccionError::ApplyFallido` del cap. 27 — pero el `Display` cambia: «… pero el log YA contiene el commit: `replay_wal` COMPLETA la transacción (arranque automático: cap. 29)».
+
+Ésta es la decisión del capítulo: **commit-marker-ANTES-del-apply**. La alternativa — escribir el `Commit` al final del apply — dejaría el apply a medias SIN commit y rescatarlo exigiría UNDO. UNDO es la mitad que ARIES (Mohan et al. 1992) construye completa. Aquí no la necesitamos: el log ya contiene todo lo que la tx quería hacer, y `replay_wal` la termina. El nombre técnico de la estrategia es **roll-forward** o **redo-only**.
+
+### El redo idempotente
+
+```rust
+pub(crate) fn aplicar_para_redo(
+    store: &mut dyn GraphStore,
+    op: &Operacion,
+) -> Result<(), StoreError> {
+    match op {
+        Operacion::PutNode(n) => match store.get_node(n.id) {
+            Some(actual) if actual == n => Ok(()),       // idéntico = no-op
+            Some(_) => {                                  // divergente = el log manda
+                store.delete_node(n.id);
+                store.put_node(n.clone())
+            }
+            None => store.put_node(n.clone()),
+        },
+        // … igual con aristas y deletes …
+    }
+}
+```
+
+Dos reglas y media:
+
+- **Put idéntico al que ya está = no-op.** Por eso un replay sobre un store al que ya se aplicó la mitad NO duplica.
+- **Put divergente del que ya está = overwrite.** El log es la verdad; si el registro dice «este nodo tiene estos labels» y el store tenía «este nodo tiene estos otros labels», gana el log.
+- **Delete de lo ausente = no-op silencioso.** Re-aplicar un `DeleteNode` sobre un nodo que el apply a medias ya borró no es un error.
+
+La idempotencia es lo que hace que el replay no necesite saber qué sobrevivió al fallo. Sin ella, el replay necesitaría un análisis del estado exacto al fallar (eso es la fase Analysis de ARIES, el cap. 29), y la «orden de re-aplicar lo que el log dice» dejaría de ser segura. La regla es: si una operación del log puede ejecutarse DOS VECES seguidas sin cambiar el resultado, la operación es REDO-segura. Las cuatro `Operacion` lo son.
+
+### El replay en dos pasadas
+
+```rust
+pub fn replay_wal(store: &mut dyn GraphStore, wal: &Wal) -> Result<InformeReplay, WalError> {
+    // Pasada 1: ¿quién llegó a Commit?
+    let mut confirmadas: HashSet<TxId> = HashSet::new();
+    let mut iniciadas: HashSet<TxId> = HashSet::new();
+    for rec in wal.iter() {
+        match rec.cuerpo {
+            CuerpoWal::Begin => { iniciadas.insert(rec.tx_id); }
+            CuerpoWal::Commit => { confirmadas.insert(rec.tx_id); }
+            _ => {}
+        }
+    }
+
+    // Pasada 2: redo de lo confirmado, en orden de LSN
+    let mut operaciones = 0usize;
+    for rec in wal.iter() {
+        if let CuerpoWal::Operacion(op) = &rec.cuerpo
+            && confirmadas.contains(&rec.tx_id)
+        {
+            aplicar_para_redo(store, op).map_err(|causa| WalError::RedoFallido {
+                lsn: rec.lsn,
+                causa,
+            })?;
+            operaciones += 1;
+        }
+    }
+
+    Ok(InformeReplay {
+        transacciones_confirmadas: confirmadas.len(),
+        transacciones_descartadas: iniciadas.difference(&confirmadas).count(),
+        operaciones_reaplicadas: operaciones,
+    })
+}
+```
+
+Dos pasadas, una decisión:
+
+- **Pasada 1** junta los `tx_id` con `Commit`. Es O(N) sobre el log (N = número de registros). Te dice, sin importar el orden, quién lived to tell the tale.
+- **Pasada 2** re-aplica, en orden de LSN (= orden del log), sólo las operaciones de las txs confirmadas. También O(N). Los Begin sin Commit posterior son DESCARTADOS: «como si nunca hubieran ocurrido». El `informe.transacciones_descartadas` los cuenta.
+
+La alternativa — una sola pasada con estado por registro — exige tres estados por entrada (pendiente / en redo / confirmado) y no resuelve la intercalación de Begin/Operación/Commit/Rollback de V transacciones que el log admite por construcción (preparado para el group commit). Dos pasadas es la complejidad mínima que respeta la intercalación.
+
+### El truncado con contrato
+
+```rust
+pub fn truncar_hasta_lsn(&mut self, lsn: Lsn) -> usize {
+    // … busca el primer registro con lsn > lsn, descarta lo anterior …
+    // NUNCA: next_lsn, next_tx_id — los LSNs no se reutilizan.
+}
+```
+
+El log puede ser enorme; en algún momento hay que podarlo. La poda es SEGURA sólo si los registros podados ya son visibles en el store. **Si se trunca más allá, los redos posteriores pueden quedar HUÉRFANOS** (arista con un nodo que ya no está en el log). El contrato del llamador cierra la puerta:
+
+> *«Truncar lo no-durable PIERDE datos: el replay sólo ve lo que queda. El checkpoint que decide «hasta dónde es seguro» de forma automática es el cap. 29; la rotación por tamaño del fichero queda como deuda documentada.»*
+
+Lo que NUNCA se reinicia: `next_lsn` / `next_tx_id`. La identidad de un redo es su LSN, no su posición en bytes. Si el llamador trunca los primeros 2000 LSNs y luego escribe una tx nueva, los nuevos LSNs empiezan en 2001, no en 1. Que dos redos tuvieran el mismo LSN sería una corrupción lógica; el motor los distinguiría por la posición en bytes, sí, pero la identidad del registro se rompería debajo.
+
+## 28.7 Código completo ejecutable
+
+El código vive en `liradb-workspace/crates/vol2-liradb/src/cap28_wal.rs`. Vamos a leerlo por partes, porque cada `commit` y cada `replay` tiene un porqué.
+
+### La transacción con WAL
+
+```rust
+pub struct WalTransaccion<'a> {
+    store: &'a mut dyn GraphStore,
+    wal: &'a mut Wal,
+    tx_id: TxId,
+    buffer: Vec<Operacion>,
+}
+
+impl<'a> WalTransaccion<'a> {
+    pub fn begin(store: &'a mut dyn GraphStore, wal: &'a mut Wal) -> Self {
+        let (tx_id, _lsn) = wal.begin_tx();
+        WalTransaccion { store, wal, tx_id, buffer: Vec::new() }
+    }
+
+    pub fn stage(&mut self, operacion: Operacion) -> Result<(), TransaccionError> {
+        self.buffer.push(operacion);
+        match validar_buffer(self.store, &self.buffer) {
+            Ok(()) => Ok(()),
+            Err(e) => { self.buffer.pop(); Err(e) }
+        }
+    }
+
+    pub fn put_node(&mut self, node: Node) -> Result<(), TransaccionError> {
+        self.stage(Operacion::PutNode(node))
+    }
+
+    pub fn commit(self) -> Result<ResumenCommitWal, WalError> {
+        // (cuerpo del commit en dos fases, ver §28.6)
+    }
+
+    pub fn rollback(self) -> ResumenRollbackWal {
+        let lsn_rollback = self.wal.log_write(self.tx_id, CuerpoWal::Rollback);
+        ResumenRollbackWal {
+            operaciones_descartadas: self.buffer.len(),
+            lsn_rollback,
+        }
+    }
+}
+```
+
+Tres préstamos exclusivos simultáneos — uno al store, otro al WAL, otro a sí misma — codifican el «un único escritor» del cap. 27. Mientras la transacción vive, nadie más toca el store NI el WAL. El ciclo de vida en los tipos: `commit` y `rollback` consumen `self`; usar una tx cerrada o anidar dos sobre el mismo store no compila.
+
+Y un detalle que la prosa debe decir: el `Drop` implícito (no hay `Drop` explícito) no escribe Rollback. ¿Por qué? Porque si la tx se cierra sin commit ni rollback, lo más probable es que sea un `unwrap()` intermedio o un pánico. **No escribir el marker** es la decisión correcta: la ausencia de Commit cancela la tx en el replay, y un marker Rollback escrito en el panic path sería mentiroso (el store «no murió» realmente, sólo el unwrap falló). El `Wal::iter` la descarta con la misma pinta: sin Commit, la tx no ocurrió.
+
+### La `PoliticaFlush`
+
+```rust
+pub enum PoliticaFlush {
+    CadaEscritura,  // sync tras cada log_write: la regla de oro, literal
+    SoloCommit,     // sync SÓLO en el commit: un sync por tx; semilla del group commit
+}
+```
+
+Se enseña la regla antes que la optimización. El alumno que tropieza con `SoloCommit` primero NO entiende por qué un sync por tx es suficiente, y el día que la máquina sufra un fsync lento y la mitad de los commits se alarguen misteriosamente, no sabe dónde mirar. Con `CadaEscritura` por defecto, el alumno mide 4 syncs para 3 ops + commit; con `SoloCommit`, mide 1. Y cuando el cap. 30 enchufe concurrencia, la semilla ya está plantada.
+
+El `Wal::default` se implementa a mano, no se deriva: la política por defecto es CONTENIDO del capítulo, no azar. `#[derive(Default)]` requeriría un `PoliticaFlush::default()` que decide quién sabe cómo. El `Default` manual fija `CadaEscritura` y documenta la decisión.
+
+## 28.8 Prueba de fuego
+
+La prueba de fuego no es «los tests pasan» — es **«el agujero del cap. 27 está cerrado»**. El test-tesis del capítulo reproduce el escenario que el cap. 27 AFIRMABA (con `node_count()==2` y «sin log no se pueden deshacer») y lo termina al revés.
+
+```rust
+// El mismo StoreQueFalla del cap. 27, las mismas 4 ops, el mismo fallar_en: 3.
+let mut store = StoreQueFalla {
+    inner: MemoryStore::new(),
+    escrituras: 0,
+    fallar_en: 3,
+    con_panic: false,
+};
+let mut wal = Wal::new();
+let mut tx = WalTransaccion::begin(&mut store, &mut wal);
+tx.put_node(Node::new(0, "A")).unwrap();
+tx.put_node(Node::new(1, "B")).unwrap();
+tx.put_node(Node::new(2, "C")).unwrap();  // el store fallará aquí
+tx.put_node(Node::new(3, "D")).unwrap();
+let err = tx.commit().unwrap_err();
+
+// MISMA FORMA que el cap. 27…
+assert_eq!(
+    err,
+    WalError::ApplyFallido {
+        indice: 2,
+        aplicadas: 2,
+        causa: StoreError::UnknownNode(usize::MAX)
+    }
+);
+assert!(err.to_string().contains("replay_wal"));
+
+// …PERO el log SÍ contiene TODO + Commit + sync.
+assert_eq!(store.node_count(), 2);                     // a medias, como el cap. 27
+assert_eq!(wal.syncs(), 1 + 4);                        // commit + 4 escrituras
+let ultimo = wal.iter().last().unwrap();
+assert_eq!(ultimo.cuerpo, CuerpoWal::Commit);          // EL COMMIT ESTÁ
+
+// EL RESCATE: replay sobre el MISMO store a medias → COMPLETA.
+let informe = replay_wal(&mut store, &wal).unwrap();
+assert_eq!(informe.operaciones_reaplicadas, 4);
+assert_eq!(store.node_count(), 4);                      // LA TRANSACCIÓN COMPLETA
+assert!(store.get_node(3).is_some());                  // el nodo "D" llegó
+```
+
+Y la versión con `panic!` (el `corte de luz` literal del cap. 27):
+
+```rust
+let mut store = StoreQueFalla { fallar_en: 2, con_panic: true, … };
+let resultado = catch_unwind(AssertUnwindSafe(|| {
+    let mut tx = WalTransaccion::begin(&mut store, &mut wal);
+    tx.put_node(Node::new(0, "A")).unwrap();
+    tx.put_node(Node::new(1, "B")).unwrap();  // pánico AQUÍ
+    tx.put_node(Node::new(2, "C")).unwrap();
+    tx.put_node(Node::new(3, "D")).unwrap();
+    tx.commit()
+}));
+// Rescatamos el pánico, el store quedó con 1 nodo.
+assert_eq!(store.node_count(), 1);
+// Pero el log SÍ terminó con Commit.
+assert!(matches!(wal.iter().last(), Some(r) if r.cuerpo == CuerpoWal::Commit));
+// Y el replay completa.
+let informe = replay_wal(&mut store, &wal).unwrap();
+assert_eq!(informe.operaciones_reaplicadas, 4);
+assert_eq!(store.node_count(), 4);
+```
+
+Ésta es la inversión de la regresión del cap. 27: el escenario que aquél cerraba con «y nadie recuerda qué faltaba», éste lo abre con «el log SÍ recuerda» y lo cierra con `node_count()==4`. La forma del error es la MISMA (`ApplyFallido{indice: 2, aplicadas: 2}`); el contenido del `Display` cambió. La prueba de que el capítulo sirve es que vuelve falsa la afirmación del anterior.
+
+Y los casos de fallo son igual de importantes:
+
+```rust
+// Un CRC tocado en el ÚLTIMO byte del log:
+let mut bytes = encode_wal_record(&rec1);
+bytes.extend(encode_wal_record(&rec2));
+bytes[bytes.len() - 1] ^= 0xFF;  // touch the CRC
+let err = decodificar_wal(&bytes).unwrap_err();
+assert!(matches!(err, WalError::CrcInvalido { lsn: Some(2), .. }));
+
+// Un registro truncado por un corte de luz:
+let cortado = &completo[..completo.len() - 3];
+let err = decodificar_wal(cortado).unwrap_err();
+assert!(matches!(err, WalError::RegistroTruncado { .. }));
+
+// Un hueco de LSN (bytes quitados de en medio):
+let err = decodificar_wal(&encode_con_hueco).unwrap_err();
+assert_eq!(err, WalError::LsnInvalido { leido: 5, esperado: 2 });
+
+// Un truncado agresivo (rompe dependencias):
+let err = replay_wal(&mut vacio, &wal_truncada).unwrap_err();
+assert!(matches!(err, WalError::RedoFallido { lsn: 6, .. }));
+```
+
+Estos tests — `crc_invalido_detectado`, `registro_truncado_detectado`, `lsn_invalido_en_cadena_detectado`, `replay_falla_ruidosamente_si_el_truncado_rompio_dependencias` — encapsulan las cuatro promesas del WAL: **detectar corrupción, detectar truncado, detectar huecos, fallar ruidosamente cuando el contrato del truncado se rompe**. Si este capítulo se te olvidara, las dos entradas (A y D) del `informe_acid()` volverían a `NivelGarantia::Ninguna` y el `StoreQueFalla` del cap. 27 volvería a dejar el store a medias «sin vuelta atrás».
+
+## 28.9 Qué hemos sacrificado
+
+Toda estructura tiene un precio. El WAL no es gratis:
+
+1. **Trabajo extra en cada commit.** El log se escribe entero ANTES del apply; las escrituras adicionales son O(N) registros por transacción. Sin WAL, el commit era un loop sobre el buffer. El precio es la AUDITABILIDAD: lo que se gana es que ningún commit confirmado se pierde.
+2. **El log crece sin parar.** Sin truncado, el log crece hasta llenar el disco. El truncado con contrato del llamador es una solución PARCIAL: el cap. 29 construirá el checkpoint que decide «hasta dónde» automáticamente.
+3. **Sin UNDO, una tx con apply a medias se rescata con replay.** Pero si la política fuera *steal* (aplicar antes de confirmar), el apply a medias de una tx abortada exigiría UNDO — antes-images o CLR. La pregunta «¿UNDO o no?» es de DISEÑO, no de implementación: la mitad «no-UNDO» es lo que hace al WAL del cap. 28 tan simple.
+4. **El `ApplyFallido` mantiene la forma `ApplyFallido{ indice, aplicadas, causa }` del cap. 27.** Quien migró del cap. 27 al cap. 28 ve un cambio de `Display` y un cambio de signatura del wrapper (`WalError::ApplyFallido` en vez de `TransaccionError::ApplyFallido`). El compilador lo señala, pero la ambigüedad conceptual — «¿es lo mismo?» — es justo la que el capítulo quiere que el alumno resuelva.
+5. **Group commit REAL (varias tx concurrentes compartiendo un fsync) NO está implementado.** La semilla — `SoloCommit` con un sync por tx — sí. La concurrencia es el cap. 30. Deuda documentada, código plantado.
+
+## 28.10 Cómo lo hace una BBDD real
+
+El WAL del capítulo es mínimo. Las bases de datos reales añaden piezas que aquí NO están (y se nombran como «luego lo verás», honestamente):
+
+- **Persistencia real.** Un WAL en RAM es un `Vec<u8>`; un WAL real es un `File` abierto con `O_APPEND` y `sync_all` por medio. El `FilePager::sync` del cap. 12 es la pieza que enchufa el disco debajo del log. Lo que aquí se cuenta como un contador, allí es la `fsync(2)` del sistema operativo.
+- **Checkpoint.** Quinielamos: ¿hasta qué LSN es seguro truncar? El cap. 29 construye el algoritmo — normalmente, el LSN hasta el cual TODAS las páginas de datos han sido llevadas a disco (con `dirty page table` y todo eso). ARIES clásico: la dirty page table y el `recLSN` por página.
+- **Steal / no-steal.** Aquí NO se roba: sólo se aplica después del commit. Por eso UNDO no hace falta. Una BD real con steal (deja páginas modificadas en disco antes del commit) necesita antes-images o CLR — la otra mitad de ARIES.
+- **Group commit.** Varias tx concurrentes comparten un fsync: la semilla es `SoloCommit` sin concurrencia; el cierre es el cap. 30.
+- **Write-ahead con reordenación.** Una BD grande puede diferir la escritura de la página de datos al disco LUEGO del commit, siempre que la página esté en el log antes; la política es la misma, la cola es más larga.
+
+En todas, el patrón es idéntico al que has construido: **registro con framing + política de flush explícita + commit-marker-ANTES-del-apply + redo idempotente + truncado con checkpoint**. Lo que cambia es la cantidad de piezas de cada tipo y la finura del contrato.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: predice los LSNs y el número de syncs de una transacción con 2 puts y 1 delete, en `CadaEscritura`, y compruébalo con `commit_aplica_todo_y_es_durable`.
+- *Intermedio*: cambia la `Tag` numérica de un `Operacion::PutNode` (1 → 5) en el encoding y demuestra que el roundtrip falla con `tag de cuerpo desconocido`. ¿Por qué la serialización trata los tags como una decisión ABI?
+- *Experto*: añade una nueva variante `Operacion::PutLabel(NodeId, String)` que asigne una segunda etiqueta a un nodo existente. Codifícala, decodifícala, propágala por el `apply` del `commit` y por `aplicar_para_redo`, y rehaz el ciclo de tests.
+
+## 28.11 Lo que te llevas
+
+- La **regla del write-ahead** es una promesa sobre la dirección de la recuperación: si el log se escribe ANTES, el camino es re-aplicar (redo). Si se escribe DESPUÉS, el camino es deshacer (undo). La mitad que cuesta menos es la primera.
+- El **LSN** es la dirección física del log y la identidad del redo: monótono, consecutivo, asignado por el `Wal`, **nunca reutilizado** (ni tras truncar).
+- El **commit en dos fases** del capítulo: re-validar → log_write de cada op (sync según política) → Commit + sync → apply. El `Commit` se sella ANTES de que el apply toque el store.
+- El **redo idempotente** es lo que permite re-aplicar sin saber qué sobrevivió: put idéntico = no-op, put divergente = overwrite, delete de lo ausente = no-op.
+- La **parada limpia** del iterador ante corrupción/truncado/LSN-no-consecutivo + el `decodificar_wal` que grita el LSN aparente del daño.
+- El **truncado con contrato** del llamador: los LSNs no se reinician; truncar lo no-durable PIERDE datos.
+- `CadaEscritura` es la regla de oro; `SoloCommit` es la semilla del group commit. La diferencia en fsync es 4 vs 1, con el mismo resultado al hacer replay.
+- El **`ApplyFallido` con la misma forma del cap. 27** y su `Display` cambiado: «replay_wal COMPLETA la transacción (arranque automático: cap. 29)».
+- **Tocar el `ApplyFallido` del cap. 27 para que rescate la transacción**, es la inversión de la regresión del cap. 27 — la prueba de que el capítulo sirve.
+
+## 28.12 Ojo, cuidado con…
+
+- **Confundir commit con persistencia.** El commit del cap. 27 era en RAM; la durabilidad es del **registro `Commit` en el log + `sync`**, y por eso `ResumenCommitWal` lleva `lsn_commit`. Síntoma: alumno lee `ResumenCommit` del cap. 27 y asume que la tx está durable en disco.
+- **Confundir `CadaEscritura` y `SoloCommit` con fsync de verdad.** `Wal::sync` es un CONTADOR en RAM; la `sync_all` REAL es la del `FilePager::sync` del cap. 12. Mide la política, no el disco.
+- **Truncar lo no-durable, en serio.** `truncar_hasta_lsn(lsn)` es PODEROSO. Si pasas el LSN de una tx intermedia (apply a medias) y luego llamas a `replay_wal` sobre un store VACÍO, los nodos se pierden y las aristas quedan huérfanas (`RedoFallido { lsn: 6, ... }`). El test `replay_falla_ruidosamente_si_el_truncado_rompio_dependencias` es la DEMOSTRACIÓN; el contrato del llamador en el doc es la PREVENCIÓN.
+- **No confundir `LSN` con `posición en bytes`.** El primero es la dirección física del log, monótono, nunca reutilizado. El segundo cambia con el truncado. La identidad de un redo es la primera.
+- **Olvidar la ordenación de las props.** El `encode_props` ordena las claves antes de serializar para que el CRC dé lo mismo. Si reordenas a mano o cambias el sort por un HashMap.iter, el roundtrip falla — porque el CRC del mismo nodo cambia.
+- **Creer que la «semilla del group commit» es group commit.** No: es el `SoloCommit` con UN sync por tx. El group commit concurrente es OTRA cosa (varias tx compartiendo un fsync) y exige concurrencia real — cap. 30.
+
+## 28.13 Pin de batalla
+
+> *«"El log se escribe antes que el dato" no es una orden de paso. Es una promesa sobre la dirección de la recuperación. Si el log se escribe ANTES, la mitad desconocida del problema se resuelve releyendo. Si se escribe DESPUÉS, se resuelve deshaciendo — y deshacer dobla el log. La pregunta "¿UNDO o no?" se contesta ANTES de escribir la primera línea de código.»*
+
+## 28.14 Si solo lees 30 segundos
+
+La transacción del cap. 27 vivía en RAM; un cierre del proceso se llevaba la confirmación. El **Write-Ahead Log** lo arregla con tres decisiones: (1) el log se escribe y sella con un `Commit + sync` ANTES de que el apply toque el store; (2) cada registro lleva un **LSN** monótono y un CRC32; (3) el **redo idempotente** re-aplica lo confirmado y descarta lo no confirmado. Si el apply falla a medias, el log YA contiene el `Commit` y un `replay_wal` completa la transacción. `CadaEscritura` es la regla de oro (un fsync por cada log_write); `SoloCommit` es la semilla del group commit (un fsync por transacción). El truncado es con CONTRATO del llamador y los LSNs no se reinician.
+
+## 28.15 Una historia pequeña
+
+Cuando implementamos el cap. 27 por primera vez, los tests del `StoreQueFalla` se veían finos: el `commit` devolvía `ApplyFallido{indice: 2, aplicadas: 2}`, el `Display` del error adjetivaba «sin log no se pueden deshacer», y la transacción «no se completó». Los tests verdes. El módulo compilaba. Pero el `informe_acid()` del cap. 27 dejaba la **D** en `NivelGarantia::Ninguna` con un comentario al lado: «en RAM, no durable (cap. 28)». Y la **A** en `Parcial` con la coletilla: «frente a validación; NO frente a un fallo del apply real».
+
+Eso no era un módulo roto. Era un módulo HONESTO. Y la honestidad es lo que el capítulo 28 viene a cambiar. Hoy, el `Display` de `WalError::ApplyFallido` lleva, en su última línea, la frase que invierte la regresión: «replay_wal COMPLETA la transacción (arranque automático: cap. 29)». Y el `informe_acid_post_wal()` cierra la **D** de `Ninguna` a `Parcial` con un LOG en mayúsculas. La tx que ayer se perdía en un cierre de proceso, hoy es recuperable con un replay. Es la promesa del write-ahead, hecha cumplir.
+
+## Ejercicios resueltos
+
+**1. ¿Por qué el `Begin` no se sincroniza y el `Commit` sí?**
+
+Porque la ausencia de `Commit` ya cancela la transacción en el replay: si la tx se cierra sin Commit, no «ocurrió» del lado de la durabilidad. El `Begin` necesita quedar en el log para que la pasada 1 del `replay_wal` pueda contar la tx como «iniciada pero no confirmada» y descartarla, pero la ausencia de `Commit` ya implica eso. En cambio, el `Commit` es el MOMENTO de la durabilidad: si ese registro se pierde (corte de luz a mitad de su escritura), la tx NO se considera confirmada. Un `sync` antes del `Commit` no impide que el `Commit` mismo se pierda; lo que lo protege es que, o se escribe entero (y entonces el sync lo sella), o se escribe a medias y un crc/truncado lo detecta como cola rota. La asimetría es la razón por la que se enseñan dos políticas de `sync` distintas: el `Begin` no lo necesita; el `Commit` SÍ.
+
+**2. ¿Por qué el `replay_wal` descartaBegin` Commit`s y replica operaciones, en ese orden y no otro?**
+
+Porque la pasada 1 (`HashSet` de `tx_id` con `Commit`) resuelve la pregunta lógica («¿quién confirmó?») sin importar el orden temporal: el `Commit` es lo que decide, no el orden de las ops. La pasada 2 (en orden de LSN) ejecuta la respuesta en el orden FISICO del log, lo que garantiza dos cosas: (a) si dos txs tocaron el mismo nodo (algo que no pasa hoy sin concurrencia, pero el log ya lo admite), el replay las aplica en el orden en que se firmaron; (b) si una tx posterior depende de una anterior (una arista al nodo que la primera crea), el LSN menor garantiza que la dependencia se aplica antes. La regla «orden de LSN = orden de aplicación» es el reflejo físico del orden lógico «orden de Commit» dentro de cada tx.
+
+**3. ¿Por qué los LSNs no se reinician tras truncar?**
+
+Porque la identidad de un redo es su LSN, no su posición en bytes. Si el `Wal` llevara la cuenta de los LSNs restantes (digamos, que tras truncar se reinicia en 1), dos transacciones en distintas épocas del log podrían tener LSNs coincidentes; un redactor que viera los dos no sabría distinguirlos, y cualquier cosa que indexe por LSN (la `dirty page table` que ARIES usará, nuestro propio `RedoFallido { lsn, … }`) confundiría el presente con el pasado. La monotonía del LSN hace al log AUTO-REFERENCIABLE: «el nodo 7 que escribí en `lsn=42`» es una oración estable a través del truncado y del paso del tiempo.
+
+## Ejercicios propuestos
+
+**Esencial.** Predice, ANTES de ejecutar, el contenido y los LSNs de un log de UNA transacción `WalTransaccion` que crea 3 nodos y 2 aristas y confirma, con `CadaEscritura`. ¿Cuántos registros tiene? ¿Cuál es `lsn_commit`? ¿Cuántos `syncs` se cuentan? ¿Qué tipo de cuerpo tiene cada uno? Compruébalo con `commit_aplica_todo_y_es_durable` y `politica_por_defecto_y_syncs_por_escritura`. Criterio: predicción exacta de número de registros + `lsn_commit` + número de syncs.
+
+**Intermedio.** Sobre un log con 12 registros (3 Begin, 6 Operacion, 3 Commit), TODOS con su CRC y LSN válidos, pero donde la transacción 2 NO tiene Commit (la operación 6 de 6 fue su última), calcula a MANO el `InformeReplay` sobre un store vacío (confirmadas, descartadas, reaplicadas) y el `node_count`/`edge_count` del store renacido. Compruébalo con `transacciones_intercaladas_solo_la_confirmada_sobrevive`. Criterio: informe + cuentas exactas y respuesta a «¿se tocó el store con la abortada?».
+
+**Experto.** Toma un log del capítulo, corrompe UN byte en la mitad del cuerpo de un registro y PREDECIR qué devuelve `decodificar_wal` (tipo de error, `lsn` reportado), qué hace `WalIterator`, y qué ve `replay_wal`. Compara con `crc_invalido_detectado` y `corrupcion_al_inicio_el_replay_para_en_el_prefijo_integro`. Criterio: tipo de error + `lsn` correcto + semántica recuperación/estricto + afirmación de que el replay sobre store pre-poblado no duplica.
+
+## Para profundizar
+
+- **Mohan, Haderle, Lindsay, Pirahesh y Schwarz, «ARIES: A Transaction Recovery Method Supporting Fine-Granularity Locking and Partial Rollbacks Using Write-Ahead Logging»**, ACM Transactions on Database Systems 17(1), marzo 1992, pp. 94-162 (DOI 10.1145/128765.128770). El paper donde la decisión commit-marker-antes-del-apply se formaliza como la mitad REDO de ARIES, y la otra mitad (UNDO + Analysis) cierra la recuperación completa. El capítulo 29 es la otra mitad.
+- **Jim Gray, «Notes on Database Operating Systems»**, IBM Research Report RJ 2188, 1978. La huella de la bitácora como columna vertebral de la recuperación en System R. La idea del LSN como ordinal nace aquí.
+- **Bernstein, Hadzilacos y Goodman, «Concurrency Control and Recovery in Database Systems»**, cap. 11 («Logging and Recovery»), Addison-Wesley 1987. Los algoritmos de recovery usando LSN y la tabla de páginas sucias: la lectura más densa del tema.
+- **Lampson y Sturgis, «Crash Recovery in a Distributed Data Storage System»**, Xerox PARC 1976. El precursor cuidadoso: la versión anterior a la invención del LSN, con un protocolo que también funciona pero es más caro.
+- **«Database Internals» (Alex Petrov)**, capítulo 7. Layout del WAL en bases reales (PostgreSQL, MySQL InnoDB) y los detalles de la persistencia que aquí hemos modelado con un contador.
+- **CMU 15-445 (Intro to Database Systems)**, Lecture 17 — «Write-Ahead Logging», con el proyecto de BusTub que implementa un WAL REAL (con file system, log sequence, y todo lo que el cap. 29 promete).
+- **Código fuente de SQLite** (`pager.c`, `wal.c`): la implementación de un WAL real en producción, con sus group commit, su checkpoint y su truncate.
+
+## Mini-diálogo: en guardia nocturna
+
+> — O sea, que el WAL es como un cuaderno de notas antes de hacer un cambio.
+>
+> — Un poco más serio: es un cuaderno de notas con un sello notarial. Cada anotación lleva un número correlativo, un checksum, y la garantía de que el cuaderno se firma EN SECO antes de tocar el original. Si la firma llega al final pero el original se quedó a medias, relees el cuaderno y completas. Si la firma NUNCA llegó, el original nunca se tocó.
+>
+> — ¿Y por qué COMMIT antes y no después?
+>
+> — Porque entonces el cuaderno contiene la historia ANTES de que la historia se ejecute. Releer es «haz otra vez lo que el cuaderno dice». Si el COMMIT fuera al final, el cuaderno contendría la historia DESPUÉS de que la historia se ejecutó — y releer no terminaría lo que se quedó a medias, tendría que DESHACERLO. La mitad de la maquinaria de undo es justo ésa: que el cuaderno tiene imágenes ANTES y DESPUÉS, y el sistema elige cuál mira.
+>
+> — Entonces lo de undo es para más tarde.
+>
+> — Sí. El cap. 29. Cuando ya tengamos el cuaderno en disco y el motor abra la base de datos, ARIES completo: Analysis (averigua qué quedó a medias), Redo (lo que el cuaderno dice que se confirmó), Undo (lo que el cuaderno dice que se abortó). La Parte VI del libro es eso.
+
+---
+
+*(Próximo capítulo: 29 — Recuperación después de un fallo (ARIES simplificado). Aquí el `replay_wal` se invocaba a mano. Ahora se enchufa al abrir la base de datos persistente: el log se escanea, el store se redibuja, y la pregunta "¿UNDO?" se responde con la misma claridad con la que este capítulo respondió la pregunta previa.)*
+# Capítulo 29 — Recuperación después de un fallo (ARIES simplificado)
+
+> *«Un log no vale lo que sus bytes: vale lo que puede reconstruirse con ellos tras un corte de luz.»*
+
+## 29.0 La anécdota de la esquina
+
+Hacia 1988, en el IBM Almaden Research Center, un grupo de cuatro ingenieros —Chandra Mohan, Don Haderle, Bruce Lindsay, Hamid Pirahesh y Peter Schwarz— publicó un paper interno de cuarenta páginas que llevaba un título para entonces modesto: «ARIES: A Transaction Recovery Method Supporting Fine-Granularity Locking and Partial Rollback Using Write-Ahead Logging». ARIES son las siglas de Algorithm for Recovery and Isolation Exploiting Semantics. Lo modesto era el título; lo que proponían era la receta que, treinta y cuatro años después, siguen usando Postgres, InnoDB, Oracle, SQL Server y una larga lista de sistemas que, cambiaron implementaciones, ajustaron políticas y pulieron heurísticas, pero no tocaron el esqueleto.
+
+¿Por qué ese esqueleto triunfó? Porque antes de ARIES las bases de datos recuperaban su estado tras un crash de cuatro o cinco maneras distintas, cada una con su propio catálogo de bugs: unas no deshacían un apply a medias, otras descubrían el undo necesario cuando ya era tarde, las había que asumían no-steal por construcción y pagaban el precio en buffer pool bloqueado. Mohan y compañía miraron el problema de frente y se preguntaron —en una sola frase— qué tres cosas tiene que hacer un motor al despertar: **(1) reconstruir lo que sabe del mundo**, **(2) llevar el store EXACTAMENTE al estado del corte**, y **(3) retroceder lo que las transacciones rotas no debieron haber dejado**. Las llamaron, en orden, **Analysis**, **Redo**, **Undo**. Y convinieron en llamarlo ARIES, como al pastor germánico que guía a la base de datos de vuelta a casa tras el corte de luz.
+
+Este capítulo es la versión sencilla de ese esqueleto, sobre `MemoryStore` y el WAL del cap. 28. No es un ARIES para producción: faltan los registros de compensación (CLR) y el log de before-image — los huecos que un motor de verdad cierra con una capa más. Pero es un ARIES HONESTO: las tres fases están, el orden está, y la pieza más interesante del capítulo —qué hacer cuando falta la imagen anterior de un elemento borrado— se documenta como una CUENTA en el informe de recuperación, no como un bug silencioso. La honestidad manda cuando los logs son uno de los pocos lugares donde mentir tiene consecuencias duraderas.
+
+## 29.1 Objetivo
+
+Al terminar este capítulo sabrás **cómo se reconstruye un motor transaccional tras un corte de luz**, y habrás construido las tres fases del algoritmo que se convirtió en estándar: Analysis, Redo, Undo. Cuatro piezas en `cap29_recuperacion.rs`:
+
+1. **`analizar(wal)`** — la fase 1: recorre el log hacia delante y reconstruye la tabla de transacciones, los contadores `next_lsn`/`next_tx_id` y la *dirty element table* (qué elementos tocó una operación y en qué LSN).
+2. **`redo` + `deshacer`** — las fases 2 y 3: re-aplicar todo en orden de LSN (incluidas las perdedoras robadas) y deshacer después, en orden inverso, sólo las perdedoras.
+3. **`guardar_wal` + `cargar_wal` + `reabrir`** — el FICHERO del WAL: el `sync` del cap. 28 era un contador; aquí el fichero es el almacenamiento estable real.
+4. **`Checkpoint` + `truncar_seguro` + `rotar_si_excede`** — el truncado ahora automatizado y la rotación por tamaño (la deuda que el cap. 28 dejaba firmada a mano).
+
+Y el hito del capítulo: una perdedora con **steal** —es decir, que ya escribió al store antes de morir— se RECUPERA de un crash y deja el store como si nunca hubiera existido. Medido, no prometido.
+
+## 29.2 Problema
+
+El cap. 28 dejó la regla «commit-marker-antes-del-apply» hecha protocolo, y construyó lo más difícil: **`replay_wal` re-aplica las operaciones de las confirmadas en orden de LSN, idempotente**, y un apply a medias de una CONFIRMADA se completa por roll-forward. Funciona, y bajo la política no-steal del cap. 28 es incluso elegante: una perdedora no tocó el store (su staging vive en `WalTransaccion` y sólo aplica tras el Commit), y el undo es trivialmente vacío.
+
+Pero elegante NO es lo que necesita una base de datos de verdad. Mira los tres problemas concretos que el cap. 28 dejó con la palabra *deuda* escrita al lado:
+
+1. **El «disco» del WAL es un contador.** `Wal::sync()` del cap. 28 incrementa un entero. Los tests verifican que el contador sube; nadie verifica que los bytes lleguen a un sitio del que se pueda RECUPERAR. Cuando el proceso muere, el `Wal` se evapora: el próximo `Wal::new()` parte de cero.
+2. **El truncado es a mano.** `truncar_hasta_lsn` firma el contrato «truncar lo no-durable pierde datos» — el llamador decide cuándo sabe que algo es durable. Lo que el operador humano decida se queda en el OPERADOR, no en el motor. Necesitamos un protocolo donde esa decisión sea de la base de datos, no del DBA a las tres de la mañana.
+3. **No hay UNDO.** El staging vive en `WalTransaccion` y sólo aplica tras el Commit. Una transacción no confirmada NO dejó huella en el store, así que no hay nada que deshacer. Esto es la política **no-steal** — un buffer pool que sólo evacúa páginas limpias. Funciona, pero BLOQUEA: hasta que la transacción confirma o aborta, sus páginas sucias ocupan memoria, y bajo carga se traduce en latencia que sube.
+
+Y hay un cuarto problema que el cap. 28 no escribió como deuda, pero que sale a la palestra en cuanto el tercero se arregla: **si un buffer pool REAL evacua páginas sucias para hacer hueco (steal)**, las perdedoras DEJARON escritura en el store. Esa escritura no fue autorizada por ningún Commit. Si la recuperación del cap. 28 se ejecuta, las perdedoras robadas SOBREVIVEN al reinicio. Eso es la pregunta que ARIES responde: ¿cómo levanto la base de datos después de que un motor real la dejara a medias — con partes confirmadas, partes perdedoras, y partes robadas?
+
+## 29.3 Modelo mental
+
+Piensa en un **museo que se reconstruye después de un incendio a partir del vídeo de las cámaras de seguridad**. Las cámaras no parpadean, escriben cada movimiento (el WAL); al reconstruir:
+
+- **ANÁLISIS** = mirar el vídeo HACIA DELANTE y reconstruir el mapa: ¿quién estaba activo? ¿qué pieza tocó qué? ¿quién confirmó y quién se cayó a medias? Es la fase LECTORA: del vídeo deduces la tabla de transacciones, los contadores `next_lsn`/`next_tx_id`, y la *dirty element table* (qué elemento fue tocado por primera vez en qué LSN).
+- **REDO** = REPETIR cada movimiento de las cámaras, en orden, hasta dejar la colección EXACTAMENTE como estaba en el instante del corte — incluido lo que una pieza rota empezó a mover sin terminar. Es la fase RE-ESCRITORA: re-aplica TODOS los registros — ganadoras y perdedoras — con la idempotencia del cap. 28. Al terminar, el store está en el estado del fallo.
+- **UNDO** = borrar las huellas de las piezas que se cayeron a medias y no debieron seguir, en orden inverso al que aparecieron en el vídeo. Es la fase DESHACEDORA: de atrás hacia delante, compensa cada operación perdedora con su inversa lógica (un `PutNode` robado se borra; un `DeleteNode` robado se restaura desde su imagen anterior). Las huellas desaparecen; el museo queda como si las perdedoras nunca hubieran pasado por ahí.
+
+```
+                     ┌──────────────────────────────────────────┐
+                     │ log en disco (reabierto = leer + escanear)│
+                     └───────────────────┬──────────────────────┘
+                                         │
+                                         ▼
+                            ANÁLISIS (hacia delante)
+                            tabla de transacciones
+                            contadores
+                            dirty element table
+                                         │
+                                         ▼
+                            REDO (hacia delante, TODO)
+                            aplicar_para_redo idempotente
+                                         │
+                                         ▼
+                            UNDO (hacia atrás, sólo perdedoras)
+                            compensación lógica + before-image
+                                         │
+                                         ▼
+                  store consistente = ganadoras confirmadas,
+                                       sin huellas de perdedoras
+```
+
+**El truco del steal.** En un buffer pool real, las páginas sucias de una tx NO confirmada se evacuan al disco para hacer hueco — el steal. La fase de REDO las DEJA en el store (las re-aplica); la fase de UNDO las BORRA. Si sólo rehiciéramos las ganadoras (como hacía `replay_wal` del cap. 28), el undo no tendría de dónde partir: «¿qué hago si una página robada no está?». Redo + undo, en ese orden, es la única forma de tener una base coherente sobre la que retroceder.
+
+**La frontera del before-image.** El vídeo de las cámaras enfocó el RESULTADO (la vitrina NUEVA), no el plano de la vitrina VIEJA. Si una perdedora borró un nodo y se llevó el contenido, no tenemos manera de saber qué ponía en la vitrina antes — y `operaciones_sin_before_image` lo CUENTA, no lo inventa. ARIES completo graba también el ANTES (before-images y CLR); aquí lo decimos y contamos: el motor HONESTO informa lo que no pudo hacer, no aborta silenciosamente y tampoco maquilla el resultado.
+
+El momento ¡ajá!: «El redo no es "rehacer lo bueno": es "rehacer TODO, hasta dejar la colección EXACTA como estaba en el corte, incluidas las obras medio movidas". El undo es la pieza que quita las huellas de las perdedoras. Y un log que sólo guardó el resultado no puede restaurar lo que se borró — esa frontera, contada, es lo que separa un motor honesto de uno que miente.»
+
+## 29.4 Primera solución
+
+La solución ingenua es la del cap. 28, ya funcional: `replay_wal` re-aplica las operaciones de las confirmadas, en orden de LSN, con idempotencia. El operador humano lo ejecuta tras un crash; si tuvo cuidado, reconstruye lo bueno. La perdedora, sin commit marker, NO tocó el store (la política no-steal del cap. 27), y el undo es trivialmente vacío.
+
+```
+Fase (cap. 28): replay_wal(wal, store)
+  → re-aplica Operaciones de tx con Commit
+  → idempotente (un apply repetido es un no-op)
+  → no toca perdedoras (no tocaron nada)
+  → requiere Wal manualmente reanimado tras un crash
+  → requiere truncado a mano si el log crece
+```
+
+Es una solución CORRECTA, SIMPLE y HONESTA bajo no-steal. Los tests la verifican (`replay_es_idempotente`, `replay_re_construye_lo_confirmado`). El propio cap. 28 lo escribe: «la alternativa (marker al final) exigiría UNDO para rescatar el apply a medias — eso es ARIES».
+
+## 29.5 Sus límites
+
+Tres límites que te empujan al cap. 29:
+
+1. **Steal rompe no-steal.** El momento en que un buffer pool REAL evacua páginas sucias de una tx no confirmada para hacer hueco —ese es el steal—, las escrituras robadas están en el store. `replay_wal` del cap. 28 las IGNORA porque la tx no era ganadora; el store post-replay arranca con datos no autorizados. Síntoma: tras un crash con carga alta (muchas tx concurrentes, presión de memoria), las perdedoras sobreviven al reinicio.
+2. **El `sync` del cap. 28 era un contador.** Cuando el proceso muere, `Wal::new()` parte de cero. Los `next_lsn`/`next_tx_id` se reinician; un nuevo Begin naciente con id 1 entra en el reinicio del log y se confunde con un id histórico. Modo de fallo: reorganización silenciosa de la historia, undo descompensando a la tx equivocada.
+3. **Truncar a mano rompe Durabilidad silenciosamente.** `truncar_hasta_lsn` exige saber qué era durable. Sin un protocolo codificado (un Checkpoint que registre «hasta aquí todo es durable»), el operador trunca de más y la próxima recuperación falta de piezas.
+
+La pregunta del capítulo: ¿qué pasa cuando un motor real, con buffer pool real y steal activo, se cae — y el operador no está para ejecutar `replay_wal` a mano?
+
+## 29.6 Solución evolucionada: ARIES en tres fases
+
+`recuperar(store, wal, antes)` ejecuta el esqueleto completo: análisis → redo → undo. Tres fases, en ese orden estricto, sobre el mismo log, sin coordinación entre ellas más que el flujo:
+
+```rust
+pub fn recuperar(store, wal, antes) -> Result<InformeRecuperacion, RecoveryError> {
+    let analisis = analizar(wal);           // fase 1
+    let operaciones_redo = redo(store, &analisis)?;   // fase 2
+    let undo = deshacer(store, &analisis, antes);    // fase 3
+    Ok(InformeRecuperacion { ... })
+}
+```
+
+**Fase 1 — ANÁLISIS.** `analizar(&wal)` recorre el log hacia delante con `Wal::iter` (que PARA LIMPIO ante cola corrupta — el mismo contrato que el cap. 28 dejó para la iteración). Para cada registro, deduce:
+
+- **Tabla de transacciones** (`EstadoTx::{Activa, Confirmada, Abortada}`): un `Begin` (o cualquier `Operacion`) la inserta Activa; un `Commit` la promueve a Confirmada (GANADORA); un `Rollback` la promueve a Abortada (PERDEDORA).
+- **Contadores**: `next_lsn = max(lsn) + 1` y `next_tx_id = max(tx_id) + 1` se reconstruyen del contenido del log. Es la diferencia clave frente al cap. 28: los contadores no se «mantienen», se DEDUCEN.
+- **Dirty element table** (`ElementoId → primer LSN que lo tocó`): es el análogo a la *dirty page table* de ARIES (Mohan et al. 1992, §3.2), pero a nivel de ELEMENTO del grafo — no de página de disco. `PutNode(n)`, `PutEdge(e)`, `DeleteNode(id)`, `DeleteEdge(id)` registran el elemento al que tocan; `sucias.entry(elem).or_insert(rec.lsn)` deja el PRIMER LSN — rehacer a partir de él con checkpoint es lo que ahorraría trabajo; aquí, sin checkpoint, el redo es conservador y todo lo recorre (`Analisis::primer_lsn_sucio` queda como información, no como punto de arranque real).
+
+Al terminar la fase 1 tienes un mapa completo del estado del mundo justo antes del corte — sin haber tocado el store una sola vez. `primer_lsn_sucio` es el ancla del redo futuro cuando exista checkpoint; mientras tanto, el redo recorre todo.
+
+**Fase 2 — REDO.** `redo(&mut store, &analisis)` re-aplica TODAS las operaciones en orden de LSN, ganadoras y perdedoras, usando `aplicar_para_redo` del cap. 28 (idempotente, ya usado por `replay_wal`). La diferencia CLAVE frente al replay del cap. 28:
+
+```text
+cap. 28 replay_wal:   re-aplica SOLO ganadoras  (política no-steal: 
+                       las perdedoras no tocaron nada)
+cap. 29 redo:         re-aplica TODO, ganadoras y perdedoras
+                       (política steal: las perdedoras PUEDEN haber 
+                       dejado huella — el undo necesita una base 
+                       coherente sobre la que retroceder)
+```
+
+¿No es re-aplicar las perdedoras una LOCURA? Por la idempotencia de `aplicar_para_redo`, re-aplicar lo ya aplicado es un no-op; y si la perdedora sólo había escrito a través de steal (no-aplicada aún al store), el redo la INTRODUCE y el undo la BORRA después. Las dos fases son SECUENCIALES sobre el mismo registro de escrituras: redo deja el store en el ESTADO DEL FALLO; undo retrocede desde ahí hasta el conjunto de ganadoras. Sin redo-exhaustivo, el undo no tiene una base coherente.
+
+**Fase 3 — UNDO.** `deshacer(&mut store, &analisis, &antes)` recorre los registros en orden INVERSO de LSN y deshace a las perdedoras:
+
+```rust
+for rec in analisis.registros.iter().rev() {       // HACIA ATRÁS
+    if !perdedoras.contains(&rec.tx_id) { continue; }
+    if let CuerpoWal::Operacion(op) = &rec.cuerpo {
+        match op {
+            PutNode(n)   => if store.get_node(n.id).is_some() {
+                                store.delete_node(n.id);
+                            }
+                            informe.operaciones_deshechas += 1,
+            PutEdge(e)   => /* análogo */,
+            DeleteNode(id) => if store.get_node(*id).is_some() {
+                                  // ya restaurado — idempotente
+                              } else {
+                                  match antes.get(&ElementoId::Nodo(*id)) {
+                                      Some(Element::Node(n)) => 
+                                          store.put_node(n.clone()),
+                                      _ => informe.operaciones_sin_before_image += 1,
+                                  }
+                              },
+            DeleteEdge(id) => /* análogo */,
+        }
+    }
+}
+```
+
+La **compensación es lógica e idempotente**. ¿Por qué lógica y no física? Porque un log de solo after-image (el del cap. 28) no guarda las imágenes anteriores — sólo guarda cómo quedó cada elemento. Restablecer el estado anterior exige la imagen previa, que puede no estar disponible; lo que sí está es la INVERSA: un `PutNode` robado se deshace con un `delete_node` idempotente. El «antes» del `PutNode` es trivial: «no existía». El «antes» del `DeleteNode` NO — deshacer un borrado exige saber qué había, y eso sólo lo sabe un snapshot pre-robo (o un log con before-images, ARIES completo). Por eso el match: si `antes.get(...)` es `None`, `operaciones_sin_before_image += 1` — INFORMACIÓN, no error, no invención. La pieza del count es el capítulo honesto.
+
+El **orden inverso** es la otra decisión: deshacer primero la arista y luego sus nodos evita que un `delete_node` arrastre aristas ajenas durante la cascada; deshacer «de atrás hacia delante» es lo que ARIES prescribe para que las compensaciones no interfieran entre sí.
+
+El **informe** (`InformeRecuperacion`) agrega todo: cuántas ganadoras, cuántas perdedoras, cuántas operaciones se re-aplicaron, cuántas se deshicieron, cuántas quedaron sin imagen anterior (`operaciones_sin_before_image`), y los contadores reconstruidos (`next_lsn`, `next_tx_id`). Es la respuesta a la pregunta «¿qué se hizo al despertar?».
+
+## 29.7 Solución evolucionada: el fichero y el checkpoint
+
+ARIES sin fichero y sin checkpoint es un esqueleto, no un motor. El cap. 28 dejó dos deudas; el cap. 29 las cierra:
+
+**El fichero del WAL.** `guardar_wal(&wal, path)` y `cargar_wal(path)` convierten los bytes del WAL en persistencia real. `std::fs::write` cierra el fichero y el sistema lo vuelca. `cargar_wal` reconstruye el `Wal` ESCANEANDO los bytes — `Wal::reconstruir(&bytes)` devuelve un Wal con `next_lsn = max(lsn) + 1` y `next_tx_id = max(tx_id) + 1`. Esto es la diferencia clave frente a `Wal::new()`: los contadores no se inventan, se DEDUCEN del prefijo íntegro.
+
+```rust
+pub fn guardar_wal(wal, path)    { std::fs::write(path, wal.as_bytes())? }
+pub fn cargar_wal(path)         {
+    let bytes = std::fs::read(path)?;
+    Ok(Wal::reconstruir(&bytes))
+}
+pub fn reabrir(store, path, antes) {
+    let bytes = std::fs::read(path).map_err(RecoveryError::Io)?;
+    let wal    = Wal::reconstruir(&bytes);
+    recuperar(store, &wal, antes)
+}
+```
+
+El patrón de `fsync` riguroso ya existe (`FilePager::sync`, cap. 12; `BufferPool` ya sabe `flush`→`sync`); aquí «durabilidad real» = `guardar_wal` con la maquinaria de fichero del sistema. La separación `RecoveryError::Io` vs `RecoveryError::Redo {lsn, causa}` lleva la pregunta correcta (`¿fue el disco o fue el log?`) hasta el operador.
+
+**El checkpoint que persiste los contadores.** `Checkpoint { hasta_lsn, next_lsn, next_tx_id }` no es una foto del store: es un REGISTRO del log (en ARIES real, un `WalRecord::Checkpoint`; aquí, una estructura aparte con el mismo papel). La parte crítica:
+
+```text
+hasta_lsn   = último LSN cuyo efecto es durable (todo ≤ a él se puede truncar)
+next_lsn    = contador a reanudar tras el reinicio (congelado)
+next_tx_id  = contador de TxId a reanudar (congelado)
+```
+
+¿POR QUÉ es crítico persistir los contadores? Porque truncar el log a vacío SIN guardarlos hace que `Wal::reconstruir` los ponga a 1 y REUTILICE identificadores. Un log recuperable no puede permitir eso: dos transacciones con el mismo id hacen que el análisis confunda cuál era cuál y el undo descompense a la que NO debía. El `Checkpoint::tomar(&wal)` los captura; el `truncar_seguro(wal, cp)` los usa para AUTOMATIZAR el truncado que el cap. 28 dejaba firmado a mano.
+
+**La rotación por tamaño.** `rotar_si_excede(wal, umbral)` cierra la deuda «rotación por tamaño» del cap. 28 sin un scheduler: si `wal.as_bytes().len() > umbral`, tomar checkpoint y truncar. Política «una línea», decisión del llamador (en producción: cientos de MB, disparado por timer). La frontera `<=`/`>` del test lo verifica: por debajo del umbral no rota; justo al alcanzarlo (ya no `≤`) rota y trunca.
+
+## 29.8 La frontera del before-image
+
+`operaciones_sin_before_image` merece su propia sección porque es la pieza más honesta del capítulo. La pregunta que contesta: «¿qué pasa si deshacer requiere una imagen anterior que el log no tiene?»
+
+```rust
+DeleteNode(id) => {
+    if store.get_node(*id).is_some() {
+        // Ya restaurado por una pasada anterior — undo idempotente.
+        informe.operaciones_deshechas += 1;
+    } else {
+        match antes.get(&ElementoId::Nodo(*id)) {
+            Some(Element::Node(n)) => {
+                let _ = store.put_node(n.clone());
+                informe.operaciones_deshechas += 1;
+            }
+            _ => informe.operaciones_sin_before_image += 1,  // ← el hueco
+        }
+    }
+}
+```
+
+Tres salidas por rama:
+
+1. **El nodo YA está en el store** (porque una pasada anterior lo restauró, o porque no fue robado y un Confirmado legítimo lo dejó): se cuenta como deshecho y se sigue — la idempotencia es lo que permite que la recuperación sea re-ejecutable.
+2. **El nodo NO está y `antes` lo tiene** (el llamador capturó `capturar_antes(&store)` ANTES del robo): se restaura con `put_node(n.clone())`. La imagen anterior es lo que te salva — pero exige que el LLAMADOR haya planeado la captura antes de que la perdedora tocara el store. Si capturas DESPUÉS, capturas la imagen de después, que no es la que quieres.
+3. **El nodo NO está y `antes` NO lo tiene**: `operaciones_sin_before_image += 1`. INFORMACIÓN. No `panic!`, no `unreachable!`, no `unwrap_or_default()`. La recuperación REPORTA el hueco y devuelve el control. Es la decisión de diseño: el motor HONESTO deja que la decisión (¿continuar? ¿abortar?) sea del operador, no del motor.
+
+**¿Por qué no abortar el reinicio por defecto?** Porque un borrado robado PERDEDOR sin before-image NO NECESARIAMENTE corrompe las ganadoras: la fase de undo puede haber restaurado todo lo demás correctamente, y este nodo en particular haber sido robado y borrado por una perdedora que abortó sin que nadie tomara la imagen previa. La aplicación podría haberlo recreado por su cuenta, o podría ser información de diagnóstico suficiente. La decisión es del operador.
+
+**¿Por qué no inventar el dato?** Porque sería peor que abandonarlo. La base de datos "recuperaría" un nodo con `labels == ["DESCONOCIDO"]` y la siguiente consulta confiaría en él. La honestidad manda.
+
+ARIES completo cierra este hueco con registros CLR (Compensation Log Records) que graban la imagen anterior al hacer el propio undo — escritura adicional al log, que se re-aplica con idempotencia completa. Es la pieza que AÑADE el undo a un log de after-image para hacerlo robusto. Aquí la dejamos como hueco documentado: el lector que quiera ir a ARIES real lee a Mohan, Don Haderle, Bruce Lindsay, Hamid Pirahesh y Peter Schwarz («ARIES» 1992).
+
+## 29.9 Código completo ejecutable
+
+Cuatro piezas en `liradb-workspace/crates/vol2-liradb/src/cap29_recuperacion.rs`, ~1.290 líneas, sin crates externas. Tres toques al cap. 28: `aplicar_para_redo` pasa a `pub(crate)` (reutilizado por el redo), `Wal::reconstruir(bytes)` y `Wal::next_tx_id()` se hacen públicas para que `cargar_wal` pueda deducir los contadores. Cero duplicación.
+
+```rust
+pub fn analizar(wal: &Wal) -> Analisis {
+    let mut transacciones = HashMap::new();
+    let mut sucias        = HashMap::new();
+    let mut next_lsn = 1;
+    let mut next_tx_id = 1;
+    for rec in wal.iter() {                         // parada limpia
+        next_lsn    = next_lsn.max(rec.lsn + 1);
+        next_tx_id  = next_tx_id.max(rec.tx_id + 1);
+        match &rec.cuerpo {
+            CuerpoWal::Begin => { /* Activa */ }
+            CuerpoWal::Operacion(op) => {
+                for elem in ElementoId::de_operacion(op) {
+                    sucias.entry(elem).or_insert(rec.lsn); // primer LSN
+                }
+            }
+            CuerpoWal::Commit  => { /* Confirmada */ }
+            CuerpoWal::Rollback => { /* Abortada */ }
+        }
+    }
+    // ... ordena por primer LSN, deduplica ...
+    Analisis { transacciones, sucias, next_lsn, next_tx_id, ... }
+}
+```
+
+El REDO y el UNDO ya los cubrimos en la sección anterior; lo nuevo es la pieza administrativa:
+
+```rust
+pub struct Checkpoint {
+    pub hasta_lsn:  Lsn,
+    pub next_lsn:   Lsn,
+    pub next_tx_id: TxId,
+}
+
+pub fn truncar_seguro(wal: &mut Wal, cp: &Checkpoint) -> usize {
+    wal.truncar_hasta_lsn(cp.hasta_lsn)   // automatiza lo del cap. 28
+}
+
+pub fn rotar_si_excede(wal: &mut Wal, umbral_bytes: usize) -> Option<Checkpoint> {
+    if wal.as_bytes().len() <= umbral_bytes { return None; }
+    let cp = Checkpoint::tomar(wal);
+    truncar_seguro(wal, &cp);
+    Some(cp)
+}
+```
+
+Y la re-valoración ACID que cierra el capítulo honestamente:
+
+```rust
+pub fn informe_acid_post_recovery() -> Vec<EntradaAcid> {
+    vec![
+        EntradaAcid { garantia: Atomicidad, nivel: Parcial,
+          como_esta_hoy: "el arranque automático (análisis + redo + undo) 
+                          repara un apply a medias y deshace lo no confirmado, 
+                          incluso robado por steal; queda el before-image para 
+                          deshacer borrados robados (ARIES completo lo cierra 
+                          con CLR)",
+          capitulo_que_la_cierra: 30 },                         // ← 29→30
+        EntradaAcid { garantia: Durabilidad, nivel: Parcial,
+          como_esta_hoy: "el WAL persiste a fichero y se reabre con recuperación: 
+                          lo confirmado sobrevive al reinicio vía replay; el store 
+                          de datos no tiene checkpoint independiente",
+          capitulo_que_la_cierra: 37 },                         // ← 29→37
+        // C e I: sin cambios (cap. 30).
+    ]
+}
+```
+
+Las dos flechas son la parte importante: A pasa del cierre 29 al 30 (queda el before-image), D pasa del 29 al 37 (queda el checkpoint del store de datos). El test que verifica las transiciones (`informe_post_recovery_actualiza_a_y_d`) compara contra `informe_acid_post_wal()` — el sistema de tipos lleva la trazabilidad.
+
+## 29.10 Prueba de fuego
+
+Tres tests explican el capítulo mejor que tres secciones más:
+
+**TEST-TESIS** `undo_elimina_las_escrituras_robadas_de_una_perdedora`: una tx sin commit con `PutNode(0)`, `PutNode(1)`, `PutEdge(0, 0, 1)` logueadas. El store YA contiene esas escrituras (steal simulado aplicándolas a mano: `store.put_node(0)`, `store.put_node(1)`, `store.put_edge(...)`). `recuperar(store, wal, AntesImagenes::new())` devuelve `transacciones_perdedoras = 1, operaciones_undo = 3, operaciones_sin_before_image = 0` y DEJA EL STORE VACÍO. Como si la perdedora nunca hubiera existido. La pieza que el cap. 28 no sabía construir, vuelta y vuelta.
+
+**TEST-FRONTERA** `borrado_robado_sin_before_image_se_reporta_no_se_calla`: un `DeleteNode(0)` robado SIN snapshot previo. El undo no encuentra `antes.get(0)` y CUENTA 1 en `sin_before_image`; el store queda con 0 nodos Y el informe dice `sin_before_image=1`. La honestidad del capítulo en un `assert`.
+
+**TEST-PERSISTENCIA** `reabrir_recupera_lo_confirmado_tras_corte_de_luz`: una tx confirmada, `guardar_wal`, cierre del bloque (el «proceso muere»), `reabrir(&mut renacido, &path, &AntesImagenes::new())` devuelve `ganadoras = 1` y reconstruye 2 nodos + 1 arista con `labels == ["Person"]`. El flujo REAL de arranque verificado end-to-end.
+
+Las **deudas del cap. 28**, una a una, verificadas:
+
+- **El fichero** — `guardar_y_cargar_wal_roundtrip` (1161-1179): bytes idénticos antes y después de pasar por disco.
+- **El checkpoint que persiste los contadores** — `checkpoint_y_truncar_seguro_no_reutiliza_lsns` (1112-1138): tras truncar, una nueva tx nace con `next_tx_id = 2` (no con 1 — los contadores persisten, no se reutilizan).
+- **La rotación por tamaño** — `rotar_si_excede_trunca_solo_cuando_hace_falta` (1141-1156): por debajo del umbral no rota; justo al alcanzarlo (ya no `≤`) rota y trunca.
+- **La contaminación detectada** — `redo_falla_ruidosamente_si_el_truncado_rompio_dependencias` (1231-1266): un truncado a mano que rompe el contrato (`truncar_hasta_lsn(3)` sobre un log que necesita el lsn 4) hace que la fase de redo falle con `RecoveryError::Redo { lsn: 5, ...InvalidEdgeEndpoints }` — el grito diagnóstico del cap. 28, heredado y tipado.
+
+El síntoma si te saltas el capítulo es el de siempre: tras un crash con steal activo, escrituras de perdedoras sobreviven al reinicio; reabrir exige intervención manual; el log crece hasta OOM; truncarlo a ojo rompe Durabilidad silenciosamente; y no tienes un único punto de entrada que diga «le di el path, recuperé todo lo confirmado, aquí está el informe de qué no se pudo».
+
+## 29.11 Repaso de la Parte VI: la cadena 27→28→29
+
+La Parte VI tiene tres capítulos y un esqueleto común: cada uno ejecuta una pieza de ACID sobre el resto y deja una garantía heredada.
+
+```
+ 27 ACID — TRANSACCIONES ──► 28 WAL ──────────► 29 RECUPERACIÓN (ARIES)
+   Atomicidad               el cambio se         el arranque automático:
+   Durabilidad RUDIMENTARIA  escribe en el WAL    • análisis reconstruye el mapa
+   (un solo escritor,        antes que en la       • redo deja el store como
+   staging → apply)          página de datos        en el instante del fallo
+                             replay_wal a mano     • undo deshace las perdedoras
+                             truncar a mano
+   │                          │                    │
+   └─ deuda: apply a medias   └─ deuda: steal      └─ deuda: before-image
+      podría dejar store         rompe no-steal,     (sin imagen anterior
+      inconsistente              perdedoras pueden    deshacer borrado robado
+                                 dejar huella —       ⇒ ARIES completo: CLR)
+                                 hace falta UNDO
+```
+
+Cada eslabón dejó una garantía heredada: el **27** fijó `Operacion` (la pieza que viaja por las tres fases sin duplicarse) y el staging+apply-after-commit; el **28** descubrió que `sync()` no es un contador sino un protocolo, y construyó `replay_wal`/`truncar_hasta_lsn` con contrato firmado; el **29** reúne: hereda `aplicar_para_redo` idempotente, `Wal::iter` con parada limpia, `Operacion` del 27 — y añade lo que ninguno tenía: la decisión explícita de CÓMO se reconstruye un motor tras un crash (las tres fases de ARIES), la pieza administrativa que automatiza el truncado (Checkpoint con contadores), y la honestidad de DECIR lo que no se pudo hacer (`operaciones_sin_before_image`). El método de la Parte VI en una frase: **la transacción es la promesa; el WAL es el cuaderno donde se anota; la recuperación es quien lee el cuaderno al volver del corte de luz y decide quién sigue y quién se queda en el suelo**.
+
+Estas dos piernas — el `recuperar(store, wal, antes)` para un único motor y el `reabrir(store, path, antes)` para un motor con fichero— son también las que sostendrán el futuro inmediato del libro: el **cap. 30** añadirá concurrencia real (MVCC: varios lectores leyendo MIENTRAS un escritor escribe, sin lecturas sucias); el **cap. 36/37** añadirá el checkpoint del STORE DE DATOS (la pieza que falta para la Durabilidad completa).
+
+## 29.12 Qué hemos sacrificado
+
+1. **Sólo un escritor (`&mut dyn GraphStore`)**: la recuperación exige el préstamo exclusivo del store, igual que los caps. 27-28. Un cliente intentando leer MIENTRAS el recovery reescribe el store debe esperar; la concurrencia real es cap. 30. Documentado, no implementado.
+2. **Sin CLR ni log de before-image (ARIES completo)**: la frontera del `DeleteNode`/`DeleteEdge` robado sin snapshot sigue ahí — `operaciones_sin_before_image` la cuenta. ARIES completo añade registros CLR y log de before-images para cerrar el hueco; aquí lo dejamos documentado como la pieza que el siguiente nivel añade. La razón: añadirla exige mover el undo a una fase con escri-tura adicional al log, que es materia del cap. 36 cuando se introduce el ciclo undo→redo→undo→page flush.
+3. **Fuzzy checkpoint NO implementado (ARIES completo)**: el checkpoint aquí es EXACTO (congela el estado actual). Un motor real usa fuzzy checkpoint (la página-sucia-tabla periódica) para no pagar el «todo se para mientras se hace checkpoint» del fuzzy→exact. Lo nombramos y lo dejamos al lector que mire Mohan 1999 («Repeating History Beyond ARIES»).
+4. **El log es append-only sin CRC de bloque**: el frame por registro del cap. 28 ya lleva el CRC32 (`crc32_simple`), pero si UN bloque de disco se corrompe a MITAD de registro, la iteración con parada limpia del cap. 28 CORTA antes; la tx confirmada con el byte corrupto se considera perdedora. Esto está bien para un WAL append-only, no lo está para un sistema que quiera recovery con bit-error-resistance — fuera de alcance.
+5. **Group commit y `fsync` agrupado**: la política `SoloCommit` del cap. 28 ya está aquí (un fsync por tx), pero el GROUP COMMIT REAL (varias tx compartiendo un fsync) exige concurrencia — cap. 30.
+6. **Recuperación distribuida (dos PCs, Paxos)**: nombrada y cortada. La pregunta «qué pasa si el recovery mismo se cae» la responden los algoritmos de consenso — fuera del alcance de este libro.
+
+## 29.13 Cómo lo hace una BBDD real
+
+- **PostgreSQL**: ARIES con las tres fases exactas (`XLOG` records con LSN, `xact` table, dirty page table en `pg_stat_get_db_*`, checkpoint en `pg_control` con `nextXid`). La pieza que el cap. 29 deja como `operaciones_sin_before_image` la cierra con `xl_invalid_page`/`FULL_PAGE_WRITES`: cada escritura al store lleva un backup completo de la página, lo que ARIES llama *before-image*. Modo completo, coste en disco: cada página modificada se escribe DOS veces (al log, a disco).
+- **InnoDB (MySQL)**: ARIES sobre redo log (las escrituras previas a la página: `LOG_BLOCK_HDR_NO`, `LOG_CHECKPOINT` con `LOG_DYNHDR_CPN_NO` para el último checkpoint) y undo log (segmentos por tx; `TRX_UNDO_PAGE` con el estado anterior). La frontera del cap. 29 la cruzan con **undo log de verdad**: cada `DeleteNode` lleva su `update undo log` con la fila completa. Lo que aquí es «el log no la tiene, el informe la cuenta», allí es «el log SÍ la tiene, y deshacer restaura» — la pieza ARIES completa del cap. 29.
+- **Oracle**: ARIES con `REDO LOG`/`UNDO TABLESPACE` y «flashback» (queries «AS OF» sobre undo log). Las tres fases están; lo que cambia es la granularidad (undo por segmento, no por registro).
+- **SQL Server**: ARIES bajo el nombre «ARIES-style recovery» con `LSN` por byte, `recovery interval`, `fuzzy checkpoint` y la `version store` para versiones de fila (cercano a MVCC pero distinto).
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: sobre el log `Begin(1) Op(2) DeleteNode(0) Commit(3)`, ¿cuántos `operaciones_deshechas` cuenta el undo? ¿Y si lo ejecutas dos veces seguidas (idempotencia)? Pista: la «Op» toca el elemento 0 con `DeleteNode`, una CONFIRMADA — no es perdedora, no se deshace.
+- *Intermedio*: tu base tiene el log `{Tx=1: PutNode(0), PutNode(1), PutEdge(0,0,1)}` y el store YA tiene esas escrituras (steal). La tx 1 está SIN Commit (proceso muere). ¿Qué predice el undo si capturas `antes` DESPUÉS del robo? Pista: la imagen que capturas es la de después, no la de antes — `operaciones_sin_before_image` se dispara.
+- *Experto*: implementa `recuperar_sin_truncar(wal)` (análisis + redo + undo sin habilitar el truncado del log). ¿Qué tiene que devolver para que un test verifique que `wal.record_count()` post-recovery es el MISMO que pre-crash? Pista: el log no se toca en ninguna de las tres fases; el truncado es opt-in.
+
+## 29.14 Lo que te llevas
+
+- **ARIES en tres fases**: análisis reconstruye el mapa, redo deja el store como en el fallo, undo deshace las perdedoras en orden inverso. El esqueleto de Mohan et al. 1992, treinta y cuatro años después.
+- **El REDO no es «rehacer lo bueno»**: es «rehacer TODO hasta el estado EXACTO del fallo, incluidas las escrituras robadas de perdedoras» — la base sobre la que el undo puede operar.
+- **La compensación es lógica e idempotente**: un `PutNode` robado se deshace con un `delete_node` idempotente; un `DeleteNode` robado exige la imagen anterior que un log de solo after-image no tiene.
+- **`operaciones_sin_before_image` es información, no error**: el motor HONESTO reporta lo que no pudo hacer; no aborta por defecto y tampoco maquilla el resultado.
+- **El checkpoint persiste los CONTADORES, no sólo el LSN**: truncar a vacío sin guardar `next_tx_id` los reutiliza — la diferencia entre recovery y corruptor silencioso.
+- **El fichero del WAL** convierte el `sync` (contador) en `guardar_wal` (bytes en disco) — y `cargar_wal` reconstruye los contadores del prefijo ESCANEANDO, no manteniéndolos.
+- **`recuperar` y `reabrir`**: uno opera sobre un `Wal` ya cargado, el otro lee del fichero y reconstruye. El flujo REAL de arranque en una sola llamada.
+- **`informe_acid_post_recovery` continúa la honestidad**: A pasa de cierre 29 a 30 (queda before-image), D de 29 a 37 (queda checkpoint del store). El sistema de tipos lleva la trazabilidad.
+
+## 29.15 Ojo, cuidado con…
+
+- **Confundir `replay_wal` del cap. 28 con `recuperar` del cap. 29**. El replay sólo rehace ganadoras (política no-steal); el recuperar ejecuta las TRES fases. Si una base de datos con steal activo «se recupera» con `replay_wal`, las perdedoras sobreviven al reinicio — inconsistencia lógica.
+- **Pensar que el undo es simétrico al redo**. No: `PutNode`/`PutEdge` se deshacen con un borrado idempotente (el «antes» es trivial); `DeleteNode`/`DeleteEdge` exigen una imagen anterior que el log no guarda. La frontera es asimétrica, no universal.
+- **«Checkpoint = foto del store»**. Falso aquí. Es un REGISTRO del log («todo lo anterior a este LSN es durable Y los contadores son estos») y su segunda parte — los contadores — es la sorpresa administrativa que truncar a vacío sin ella paga caro.
+- **Tomar el snapshot del store POST-ROBO**. `capturar_antes` sobre un store que ya tiene el borrado captura la imagen de DESPUÉS, no la de ANTES. En un sistema real el snapshot es pre-tx (o viene de un log de before-images).
+- **`operaciones_sin_before_image` como bug**. Es información. El motor decidió reportar y seguir; la decisión de abortar es del operador.
+- **Confundir `Rollback` (cap. 27) con `deshacer` (cap. 29)**. El primero escribe el marker y vacía el staging de UNA tx en vivo; el segundo recorre el log al revés y compensa a las perdedoras tras un crash. Distintas.
+
+## 29.16 Pin de batalla
+
+> *«Un log que no cuenta lo que no supo deshacer no es recuperable — es un cuaderno elegante que miente cuando lo lees a las tres de la mañana.»*
+
+## 29.17 Si solo lees 30 segundos
+
+ARIES tiene tres fases: **análisis** reconstruye del log la tabla de transacciones, los contadores y la dirty element table; **redo** re-aplica TODO en orden de LSN (ganadoras Y perdedoras) con `aplicar_para_redo` idempotente — el store queda como en el instante del fallo; **undo** recorre al revés y deshace las perdedoras, `PutNode`→`delete_node` idempotente, `DeleteNode`→restaurar imagen anterior (si la hay; si no, CONTAR, no inventar). El **fichero del WAL** persiste los bytes y `cargar_wal` reconstruye los contadores ESCANEANDO; **`Checkpoint`** congela durable Y contadores — sin `next_tx_id` persistido, truncar a vacío REUTILIZA identificadores. `recuperar` opera sobre un `Wal`; `reabrir` lee del fichero. **ACID post**: A 29→30 (queda before-image), D 29→37 (queda checkpoint del store).
+
+## 29.18 Una historia pequeña
+
+La migración de este capítulo casi se pierde en el camino, como cuenta MIGRATION-PATTERN §34. Los tests aparecían en verde, pero dos fallaban en `next_lsn` y `operaciones_redo`. ¿Quién mentía, el test o el código? Resultó que el test ASUMÍA que `WalTransaccion::rollback` logueaba las operaciones (luego undo las compensaría); pero rollback sólo escribe el marker `Rollback` — el staging del cap. 27 nunca llegó al log. La distinción «staging vs log» del cap. 27, que parecía un detalle, salvó la calibración: un rollback deja `Begin+Rollback` SIN operaciones; el redo de una tx rollbackeada es vacío. La moraleja quedó escrita en la bitácora: **los tests que comparan con la realidad se calibran recorriendo el código, no con lo que suena razonable** — el mismo `assert_eq!` del cap. 26, ahora en WAL/Recovery.
+
+Y un detalle de calidad que se cazó al integrar: el `RecoveryError::Redo { lsn, causa }` movía `causa` al hacer `match err { Redo { causa, .. } }` y luego `err.to_string()` fallaba por uso de valor movido (E0382). El fix fue comprobar el `Display` ANTES del match por valor — la clase de bug que el compilador te cuenta si lo escuchas.
+
+## Ejercicios resueltos
+
+**1. ¿Por qué el REDO re-aplica también las perdedoras, si luego el UNDO las va a borrar?**
+
+Porque el undo necesita una base coherente sobre la que operar. Si el redo sólo aplicara ganadoras, el store post-redo tendría MENOS datos de los que tenía en el corte (las robadas faltarían), y el undo no encontraría dónde borrar — quedaría incoherente. Re-aplicar lo ya aplicado es un no-op por la idempotencia de `aplicar_para_redo`; re-aplicar lo robado y luego DESHACERLO es lo que cierra el ciclo. Es la diferencia entre un replay optimista (cap. 28, no-steal: re-aplicar los confirmados es suficiente) y un replay GENERAL (cap. 29, steal: re-aplicar todo y retroceder las perdedoras).
+
+**2. ¿Por qué `truncar_seguro` exige un `Checkpoint` con `next_lsn` Y `next_tx_id`, no sólo el `hasta_lsn`?**
+
+Porque tras truncar el log a vacío, `Wal::reconstruir` lo reanimará ESCANEANDO los bytes. Si el log está vacío, los contadores se ponen a 1 por defecto — y la siguiente transacción nacería con id 1, REUTILIZANDO un identificador histórico. Un log recuperable no puede permitir eso: dos tx con el mismo id hacen que el análisis confunda cuál era cuál y el undo descompense a la que NO debía. `Checkpoint::tomar` congela ambos contadores con su valor real; `truncar_seguro` los respeta (al reconstruir de un log vacío se usará un valor por defecto DOCUMENTADO, y `cargar_wal` testea ese caso). Es un detalle que parece administrativo y es la diferencia entre recuperar y corromper.
+
+## Ejercicios propuestos
+
+**Esencial (recordar/aplicar).** Sin mirar el código, enuncia las tres fases de ARIES y para qué sirve cada una. Sobre el log `[Begin(1), Op(2 PutNode(0)), Commit(3), Begin(4), Op(5 PutNode(1))]` (la segunda tx abandonada), predice A MANO `analisis.ganadoras`, `analisis.perdedoras`, `analisis.next_lsn`, `analisis.next_tx_id`, `analisis.sucias`. Verificación con `analizar(&wal)` — debe coincidir. *Pistas*: (1) `next_lsn = max(lsn) + 1` no `max(lsn)`; (2) la tx abandonada entra Activa en el primer registro; (3) la dirty table guarda el PRIMER LSN de cada elemento. *Criterio*: predicción idéntica a `analisis_reconstruye_tabla_de_transacciones_y_contadores` (873-905).
+
+**Intermedio (analizar — spacing caps. 27 y 28).** Sobre la cadena de 12 con sólo inserciones en una sola tx (12 nodos + 11 aristas en orden): predice cuántas operaciones aplicaría la fase de redo y si el undo sería vacío. Da el caso de UNA operación de borrado confirmada (paso 11, arista 10→11) y predice la diferencia. Explica por qué el replay del cap. 28 difiere del redo de ARIES en qué (la pregunta central). Verificación con `red_recorre_todas_las_operaciones_con_contador` (1081-1107): el voltímetro debe cuadrar con la predicción. *Pistas*: (1) `aplicar_para_redo` idempotente cuenta cada operación UNA vez, no varias; (2) el undo sólo deshace perdedoras — una CONFIRMADA no entra; (3) la tx abandonada (sin Commit) deja todas sus operaciones en `operaciones_deshechas`. *Criterio*: distingue store post-crash con steal (las perdedoras están ahí, undo las borra) de store post-crash sin steal (no están, undo vacío).
+
+**Experto (crear — bridge retrieval al cap. 28).** Reconstruye desde la memoria el flujo completo «store se cae → DBA lo reabre → todo lo confirmado vuelve, lo perdedor no», citando en orden las llamadas (`reabrir` → interno `cargar_wal` → `Wal::reconstruir` → `recuperar` → interno `analizar` + `redo` + `deshacer`), diciendo para cada una de qué pieza del cap. 28 viene el material (`Wal::iter` con parada limpia, `aplicar_para_redo`, `truncar_hasta_lsn`, `informe_acid_post_wal`) y qué pieza NUEVA añade el cap. 29. Implementa `recuperar_sin_truncar(wal)` que ejecute sólo análisis + redo + undo sin habilitar el truncado, y un test que la use para verificar que `wal.record_count()` post-recovery sigue siendo el MISMO que pre-crash (la operación no toca el log — separación clara). *Pistas*: (1) qué firmas del cap. 28 reutilizas sin tocar (la mayoría) y cuál automatizas (`truncar_hasta_lsn` → `truncar_seguro(wal, cp)`); (2) `Wal::next_tx_id()` se hizo público para este capítulo — úsalo; (3) la re-valoración ACID dispara A: 29→30 y D: 29→37. *Criterio*: citación correcta de TODOS los puentes al cap. 28 + la nueva función compila y su test pasa + la re-valoración coincide con `informe_post_recovery_actualiza_a_y_d` (1287-1310).
+
+## Para profundizar
+
+- **C. Mohan, D. Haderle, B. Lindsay, H. Pirahesh, P. Schwarz, «ARIES: A Transaction Recovery Method Supporting Fine-Granularity Locking and Partial Rollback Using Write-Ahead Logging»**, ACM Transactions on Database Systems 17(1), marzo 1992, pp. 94-162 (DOI 10.1145/128765.128770) — el paper original, cuarenta páginas de algoritmo. Las tres fases, la dirty page table, los CLR, el fuzzy checkpoint, todo escrito en una prosa densa que sobrevive.
+- **C. Mohan, «Repeating History Beyond ARIES»**, en «VLDB 1999 / ICDE 1999» — la evolución: LRU-K, fuzzy checkpoint, registros redo-only/undo-only, modificaciones posteriores. La misma arquitectura con piezas más finas.
+- **T. Haerder, A. Reuter, «Principles of Transaction-Oriented Database Recovery»**, ACM Computing Surveys 15(4), 1983, pp. 287-317 (DOI 10.1145/322290.322291) — el análisis de las cuatro políticas (steal/no-steal × force/no-force) que el cap. 29 recoge indirectamente. Anterior a ARIES; el cuadro mental de «qué sacrifica cada política» viene de aquí.
+- **R. Ramakrishnan, J. Gehrke, «Database Management Systems» (3.ª ed., McGraw-Hill 2003)**, capítulo 18 — la presentación académica estándar de recovery con WAL y ARIES simplificado; el libro de texto del que sale el capítulo conceptual.
+- **A. Silberschatz, H. F. Korth, S. Sudarshan, «Database System Concepts» (7.ª ed., McGraw-Hill 2020)**, capítulo 17 — el complemento: cover recovery con buffer management detallado.
+- **PostgreSQL internals: `xlog.c`, `xact.c`, `pg_control`** — la implementación ARIES de PostgreSQL leyendo el código; los nombres difieren (`XLogRecord` por `WalRecord`), el esqueleto no.
+- **InnoDB internals: `log0log.cc`, `trx0undo.cc`** — la otra implementación ARIES; undo log con before-image completo, lo que aquí es hueco documentado.
+
+## Mini-diálogo: en guardia nocturna
+
+> — O sea, ¿recuperar es replay más algo?
+>
+> — No. Replay del cap. 28 SOLO rehace las confirmadas. Si un buffer pool real evacua páginas sucias de una tx no confirmada para hacer hueco — eso es el *steal* — esas escrituras SE QUEDAN en el store. Si sólo rehaces las confirmadas, las robadas sobreviven al reinicio: la base «recuerda» cosas que nunca debió.
+>
+> — Y recovery las borra.
+>
+> — Recovery las borra, sí — pero solo después de RE-APLICARLAS. Es la pieza que suena rara: el redo deja el store EXACTAMENTE como estaba en el corte (incluidos los robos), y el undo retrocede desde ahí hasta las ganadoras. Sin redo completo, el undo no tiene base. Las dos fases son SECUENCIALES sobre el mismo registro de escrituras.
+>
+> — ¿Y si el undo no encuentra la imagen anterior de un borrado robado?
+>
+> — El capítulo lo CUENTA, no lo inventa. `operaciones_sin_before_image` lo reporta, la decisión de continuar o abortar es del operador. ARIES completo cierra el hueco con CLR y before-images; aquí lo nombramos y lo dejamos al siguiente nivel. La honestidad es lo que mantiene el log confiable cuando lo lees a las tres de la mañana.
+
+---
+
+*(Próximo capítulo: 30 — Snapshots, concurrencia y aislamiento. Recovery es un único escritor con `&mut dyn GraphStore` — ¿qué pasa si dos transacciones quieren recuperarse a la vez, o si un cliente está leyendo mientras el recovery reescribe el store? La MVCC y el group commit cierran la Parte VI — y en el Vol.III, el cap. 51 montará GraphRAG sobre las piernas de la Parte V con la durabilidad del WAL+recovery que acabamos de construir.)*
+# Capítulo 30 — Snapshots y concurrencia: MVCC limitado
+
+> *«El lector no necesita ver lo último. Necesita ver lo que decidió ver cuando empezó a mirar.»*
+
+## 30.0 La anécdota de la esquina
+
+En 1978, David P. Reed presentó en el MIT una tesis doctoral titulada «Naming and Synchronization in a Decentralized Computer System». Era un trabajo sobre cómo coordinar nodos independientes en una red que no compartía reloj ni disco, y la pieza clave de su propuesta — el capítulo 4 — proponía algo que parecía obvio pero que nadie había formulado así: **en lugar de sobrescribir un dato cuando cambia, mantener las versiones anteriores y dejar que cada observador elija cuál ve**. La idea era tan simple que, durante años, los sistemas distribuidos la reinventaban una y otra vez sin saber que ya estaba escrita.
+
+Cuarenta años después, esa idea — versiones múltiples, una por cada «momento lógico» — es el corazón de casi todas las bases de datos modernas. Se llama MVCC (Multi-Version Concurrency Control), y es lo que vamos a construir en este capítulo: la maquinaria que permite a LiraDB hacer lo que el cap. 27 no pudo — tener varios lectores leyendo MIENTRAS un escritor escribe, sin lecturas sucias, sin actualizaciones perdidas. La diferencia entre el «único escritor por el borrow checker» del cap. 27 y la «MVCC limitada» del cap. 30 no es un matiz: es el momento en que LiraDB deja de ser un sistema de un solo hilo lógico y empieza a hablar el idioma de las bases de datos reales.
+
+Lo que NO arreglaremos aquí es igual de importante que lo que sí: en Snapshot Isolation, dos transacciones que leen y modifican elementos DISJUNTOS a partir del mismo snapshot pueden producir un resultado no serializable — la anomalía que la literatura llama write skew. Cerrar eso exige Serializable Snapshot Isolation con predicate locks (Cahill, Fekete, Liarokapis y Bernstein, «Serializable Snapshot Isolation in PostgreSQL», VLDB 2008), y eso queda para la Parte VIII. La honestidad de este capítulo es justamente ésa: promete lo que cumple y avisa de lo que no.
+
+## 30.1 Objetivo
+
+Al terminar este capítulo vas a entender por qué el modelo del cap. 27 — un único escritor por el borrow checker — es una **limitación benigna**, no una característica: simplifica el código y por construcción prohíbe las anomalías de aislamiento, pero deja sin resolver el caso del lector que quiere ver un estado coherente mientras otro escribe. Vas a construir la pieza que lo resuelve: una capa MVCC sobre el `MemoryStore` del cap. 8 que entrega snapshots coherentes sin bloquear al escritor, y vas a ver la frontera honesta donde la instantánea deja de bastar (write skew).
+
+En concreto, vas a construir seis piezas:
+
+1. `VersionNode` / `VersionEdge` — el registro de versión con su `ts_begin` y `ts_end`.
+2. `MvccStore` — la capa MVCC sobre `MemoryStore` (la hexagonal del cap. 8).
+3. `commit` con un solo `ts` por lote y validación propia (`validar_mvcc`).
+4. `gc(hasta)` — la pieza de recuperación del espacio de versiones.
+5. `NivelAislamiento` como vocabulario (lo que PROHÍBE y lo que DEJA PASAR cada nivel).
+6. `GrafoEspera` para deadlocks — anzuelo para caps. futuros, no código en uso.
+
+## 30.2 Problema
+
+Volvamos al cap. 27, un momento. Teníamos una `Transaccion` que tomaba `&mut dyn GraphStore` durante toda su vida — begin, stage, commit, drop. El borrow checker era el cerrojo: mientras una transacción vivía, NINGÚN otro escritor y NINGÚN lector podía tocar el store. Eso significaba que las anomalías clásicas — `Anomalia::LecturaSucia` (una tx ve lo que otra NO ha confirmado), `Anomalia::ActualizacionPerdida` (dos tx escriben el mismo elemento y una pisa a la otra) — se definían como vocabulario pero NO PODÍAN ocurrir. El aislamiento era perfecto por construcción: no había concurrencia que aislar.
+
+El problema es que ése no es el aislamiento que promete una base de datos. Una base de datos REAL debe permitir que un lector recorra el grafo MIENTRAS otro confirma cambios — y que el lector vea un estado coherente del momento en que empezó a mirar, no los cambios que están ocurriendo AHORA. El cap. 27 nos dio las palabras (`Anomalia`, `NivelAislamiento`); el cap. 28 nos dio la durabilidad; el cap. 29 nos dio la recuperación. Lo que nos falta es la pieza que une todo: la forma de tener **varios lectores concurrentes con un escritor**, sin lecturas sucias, sin actualizaciones perdidas.
+
+La raíz del problema es la misma de siempre en sistemas concurrentes: cuando dos operaciones «leen y escriben» al mismo tiempo, hay tres opciones:
+
+1. **Bloquear al lector mientras el escritor escribe**: garantiza consistencia, pero mata el paralelismo — el lector espera al escritor y la base de datos parece de un solo hilo.
+2. **Bloquear al escritor mientras el lector lee**: mismo problema al revés — el escritor espera al lector, y dos transacciones que tardan en leer bloquean el sistema entero.
+3. **Hacer que lean COSAS DISTINTAS**: el lector y el escritor no pisan la misma versión. El lector lee la versión que existía cuando empezó a mirar; el escritor crea una versión nueva que verá el siguiente lector.
+
+La opción 3 es MVCC. Y es la única que escala.
+
+## 30.3 Modelo mental
+
+Vamos a usar dos analogías juntas, porque juntas lo ordenan todo:
+
+**El fotógrafo con contador de exposición.** Imagina que cada lector es un fotógrafo con una cámara antigua. Cuando toma una foto, anota un número en el borde del negativo — su `ts`, su «número de exposición». Durante el revelado (su transacción) sólo ve lo que estaba en el visor EN ESE instante. El fotógrafo puede disparar N fotos simultáneas — cada una con su propio número — y cada revelado ve SU momento, no el de los demás. El escritor, mientras tanto, hace clic en su obturador (commit) y CAMBIA el visor; pero el revelado anterior ya está en su cubeta, terminado, y el nuevo visor no lo toca. Las fotos viejas que nadie quiere revelar se tiran a la basura — eso es `gc`.
+
+**El editor de versiones de un documento** (tipo Git o Google Docs, pero a nuestra escala). Un `PutNode` NO pisa el `Node` anterior: RETIRA su versión actual (le pone `ts_end`) y APPENDIZA una nueva al final de la cadena. La historia del documento está disponible para quien sepa qué commit le interesa (`leer_nodo(id, ts)`). Un `DeleteNode` RETIRA la versión actual sin appendizar — la AUSENCIA es el nuevo estado: el documento ya no existe para los snapshots futuros, pero los antiguos lo siguen viendo.
+
+Las dos analogías se necesitan mutuamente: el fotógrafo explica la CONSISTENCIA del snapshot («mi foto no cambia porque alguien más disparó»), el editor de versiones explica la IMPLEMENTACIÓN («cada elemento lleva una cadena de versiones»).
+
+```
+Nodo 0 «Ana»:
++-----------+-----------+--------+
+| ts_begin=1| ts_begin=4| ts_begin=7|
+| ts_end=4  | ts_end=7  | ts_end=None|
+| «Ana»     | «Ana S.»  | «Ana S.»  |
++-----------+-----------+--------+
+   ▲ ts=2 ve «Ana»               ▲ ts=8 ve «Ana S.»; ts=5 ve «Ana S.»
+```
+
+Cada cuadro es una `VersionNode`: tres campos — cuándo empezó a ser visible (`ts_begin`), cuándo dejó de serlo (`ts_end`), y qué contenía (`nodo`). La cadena está ordenada por `ts_begin` ASCENDENTE; la última entrada (la del final) es la versión actual — su `ts_end` es `None` hasta que otra la retire. Para encontrar la versión visible en un instante `ts`, recorremos la cadena del final al principio y devolvemos la primera versión con `ts_begin ≤ ts` y (`ts_end > ts` o `ts_end = None`).
+
+## 30.4 Primera solución
+
+La solución ingenua — la que escribiría un novato — es exactamente lo que parece: un `HashMap<NodeId, Node>` con un cerrojo de lectura (`RwLock`). El lector toma `read_lock()`, lee lo que hay, suelta el cerrojo. El escritor toma `write_lock()`, reescribe el nodo, suelta el cerrojo.
+
+Funciona. Los tests pasan. Y tiene un problema que sólo se ve cuando se mide:
+
+1. **El lector bloquea al escritor durante su recorrido.** Si un lector pide `iter_nodos()` y tarda 10 ms en consumirlos, los escritores que lleguen durante esos 10 ms ESPERAN. En una base de datos con analíticas largas, eso es mortal.
+2. **El escritor bloquea a los lectores.** Si un escritor tarda 5 ms en confirmar 1.000 escrituras, los lectores que lleguen durante esos 5 ms ESPERAN. Es el mismo problema al revés.
+3. **No hay garantía de coherencia DURANTE el recorrido del lector.** Si el lector empieza en `ts=1` y el escritor confirma un cambio en `ts=2` mientras el lector está en la mitad del recorrido, el lector puede ver una mezcla de los dos estados — el `iter_nodos()` del cap. 8 NO toma snapshot, recorre el HashMap EN EL MOMENTO. La anomalía `LecturaSucia` se materializa sin que nadie la pidiera.
+
+Hay otra solución más sutil pero igual de ingenua: **bloquear a nivel de elemento**. Cada nodo y cada arista tiene su propio `Mutex`. El lector pide el lock del nodo X, lo lee, lo suelta. El escritor pide los locks de los nodos que toca, los modifica, los suelta. Es lo que llaman «cerrojos de granularidad fina».
+
+Funciona mejor, pero abre una puerta nueva: los **deadlocks**. Si la tx A tiene el lock del nodo X y espera el del Y, y la tx B tiene el del Y y espera el del X, las dos se quedan bloqueadas para siempre. Solucionarlo exige el grafo de espera y la detección de ciclos — la pieza del cap. 30 que vamos a construir como anzuelo, no como código en uso.
+
+Ninguna de las dos soluciones ataca el problema real: **el lector quiere ver un estado coherente, no el estado actual en cada instante**. Y para eso necesitamos algo cualitativamente distinto.
+
+## 30.5 Sus límites
+
+Las dos soluciones ingenuas comparten un límite conceptual: tratan la lectura como un «accidente físico» — un observador que mira en un instante y se va. Pero una base de datos NO funciona así. Una analítica que pregunta «¿cuántos nodos hay en el subgrafo X?» necesita ver un estado COHERENTE durante toda su ejecución, no los cambios que ocurren a media consulta.
+
+Lo que necesitamos no es un cerrojo más fino ni más rápido. Necesitamos que el lector **tome una foto del grafo en el instante en que empieza a mirar**, y que esa foto no cambie mientras la trabaja. Eso es un snapshot. Y el snapshot, en MVCC, se materializa como un **número lógico** — el `Ts` — que el lector pasa a cada `leer_nodo(id, ts)`. La foto no es una copia de los datos: es un INSTANTE LÓGICO al que cada elemento responde con la versión que le correspondía.
+
+Esta idea resuelve los tres problemas de un golpe:
+
+1. **El lector no bloquea al escritor:** el lector clona la versión visible al `ts` y trabaja con su copia. El escritor modifica la versión actual (que el lector NO está mirando).
+2. **El escritor no bloquea al lector:** la modificación crea una versión NUEVA con un `ts` mayor; el lector, con su `ts` viejo, sigue viendo la versión anterior.
+3. **La coherencia del snapshot es por construcción:** la cadena es append-only (las versiones nuevas se añaden al final), la lectura es por valor (clona), y no hay un instante en que el grafo «cambie» a mitad del recorrido.
+
+Y aquí viene la pieza clave que el cap. 27 no podía enunciar: **los lectores toman `&self` y el escritor toma `&mut self`, y AMBOS conviven sobre el mismo `MvccStore`**. El borrow checker no se queja: `&self` y `&mut self` son incompatibles para el MISMO dato, pero la MVCC los separa — los lectores leen cadenas (inmutables), el escritor modifica el `inner` y APPENDIZA a las cadenas. Es el patrón que convierte el «único escritor del cap. 27» en «N lectores concurrentes con un escritor».
+
+## 30.6 Solución evolucionada
+
+La solución evolucionada se reduce a tres reglas:
+
+1. **Cada elemento lleva una CADENA de versiones (`ts_begin`, `ts_end?`, `valor`).** Las escrituras RETIRAN la versión actual (ponen su `ts_end`) y APPENDIZAN una nueva. Los deletes RETIRAN sin appendizar (la ausencia es el estado).
+2. **Un snapshot es un `Ts = u64` monótono.** Una lectura en `ts` ve la versión con el MAYOR `ts_begin ≤ ts` Y `ts_end > ts` (o sin `ts_end`).
+3. **El escritor es único (`&mut MvccStore`); los lectores son concurrentes (`&MvccStore`).** Sin cerrojos de lectura: la consistencia viene del versionado, no de los locks.
+
+El código vive en `liradb-workspace/crates/vol2-liradb/src/cap30_mvcc.rs`. Vamos a leerlo por partes, porque cada línea tiene un porqué.
+
+### Las versiones
+
+```rust
+pub type Ts = u64;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VersionNode {
+    pub ts_begin: Ts,
+    pub ts_end: Option<Ts>,
+    pub nodo: Node,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VersionEdge {
+    pub ts_begin: Ts,
+    pub ts_end: Option<Ts>,
+    pub arista: Edge,
+}
+```
+
+`Ts` no es un timestamp físico (`SystemTime::now()`, ni `Instant::now()`). Es un **contador lógico**: el ORDEN de las escrituras. ¿Por qué no tiempo real? Porque dos commits no pueden coincidir en el orden del programa (uno va antes que el otro en el hilo del escritor); un reloj de tiempo real mezcla «orden» con «cuándo pasó» y abre problemas de deriva entre máquinas — la Parte VIII los cierra con vector clocks o true time, fuera del alcance del cap. 30. El contador es barato, monótono y portable: dos `Ts` son comparables sin ambigüedad.
+
+`VersionNode` lleva tres campos. `ts_begin` es obligatorio: toda versión EMPEZÓ a ser visible en algún momento. `ts_end` es opcional: si es `None`, la versión SIGUE vigente; cuando otra la retire, se le pone `Some(ts)`. El campo `nodo` es el valor — clonado de la `Node` del cap. 7.
+
+### El store MVCC
+
+```rust
+pub struct MvccStore {
+    pub inner: MemoryStore,
+    pub versiones_nodos: HashMap<NodeId, Vec<VersionNode>>,
+    pub versiones_aristas: HashMap<EdgeId, Vec<VersionEdge>>,
+    pub reloj: Ts,
+}
+```
+
+Tres campos importantes. `inner: MemoryStore` es el **espejo material** — la versión «del momento presente» que las queries que NO piden snapshot (el código del cap. 8) usan. La MVCC vive ENCIMA; el `inner` es la verdad material para quien no sabe de versiones. `versiones_nodos` y `versiones_aristas` son los mapas de cadenas, una por cada elemento que haya pasado por el sistema. `reloj: Ts` es el contador: el siguiente `ts` a asignar.
+
+La estructura del `MvccStore` es la hexagonal del cap. 8 probada una vez más: el `inner` es un `MemoryStore` CONCRETO hoy, pero cualquier backend que cumpla `GraphStore` serviría — un `FilePager`+CSR del cap. 14, un backend distribuido del cap. 40. El versionado no cambia; el backend sí. Es exactamente la inversión de dependencias que los caps. 8 y 26 establecieron.
+
+### El commit con un solo timestamp
+
+```rust
+pub fn commit(&mut self, ops: &[Operacion]) -> Result<ResumenCommitMvcc, MvccError> {
+    self.validar_mvcc(ops)?;
+    let ts = self.siguiente_ts();
+    let mut resumen = ResumenCommitMvcc {
+        ts_asignado: ts,
+        ..ResumenCommitMvcc::default()
+    };
+    for op in ops {
+        match op {
+            Operacion::PutNode(n) => {
+                let chain = self.versiones_nodos.entry(n.id).or_default();
+                if let Some(last) = chain.last_mut()
+                    && last.ts_end.is_none()
+                {
+                    last.ts_end = Some(ts);
+                    resumen.versiones_retiradas += 1;
+                }
+                chain.push(VersionNode {
+                    ts_begin: ts, ts_end: None, nodo: n.clone(),
+                });
+                let _ = self.inner.delete_node(n.id);
+                self.inner.put_node(n.clone()).map_err(MvccError::Store)?;
+                resumen.nodos_escritos += 1;
+            }
+            // ... PutEdge, DeleteNode, DeleteEdge análogos
+        }
+    }
+    Ok(resumen)
+}
+```
+
+Tres decisiones que merecen explicarse:
+
+**Un solo `ts` por lote.** La asignación se hace UNA vez, antes del bucle. ¿Por qué? Asignar UN `ts` por commit da una vista atómica: para cualquier `ts`, todos los elementos que esa transacción tocó son visibles en su nueva versión O todos en la vieja. Asignar uno por operación abriría una ventana en la que un lector ve la mitad del commit — un snapshot «mezclado». Volvería la `Anomalia::LecturaSucia` dentro de un commit.
+
+**Validación PROPIA, no la del cap. 27.** La `validar_buffer` del cap. 27 asume INSERCIÓN ESTRICTA: rechaza `PutNode` de un id existente con `StoreError::DuplicateNode`. En MVCC, SOBREESCRIBIR es LEGAL — es lo que crea una nueva versión. Por eso el cap. 30 implementa `validar_mvcc` propia, que registra `PutNode` como «sim_creados_nodos.insert(n.id)» (no como error) y verifica `PutEdge` contra el estado visible (inner + simulación del buffer). Es la pieza que la calibración del módulo descubrió: 6 tests fallaban con `Validacion(DuplicateNode)` hasta que se separaron las dos políticas (MIGRATION §35).
+
+**`delete-then-put` en el `inner`.** El `MemoryStore` del cap. 8 es de INSERCIÓN ESTRICTA. MVCC SOBREESCRIBE legalmente, así que el `inner` debe aceptar la nueva versión: `delete_node` (que es silencioso si no existe) seguido de `put_node`. La CADENA ya hizo su trabajo de versionado; el `inner` sólo es el espejo material.
+
+### Las lecturas por valor
+
+```rust
+pub fn leer_nodo(&self, id: NodeId, ts: Ts) -> Option<Node> {
+    let chain = self.versiones_nodos.get(&id)?;
+    version_visible_node(chain, ts).map(|v| v.nodo.clone())
+}
+
+fn version_visible_node(chain: &[VersionNode], ts: Ts) -> Option<&VersionNode> {
+    chain.iter().rev()
+        .find(|v| v.ts_begin <= ts && v.ts_end.is_none_or(|t| t > ts))
+}
+```
+
+La pieza fundamental. `leer_nodo` toma `&self` (no `&mut self`), busca la cadena del elemento y devuelve la versión visible al `ts` — clonada. La búsqueda recorre la cadena del final al principio (la versión actual está al final — es donde están los cambios más recientes) y devuelve la primera versión con `ts_begin ≤ ts` y (`ts_end > ts` o `ts_end = None`).
+
+Que sea `&self` es la pieza clave. Permite que el lector clone la versión y se vaya, sin pedir nada al escritor. El escritor, mientras tanto, tiene `&mut self` y modifica el `inner` y APPENDIZA a las cadenas. El borrow checker admite `&self` y `&mut self` SIMULTÁNEOS mientras las operaciones que cada uno hace sean disjuntas — y la MVCC las hace disjuntas por construcción: el lector no toca el `inner` ni el `último elemento` de la cadena (lee una versión histórica cualquiera); el escritor no toca las versiones retiradas (las deja en paz). La única zona que ambos necesitan — la cola de la cadena — la gestiona el escritor con su `&mut`, y el lector la evita por construcción.
+
+### La garbage collection
+
+```rust
+pub fn gc(&mut self, hasta: Ts) -> usize {
+    let mut eliminadas = 0usize;
+    let mut vacias: Vec<NodeId> = Vec::new();
+    for (id, chain) in &mut self.versiones_nodos {
+        let antes = chain.len();
+        chain.retain(|v| match v.ts_end {
+            None => true,
+            Some(t_end) => t_end >= hasta,
+        });
+        let quitadas = antes - chain.len();
+        eliminadas += quitadas;
+        if chain.is_empty() {
+            vacias.push(*id);
+        }
+    }
+    for id in &vacias {
+        self.versiones_nodos.remove(id);
+    }
+    // ... análogo para aristas
+    eliminadas
+}
+```
+
+La invariante de `gc` es la pieza que un programador con prisa se saltaría: ningún snapshot con `ts ≥ hasta` puede ver una versión retirada con `ts_end < hasta` (los `ts` son monótonos — `siguiente_ts` siempre crece). Si la versión actual (`ts_end = None`) tiene `ts_begin < hasta`, NO se quita: snapshots futuros la necesitan. Cuando una cadena queda totalmente vacía, su entrada del mapa se elimina también — el elemento ya no existe.
+
+La regla mnemotécnica: **`gc(hasta)` borra el PASADO visible para NADIE**. Borra las versiones que ningún snapshot — actual ni futuro — puede ver. La memoria se libera cuando ya no hay observadores que la necesiten.
+
+### El grafo de espera
+
+```rust
+pub struct GrafoEspera {
+    aristas: Vec<(TxIdLocal, TxIdLocal, Recurso)>,
+}
+
+impl GrafoEspera {
+    pub fn agregar_espera(&mut self, esperador: TxIdLocal, tenedor: TxIdLocal, recurso: Recurso) {
+        self.aristas.push((esperador, tenedor, recurso));
+    }
+    pub fn quitar_tx(&mut self, tx: TxIdLocal) {
+        self.aristas.retain(|&(e, t, _)| e != tx && t != tx);
+    }
+    pub fn detectar_ciclo(&self) -> Option<Vec<TxIdLocal>> {
+        // DFS con tres colores (blanco/gris/negro) — O(V+E)
+        // ...
+    }
+}
+```
+
+Aunque HOY no puede haber ciclos en este grafo — `&mut self` en el commit impide que dos escritores compitan por cerrojos — la estructura existe y se DEMUESTRA. Es anzuelo: cuando llegue la Parte VIII y el `MvccStore` acepte varios escritores concurrentes, el gestor de cerrojos que los coordine enchufa `agregar_espera` cuando un escritor pide un recurso que otro tiene, `quitar_tx` cuando termina, y `detectar_ciclo` cada vez que un escritor se bloquea. La detección de ciclos es DFS con tres colores (blanco/gris/negro) en O(V+E): si al descender encontramos un nodo gris, hay ciclo y devolvemos los nodos desde el gris en adelante.
+
+El test `grafo_espera_detecta_ciclo_de_dos` lo demuestra: T1 espera a T2 por el nodo 10, T2 espera a T1 por el nodo 11 — `detectar_ciclo` devuelve `Some([1, 2, 1])`. `quitar_tx(1)` rompe el ciclo. Aunque no esté enchufado al `MvccStore` hoy, la pieza existe y funciona.
+
+## 30.7 Código completo ejecutable
+
+El código del capítulo vive en `liradb-workspace/crates/vol2-liradb/src/cap30_mvcc.rs`. Son ~1.158 líneas, 21 tests en `tests_mvcc` que pasan `cargo test -p vol2-liradb cap30` con ALL_GREEN. La estructura se resume en:
+
+- **Tipos base**: `Ts = u64`, `VersionNode`, `VersionEdge`, `NivelAislamiento::{LecturaSucia, Instantanea, Serializable}` con método `prohibe()` que enuncia qué anomalías quita cada nivel.
+- **Errores**: `MvccError::{Validacion, Store}` con `From<TransaccionError>` y `source()` para componer la cadena de errores.
+- **El store**: `MvccStore` con `inner: MemoryStore`, `versiones_nodos/aristas`, `reloj`; métodos `new()`, `reloj()`, `siguiente_ts()`, `leer_nodo/arista`, `iter_nodos/aristas`, `commit`, `validar_mvcc`, `gc`.
+- **El resumen**: `ResumenCommitMvcc { ts_asignado, nodos_escritos, aristas_escritas, versiones_retiradas }` con `Display` que produce un reporte humano.
+- **El grafo de espera**: `Recurso::{Nodo, Arista}`, `GrafoEspera` con `nuevo`, `agregar_espera`, `quitar_tx`, `detectar_ciclo`, `aristas` para inspección; `dfs` interno con tres colores.
+- **La re-valoración ACID**: `informe_acid_post_mvcc()` que devuelve `Vec<EntradaAcid>` con el aislamiento AVANZADO (lectura sucia y lost update prohibidas, write skew sobrevive — closer = 40).
+
+Veamos el test central — la demostración clave del capítulo:
+
+```rust
+#[test]
+fn varios_snapshots_coexisten_sin_bloquearse() {
+    let (mut mv, ts1) = store_basico();
+    // Lector A lee en ts1.
+    let snap_a = mv.leer_nodo(0, ts1).unwrap();
+    assert_eq!(snap_a.labels, vec!["Person".to_string()]);
+
+    // Commit que reescribe el nodo 0.
+    let mut n = mv.leer_nodo(0, ts1).unwrap();
+    n.labels = vec!["Cambiado".to_string()];
+    let _ = mv.commit(&[Operacion::PutNode(n)]).unwrap();
+
+    // Lector B (que tomó su foto EN ts1 antes) sigue viendo lo suyo.
+    let snap_b = mv.leer_nodo(0, ts1).unwrap();
+    assert_eq!(snap_b.labels, vec!["Person".to_string()]);
+
+    // Y nadie bloqueó a nadie: las dos lecturas son por valor y la
+    // escritura ocurrió entre medias sin invalidar el snapshot A.
+    assert_eq!(snap_a.labels, snap_b.labels);
+}
+```
+
+Tres líneas que valen un capítulo: lector A lee, commit ocurre entre medias, lector B lee — ambos ven lo mismo. Es lo que el cap. 27 no podía hacer (el borrow checker hubiera bloqueado al escritor mientras A tenía su referencia). Es la promesa del cap. 30 cumpliéndose por construcción: la cadena es append-only, la lectura es por valor, y los `ts` son monótonos.
+
+## 30.8 Prueba de fuego
+
+La prueba de fuego tiene cinco tests-tesis que DEMUESTRAN cada pieza del capítulo:
+
+- **`leer_en_snapshot_anterior_devuelve_la_version_visible`** (807-826): un nodo se reescribe en un commit posterior; el snapshot anterior SIGUE viendo la versión vieja. La diferencia entre MVCC y un store que sobrescribe (el cap. 27 sin MVCC pierde la versión).
+- **`varios_snapshots_coexisten_sin_bloquearse`** (928-950): lector A lee, commit ocurre, lector B (foto antes del commit) lee — ambos ven lo mismo. La promesa del capítulo: N lectores + 1 escritor sin bloqueos de lectura.
+- **`niveles_prohiben_las_anomalias_esperadas`** (994-1011): `NivelAislamiento::prohibe()` dice la verdad — Instantanea prohíbe lectura sucia y lost update, DEJA PASAR write skew; Serializable prohíbe las tres (SSI con predicate locks cerraría write skew).
+- **`grafo_espera_detecta_ciclo_de_dos`** (1031-1041) y **`grafo_espera_detecta_ciclo_de_tres`** (1044-1053): el `GrafoEspera` detecta ciclos T1→T2→T1 y T1→T2→T3→T1; `quitar_tx` rompe el primero. Aunque no se usa en producción HOY, la pieza está testeada.
+- **`informe_post_mvcc_avanza_el_aislamiento`** (1115-1146): el `informe_acid_post_mvcc()` documenta que el aislamiento AVANZA (lectura sucia y lost update pasan a prohibidas) — pero write skew sigue pasando y el closer del aislamiento salta al cap. 40.
+
+**Síntoma si el lector se salta este capítulo**: su `MvccStore` sobrescribirá el `Node` anterior (no habrá cadena); un commit con `ts=2` no podrá distinguir «versión reescrita en `ts=2`» de «versión inicial que sigue vigente»; la palabra «snapshot» será un eufemismo para «el estado en RAM ahora mismo». Y — lo más importante — NO entenderá por qué write skew es un problema HONESTO: creerá que MVCC «lo arregla todo» y diseñará transacciones disjuntas confiando en la garantía equivocada.
+
+## 30.9 Qué hemos sacrificado
+
+Toda estructura tiene un precio. MVCC no es gratis:
+
+1. **Memoria para las cadenas**: cada reescritura de un elemento deja una versión retirada en la cadena hasta que `gc` la purgue. En un grafo muy reescrito (p.ej. un nodo que cambia sus etiquetas en cada commit), la cadena crece monótonamente. La `gc` es la pieza que lo controla, pero exige disciplina: llamarla con un `hasta` adecuado (mínimo `mv.reloj()` para vaciar todo lo no visible para snapshots futuros).
+2. **Sin timestamp físico**: el `Ts` es orden del programa, no medida de tiempo. Si dos nodos de una red confirman cambios «a la vez» en tiempo real, sus `Ts` son los que el escritor local asignó — distintos y no comparables en términos temporales. La Parte VIII cierra esto con vector clocks; aquí lo admitimos como limitación.
+3. **Concurrencia de escritores NO resuelta**: sigue habiendo un único escritor lógico (`&mut self`). MVCC multiplica los LECTORES, no los escritores. Un motor real con varios escritores exige un gestor de cerrojos — la pieza del `GrafoEspera` está construida como anzuelo, pero NO se enchufa al `MvccStore` HOY.
+4. **Write skew ABIERTO**: en Snapshot Isolation, dos transacciones que leen y modifican elementos DISJUNTOS a partir del mismo snapshot pueden producir un resultado no serializable. Cerrarlo exige Serializable SI con predicate locks (Cahill et al. 2008) — fuera del alcance. La `informe_acid_post_mvcc()` lo dice sin ambigüedades: «write skew sigue pasando — Serializable SI con predicate locks lo cerraría», closer = 40.
+5. **GC manual**: el capítulo enseña la operación `gc`; integrarla como tarea programada es integración del motor (no entra aquí). Un usuario que olvide llamar `gc` acabará con un `MvccStore` que crece sin parar.
+
+## 30.10 Cómo lo hace una BBDD real
+
+MVCC no es una rareza académica — es la elección por defecto de casi todas las bases de datos modernas, con variantes:
+
+- **PostgreSQL** implementa MVCC desde 8.0 (2005): cada fila lleva `xmin` y `xmax` (los equivalentes de nuestro `ts_begin` y `ts_end`); la «instantánea» de una transacción se materializa como una lista de `xmin` visibles. El nivel por defecto es «Read Committed» (cada statement ve su propio snapshot, NO la transacción entera); «Repeatable Read» usa SI (prohibe lectura sucia y lost update, igual que nosotros); «Serializable» implementa SSI con predicate locks sobre los predicados leídos (Cahill et al. 2008 — el paper que el cap. 30 cita como «lo que cerraría write skew»).
+- **CockroachDB** y **YugabyteDB** llevan MVCC al territorio distribuido: cada nodo asigna su propio `Ts` con un reloj HLC (Hybrid Logical Clock), combinación de tiempo físico y contador lógico. Es lo que llamábamos «la frontera con vector clocks» — la Parte VIII.
+- **FoundationDB** implementa Serializable SI sobre un MVCC con `read_version` por lectura y conflict ranges para detectar write skew (Ports & Grittner, 2016). Su `detectar_conflicto` es el equivalente industrial del `detectar_ciclo` de nuestro `GrafoEspera`.
+- **Wu et al., «An Empirical Evaluation of In-Memory Multi-Version Concurrency Control»**, VLDB 2017: una evaluación sistemática de las variantes MVCC (timestamp ordering, snapshot isolation, serializable) sobre cargas OLTP. Conclusión: MVCC gana en throughput a 2PL bajo concurrencia media-alta, y SSI añade menos overhead del que la intuición sugiere — pero la implementación importa más que la teoría.
+- **David P. Reed**, «Naming and Synchronization in a Decentralized Computer System», MIT 1978: la génesis. La propuesta formal de versiones múltiples en sistemas descentralizados. Lo que el cap. 30 cita como el origen de la idea — y la conexión histórica directa con la Parte VIII.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: predice el `ResumenCommitMvcc` de tres commits consecutivos sobre `store_basico()` (un PutNode que reescribe, un DeleteNode). Explica por qué la cadena del nodo 0 tiene longitud 1, 2, 1 — no 1, 2, 0.
+- *Intermedio*: implementa `leer_en_snapshot_exterior` que devuelva `None` si NO hay ninguna versión visible para el `ts` (la lógica actual devuelve `Some` aunque el `ts` sea muy anterior). ¿Cómo distinguirías «el nodo nunca existió» de «el nodo se borró»?
+- *Experto*: implementa `mvcc_iter_nodos_entre(desde, hasta)` que devuelva los nodos cuyo `ts_begin` está en el rango — el primer ladrillo de un «time-travel query» estilo SQL Server `AS OF`. Conecta con el gancho del cap. 40: ¿qué cambia cuando los `Ts` vienen de MÁQUINAS DISTINTAS?
+
+## 30.11 Lo que te llevas
+
+- **MVCC** es la maquinaria que da MATERIALIDAD al «snapshot» del cap. 26: una foto lógica no es una copia, es un `Ts` al que cada elemento responde con la versión visible.
+- **El `Ts` es orden del programa, no medida de tiempo**: dos `Ts` son comparables sin ambigüedad dentro de un escritor; entre máquinas, la Parte VIII los reconcilia.
+- **Las cadenas de versiones** son append-only: la última entrada es la actual (`ts_end = None`); las escrituras RETIRAN la actual y APPENDIZAN; los deletes RETIRAN sin appendizar (la ausencia es el estado).
+- **`&self` para lectores, `&mut self` para el escritor**: el borrow checker admite la convivencia porque las operaciones son disjuntas por construcción. Es el patrón que multiplica los lectores del cap. 27 sin tocar la regla «un único escritor».
+- **Instantanea PROHÍBE lectura sucia y lost update, DEJA PASAR write skew**: la frontera honesta. Cerrar write skew exige Serializable SI con predicate locks — fuera del alcance del Vol.II.
+- **El `GrafoEspera` existe sin uso HOY**: anzuelo para el gestor de cerrojos del cap. 40. La detección de ciclos es DFS 3 colores en O(V+E).
+- **El `inner` es el espejo material**: las queries que NO piden snapshot lo usan; la MVCC vive ENCIMA y el `delete-then-put` mantiene la consistencia entre ambos mundos.
+
+## 30.12 Ojo, cuidado con…
+
+- **Confundir `mv.reloj()` con un `ts` válido**: `reloj()` es el SIGUIENTE timestamp a asignar — NO una snapshot válida (todavía no hay versión visible para ese `ts`). Usa `resumen.ts_asignado` del commit inicial o de un commit anterior. Síntoma: `leer_nodo(2, mv.reloj())` devuelve `None` cuando debería devolver la versión actual.
+- **Asumir que `validar_buffer` del cap. 27 sirve para MVCC**: la del 27 rechaza `PutNode` de id existente; la MVCC SOBREESCRIBE. Síntoma: 6 tests fallaban con `Validacion(DuplicateNode)` durante la calibración. El fix fue `validar_mvcc` PROPIA con semántica de sobreescritura.
+- **Creer que la versión «más reciente» es siempre la actual**: la versión visible para un `ts` se calcula por la condición `ts_begin ≤ ts ∧ (ts_end > ts ∨ ts_end = None)`, NO por «el último siempre». Olvidar el caso de la versión retirada devuelve `None` cuando había versión.
+- **Olvidar que `gc(hasta)` puede vaciar cadenas**: si TODAS las versiones quedan retiradas y `ts_end < hasta`, la entrada del mapa se ELIMINA. Síntoma: el test `gc_elimina_cadenas_vacias_cuando_el_elemento_se_borra` falla si se asume que la cadena sobrevive.
+- **Pensar que `write skew` es un bug**: NO — es la frontera HONESTA de Snapshot Isolation. Cerrarlo exige Serializable SI con predicate locks (Cahill et al. 2008). El cap. 30 lo DEJA ABIERTO a propósito. Síntoma: diseñar transacciones disjuntas creyendo que MVCC las serializa — produce un resultado no serializable.
+
+## 30.13 Pin de batalla
+
+> *«La consistencia del snapshot no viene de un cerrojo que sostiene al lector en su sitio. Viene de que cada elemento lleva la historia de quién lo vio, y de que el lector elige qué historia le interesa.»*
+
+## 30.14 Si solo lees 30 segundos
+
+MVCC resuelve la anomalía histórica del Vol.II — un único escritor por el borrow checker — permitiendo que N lectores lean MIENTRAS un escritor escribe, sin lecturas sucias ni actualizaciones perdidas. Cada elemento lleva una cadena de versiones `{ts_begin, ts_end?, valor}`; un snapshot es un `Ts` lógico (un `u64` monótono), y `leer_nodo(id, ts)` devuelve la versión visible ESE instante. El escritor toma `&mut self` y APPENDIZA una versión nueva; los lectores toman `&self` y clonan — la convivencia por el borrow checker es la forma del aislamiento. Instantanea PROHÍBE lectura sucia y lost update, DEJA PASAR write skew. El `GrafoEspera` para deadlocks existe como anzuelo para caps. futuros, no como código en uso HOY.
+
+## 30.15 Una historia pequeña
+
+Cuando llegamos al cap. 27 con el primer `commit(&mut self)` funcional, pensábamos que teníamos «transacciones». Teníamos vocabulario ACID, `Anomalia::LecturaSucia` y `Anomalia::ActualizacionPerdida` bien definidas, y la promesa — todavía vacía — de que el aislamiento mejoraría. Lo que NO teníamos era la posibilidad de demostrar la promesa: el borrow checker era el cerrojo, y bajo el cerrojo no había concurrencia que aislar.
+
+Fue el cap. 30 el que cerró el círculo. El momento clave no fue técnico: fue cuando el test `varios_snapshots_coexisten_sin_bloquearse` pasó por primera vez. Lector A lee, commit ocurre, lector B lee — ambos ven lo mismo. Era algo que el cap. 27 NO PODÍA hacer, y que ahora era trivial: dos `&self` y un `&mut self` sobre el mismo `MvccStore`, sin más ceremonia que pasarle el `ts` correcto. La anomalía histórica del Vol.II estaba resuelta — no por añadir cerrojos, sino por QUITARLOS: la cadena es el cerrojo, no un lock manager.
+
+Y aquí aprendimos también la honestidad de la Parte VI: el `informe_acid_post_mvcc()` dice, sin ambigüedad, que el aislamiento AVANZA pero NO SE CIERRA. Write skew sobrevive, y cerrarlo exige Serializable SI con predicate locks (Cahill et al. 2008) — la pieza que dejaremos para la Parte VIII, cuando la concurrencia REAL de varios procesos abra la puerta al skew y el `GrafoEspera` aquí construido encuentre su uso.
+
+## Ejercicios resueltos
+
+**1. ¿Por qué la validación del cap. 27 (`validar_buffer`) no sirve para MVCC?**
+
+Porque `validar_buffer` del cap. 27 asume INSERCIÓN ESTRICTA: rechaza `PutNode` de un id existente con `StoreError::DuplicateNode`. En MVCC, SOBREESCRIBIR un nodo es LEGAL — es lo que crea una nueva versión en la cadena (la versión anterior se RETIRA con `ts_end` y la nueva se APPENDIZA). Si reutilizáramos `validar_buffer`, un commit que reescribe el nodo 0 fallaría con `Validacion(DuplicateNode)` y la MVCC no podría hacer su trabajo. Por eso el cap. 30 implementa `validar_mvcc` PROPIA, que registra `PutNode` como `sim_creados_nodos.insert(n.id)` (no como error) y verifica `PutEdge` contra el estado visible (inner + simulación del buffer). Las dos políticas — inserción estricta (cap. 27, `MemoryStore`) y sobreescritura (cap. 30, MVCC) — son DIFERENTES, y la lección de la calibración (6 tests fallaban) lo demostró empíricamente.
+
+**2. ¿Por qué `leer_nodo(0, mv.reloj())` puede devolver `None` cuando el nodo existe?**
+
+Porque `mv.reloj()` es el SIGUIENTE `ts` a asignar — todavía no hay ninguna versión con `ts_begin <= mv.reloj()` (la versión actual tiene `ts_begin` igual al del último commit, y `ts_end = None`, así que es visible para `ts >= ts_begin`, pero el SIGUIENTE `ts` aún no es visible para sí mismo — no hay versión que cumpla `ts_begin <= mv.reloj()` y `ts_end > mv.reloj()`). Es la diferencia entre «el próximo número que se asignará» y «un número que ya es válido como snapshot». La forma correcta es capturar `resumen.ts_asignado` del commit inicial o de un commit anterior y usar ESE como snapshot. Esta trampa aparece en §35 de MIGRATION-PATTERN como una de las lecciones de calibración.
+
+## Ejercicios propuestos
+
+**Esencial.** Predice, ANTES de ejecutar, cuántas versiones retira cada uno de los tres commits consecutivos y cuál es el `ts_asignado`. Parte del `store_basico()` (3 nodos, 2 aristas, `ts=1`); ejecuta un segundo commit con `[PutNode(Nodo::new(0, "Renacido"))]` y comprueba el `ResumenCommitMvcc` (nodos_escritos=1, versiones_retiradas=1, ts_asignado=2); luego un tercero con `[DeleteNode(0)]` y comprueba (nodos_escritos=0, versiones_retiradas=1, ts_asignado=3 — un delete RETIRA sin appendizar). Pistas: ¿qué hace `DeleteNode` con la cadena del elemento? ¿`reloj()` es lo mismo que `ts_asignado`? Tras el `DeleteNode`, ¿cuántas entradas tiene la cadena del nodo 0? Criterio: predicción exacta de los tres `ResumenCommitMvcc` y de la longitud de la cadena (1, 2, 1 respectivamente).
+
+**Intermedio.** Tomando la cadena del nodo 0 tras los tres commits anteriores (`{ts_begin=1, ts_end=3, "Ana"}` y vacío tras el delete), explica por qué `leer_nodo(0, 1)` devuelve la versión inicial, por qué `leer_nodo(0, 2)` también, y por qué `leer_nodo(0, 3)` devuelve `None`; conecta con `Anomalia::ActualizacionPerdida` del cap. 27 (¿qué habría pasado SIN MVCC si dos tx leen `leer_nodo(0, 2)` y reescriben?); conecta con la `RecoveryError` del cap. 29 (¿qué ganaría la MVCC sobre el WAL si el sistema cae a mitad del commit?). Pistas: ¿cuál es la versión con `ts_begin ≤ ts ∧ ts_end > ts` para cada `ts`? ¿Qué condición del cap. 27 PROHIBIRÍA la actualización perdida? ¿`delete-then-put` es atómico ante un crash? Criterio: tres predicciones de `leer_nodo` correctas + una frase que conecte `Anomalia::ActualizacionPerdida` con la condición de visibilidad + una frase que conecte `delete-then-put` con la fragilidad ante crash (el cap. 29 lo cubre; el cap. 30 NO).
+
+**Experto.** Implementa `gc(hasta)` sobre un `MvccStore` con esta historia: `ts=1` escribe nodo 0 («Ana»), `ts=2` reescribe («Ana S.»), `ts=3` reescribe («Ana Sofía»), `ts=4` borra; predice cuántas versiones se quitan con `gc(4)` y `gc(5)` y demuestra con `cargo test` que coincide con `gc_descarta_versiones_retiradas_antiguas`. LUEGO razona al revés: dado un `MvccStore` con N reescrituras del mismo nodo y SIN deletes, ¿cuál es el MÍNIMO `gc(hasta)` que vacía todas las versiones retiradas? Pistas: tras `ts=4` (delete), ¿cuál es el `ts_end` de la versión inicial? ¿La cadena queda con longitud 1 o 0 tras el delete? ¿`gc(hasta)` quita la versión con `ts_end = None`? Criterio: predicciones exactas + identificación de que la versión con `ts_end = None` (la «actual») NO se quita NUNCA por `gc` (los snapshots futuros la necesitan) + reconocimiento de que el `gc` mínimo para vaciar todo es `mv.reloj()` (el siguiente `ts` a asignar — más allá, ningún snapshot puede estar vivo).
+
+## Para profundizar
+
+- **David P. Reed**, «Naming and Synchronization in a Decentralized Computer System», MIT 1978 — la génesis de las versiones múltiples en sistemas descentralizados. El cap. 4 de la tesis es donde está la idea; el resto es la conexión con la Parte VIII.
+- **Cahill, Fekete, Liarokapis, Bernstein**, «Serializable Snapshot Isolation in PostgreSQL», VLDB 2008, DOI 10.14778/1454159.1454166 — el algoritmo que cierra el write skew que el cap. 30 DEJA ABIERTO. La pieza que el Vol.II cita como anzuelo al cap. 40.
+- **PostgreSQL Global Development Group**, «13.2. Transaction Isolation», PostgreSQL documentation — las definiciones operativas de Read Committed / Repeatable Read / Serializable. El vocabulario del que `NivelAislamiento` es una traducción.
+- **Wu, Arulraj, Lin, Xi, Pavlo, Chen, Lee, Song, Feng, Lohman, Xu, Zhao, Chen**, «An Empirical Evaluation of In-Memory Multi-Version Concurrency Control», VLDB 2017 — la evidencia moderna de que MVCC es la elección de la mayoría de motores analíticos en RAM y de las diferencias prácticas entre variantes.
+- **Ports & Grittner**, «Serializable Snapshot Isolation in FoundationDB», 2016 — la implementación industrial de SSI con `read_version` y conflict ranges; el puente directo al cap. 40.
+- **Código fuente de PostgreSQL** (`heapam.c`, `tqual.c`): la implementación canónica de MVCC con `xmin`/`xmax`, comentada con un detalle exquisito.
+- **Liran Einav**, «The Art of Writing Efficient Database Code» (workshop, 2019) — la conferencia que reconcilia las intuiciones de MVCC con las medidas de throughput en producción.
+
+## Mini-diálogo: en guardia nocturna
+
+> — O sea, que MVCC es «cada elemento lleva una cadena de versiones». ¿Y por eso un capítulo entero?
+>
+> — Porque esa cadena es la diferencia entre «tu motor lee y escribe» y «tu motor tiene varios lectores y un escritor sin que se pisen». El cap. 27 te daba las palabras — `Anomalia::LecturaSucia`, `Anomalia::ActualizacionPerdida` — pero no podías DEMOSTRAR que estaban prohibidas: el borrow checker era el cerrojo. El cap. 30 te da la maquinaria: ahora un lector toma `&self`, clona su versión, y el escritor toma `&mut self` y APPENDIZA. La anomalía histórica del Vol.II está resuelta.
+>
+> — Pero entonces, ¿no es un poco... redundante con cerrojos?
+>
+> — Lo contrario. La MVCC QUITA cerrojos de lectura: la cadena ES el cerrojo. Los lectores no esperan a nadie; el escritor no espera a nadie que esté leyendo. Y ése es exactamente el patrón que el cap. 27 no podía enunciar: el borrow checker admite `&self` y `&mut self` SIMULTÁNEOS mientras las operaciones sean disjuntas, y la MVCC las hace disjuntas por construcción. Con eso, ya puedes construir de noche — y de día, y entre dos procesos cuando llegue la Parte VIII.
+>
+> — ¿Y el write skew?
+>
+> — Queda abierto, a propósito. Instantanea prohíbe lectura sucia y lost update, pero no el skew. Cerrarlo exige Serializable SI con predicate locks (Cahill et al. 2008) — fuera del Vol.II. La honestidad de este capítulo es justamente decir «avanzamos, pero no cerramos»: el closer del aislamiento salta al cap. 40. Es la misma honestidad que el cap. 27 con las anomalías y el cap. 29 con el undo completo: no mentimos sobre lo que falta.
+
+---
+
+*(Próximo capítulo: 31 — La CLI de LiraDB. Aquí el `MvccStore` aprendió a convivir con N lectores; ahora el REPL aprenderá a exponérselos al usuario — qué `ts` toma cada comando, cómo se gestiona una sesión, qué significa «transacción» en una shell.)*# Apéndice 0 — Manual de estilo unificado
 
 > *Borrador inicial — se completará en la Fase 2.*
 

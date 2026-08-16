@@ -17,6 +17,10 @@ cap-23-a-heuristicas-y-busquedas-dirigidas.md
 cap-24-centralidad-y-pagerank.md
 cap-25-comunidades-y-agrupaciones-louvain.md
 cap-26-ejecutar-algoritmos-sin-agotar-la-memoria.md
+cap-27-que-significa-una-transaccion-acid.md
+cap-28-write-ahead-log.md
+cap-29-recuperacion-despues-de-un-fallo.md
+cap-30-snapshots-y-concurrencia-mvcc.md
 apendice-0-manual-de-estilo-unificado.md
 epilogo.md
 colofon.md

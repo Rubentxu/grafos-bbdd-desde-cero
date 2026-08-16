@@ -383,4 +383,4 @@ stats:
   crates_total: 21              # 19 (Vol.I completo) + 1 (vol2-liradb: caps 7-28) + 1 (liradb-cli: hito CLI mínima)
   snippets_total: 0
   last_updated: "2026-08-15"
-  next_action: "Prosa profunda Parte VI (caps 27-30) y Parte II (caps 7-10): el estándar PLANTILLA-CONTRATO-CAPITULO.md exige teach+grill-with-docs+exercise-designer por capítulo; los caps. técnicos 27-30 y los caps. iniciales 7-10 aún no tienen prosa al nivel profundo"
+  next_action: "Prosa profunda Parte II (caps 7-10): modelo de datos, GraphStore, encoding, append-only — los 4 primeros caps técnicos aún no tienen prosa al estándar PLANTILLA-CONTRATO-CAPITULO.md"
