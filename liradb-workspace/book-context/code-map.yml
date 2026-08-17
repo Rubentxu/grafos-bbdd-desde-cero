@@ -383,4 +383,4 @@ stats:
   crates_total: 21              # 19 (Vol.I completo) + 1 (vol2-liradb: caps 7-28) + 1 (liradb-cli: hito CLI mínima)
   snippets_total: 0
   last_updated: "2026-08-15"
-  next_action: "Prosa profunda Parte I (caps 1-6): los caps. conceptuales (qué es un grafo, representaciones, identidad, BFS/DFS/componentes/SCC) aún no tienen prosa al estándar PLANTILLA-CONTRATO-CAPITULO.md — no tienen código vol2-liradb (son de Vol.I) pero cierran la narrativa de la Parte I del Vol.II"
+  next_action: "Prosa conceptual Parte I (caps 1-6) ya está completa. Pendiente: cap 31 (CLI completa — REPL, clap, import/export CSV/GraphML) o prose de Parte VII (caps 31-40)"

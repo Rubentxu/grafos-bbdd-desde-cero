@@ -184,6 +184,1907 @@ Empezamos. Bienvenido al motor.
 
 ---
 
+# Capítulo 1 — Qué es realmente un grafo
+
+> *«Todo comenzó con un puente. Y con un hombre que decidió que "cada vez que cruzo" no era una pregunta de andar, sino de geometría.»*
+
+## 1.0 La anécdota de la esquina
+
+En 1736, en la ciudad prusiana de **Königsberg** (hoy Kaliningrado, en Rusia), los habitantes llevaban generaciones haciendo lo mismo: dar paseos dominicales por sus puentes. El río Pregel corta la ciudad en dos orillas y dos islas, conectadas por **siete puentes**: unos unen cada orilla con cada isla, y otros cruzan de una isla a la otra. Y la gente se entretenía con un desafío que nadie sabía resolver del todo: ¿se puede dar **un paseo que cruce cada uno de los siete puentes exactamente una vez** y volver al punto de partida? Era el reto de los paseos de los domingos, del que todo el mundo hablaba y nadie demostraba.
+
+El problema sonaba a pasatiempo. Era un problema de *pasear*, no de *geometría* — no había que medir distancias ni ángulos. Y sin embargo **Leonhard Euler**, en ese año 1736, publicó un trabajo titulado *«Solutio problematis ad geometriam situs pertinentis»* (La solución de un problema relativo a la geometría de la posición) en los *Commentarii Academiae Scientiarum Petropolitanae*. En él demostró dos cosas que hoy nos parecen obvias y que entonces eran revolucionarias:
+
+1. Que la respuesta a la pregunta de los puentes es **no**: no se puede cruzar los siete puentes una sola vez cada uno y volver al punto de partida (porque había más de dos cruces «impares»).
+2. Que para resolverlo **no importaban ni las distancias ni las formas** —solo *qué se conecta con qué*.
+
+Los siete puentes eran un croquis de líneas y puntos. Un siglo y medio después, ese croquis tenía nombre: **grafo**. Y aquel día de 1736 quedó sembrada la semilla de todo lo que vamos a construir en este libro. Porque un grafo no es un dibujo bonito: es la manera más antigua y más directa que tiene la humanidad de decir **"esto está conectado con aquello"**.
+
+## 1.1 Objetivo
+
+Si ya has leído el Volumen I, sabes dibujar un grafo y hasta recorrerlo con BFS y DFS. Este capítulo no va a repetir eso. Al terminar, vas a poder responder a una pregunta que el Vol.I apenas toca:
+
+> **¿Qué es un grafo *para una base de datos*?**
+
+En concreto:
+
+1. **Re-orientar la definición del Vol.I**: un grafo es una **estructura de relaciones**, sí — pero para que de verdad sirva como base de datos necesita tres cosas que el grafo matemático no tiene: **identidad estable, datos adjuntos y etiquetas**.
+2. **Contrastar el grafo matemático** (el esqueleto: solo nodos y aristas) **con el grafo de datos** (el esqueleto vestido de esquema). Es el giro total del Vol.II: el mismo grafo aparece en dos trajes distintos según su destino.
+3. **Entender por qué la matriz de adyacencia** del Vol.I es magnífica para *analizar* pero insuficiente para *persistir*: lo que brilla en RAM puede ser un desastre en disco.
+
+Este es el capítulo de apertura del Vol.II y de la Parte I «Pensar en grafos». Es conceptual: no hay código todavía (ese llega en el cap. 7). Lo que haremos aquí es poner un cimiento que los próximos 39 capítulos van a construir encima. Cada decisión técnica que tomes — desde cómo codificar un valor hasta cómo decidir un plan de ejecución de una consulta — va a apoyarse sobre esta distinción entre esqueleto y vestido. Sin ella, el resto de la obra parece magia.
+
+## 1.2 Problema
+
+Cierra los ojos y piensa en «Ana conoce a Bo». Trata de dibujarlo como si fueras un ordenador. Si te acuerdas del Vol.I, tu primer impulso es un círculo para Ana, un círculo para Bo, y una flecha que dice «conoce a». Eso es un grafo. Hasta aquí, el Vol.I ya te ha enseñado todo lo que necesitas para *recorrerlo*.
+
+Ahora intenta un segundo ejercicio. Guarda ese dibujo en un fichero. Y luego, **tres meses después**, vuelve a abrirlo. Los datos te dicen:
+
+- Ana tiene nombre, tiene 36 años y vive en Madrid.
+- Bo se llama Bo, y Ana lo conoce **desde 2020**.
+- Ambos son personas, pero Ana además es autora, y es el tipo de nodo «Person» a la vez que «Author».
+
+Si tu grafo solo es «un círculo y una flecha», no tienes sitios donde poner nada de eso. La flecha dice «hay enlace» pero no dice *de qué tipo* (¿KNOWS o WORKS_AT?). El círculo de Ana no tiene dónde escribir «36» ni «Madrid». Y lo peor: si mañana borras «el círculo número 3» de la lista, todo lo que apuntaba a «el círculo número 3» pasa a apuntar al círculo equivocado.
+
+Este es el problema del capítulo, y es el problema del Vol.II entero: **el grafo de la teoría (el esqueleto de flechas) no es suficiente para que sea una base de datos.** Necesitamos vestir el esqueleto. Las preguntas del CORPUS para este capítulo lo dirigen: ¿qué relación guarda con los caps. 1-2 del Vol.I? → re-orientarlos. ¿Qué añade el Vol.II sobre la definición de grafo? → dato + etiqueta + identidad.
+
+Y fíjate en que el problema solo aparece **al guardar y volver a abrir**. Mientras el grafo vive en RAM con su identidad efímera de proceso (un puntero es único durante la vida del proceso), todo «funciona». El día que apagas el portátil, la identidad reciclable de la matriz de adyacencia sale a la luz: el índice 0 puede haber sido ocupado por otro nodo, y todas las aristas que apuntaban a «0» apuntan a otro. Es el problema real que el cap. 3 resolverá con `slotmap`. Aquí solo lo identificamos como punto donde la teoría del Vol.I se estrella contra la práctica de una BBDD.
+
+## 1.3 Modelo mental
+
+Piensa en tu **almanaque de contactos** del móvil. No es «una lista de nombres»: es una red. Cada contacto es un **punto**. Cada contacto sabe, además de su nombre, un montón de datos: su número, su cumpleaños, su ciudad. Y entre dos contactos hay **relaciones** —«le debo dinero», «es mi familia», «trabajamos juntos»—, cada una con sus detalles: «le debo *desde marzo*».
+
+Ahora vamos a dibujarlo de verdad. Aquí tienes un minigrafo, la versión más pequeña posible que captura todo lo importante:
+
+```
+                «Ana conoce a Bo»
+                                         
+              +-------+                  +-------+
+   id: 0      |       |                  |       |      id: 1
+   label:     |  Ana  |    desde 2020    |  Bo   |      label:
+   Person     |       | ───────────────▶ |       |      Person
+              +-------+  label: KNOWS    +-------+
+   props:                                   props:
+     name: "Ana"                              name: "Bo"
+     age:  36                                 city: "Oporto"
+```
+
+Fíjate en lo que hay en cada caja:
+
+- Un **id** (0 y 1): un nombre que identifica a cada nodo. No cambia aunque le cambies el nombre a Ana.
+- Un **label** (`Person`): qué *tipo* de cosa es. Es la etiqueta de la carpeta, lo que te deja clasificar sin abrir el contenido.
+- Unas **propiedades** (`name`, `age`, `city`): los datos adjuntos. Esto es lo que el grafo matemático no sabe guardar.
+- La **arista** lleva su propia etiqueta (`KNOWS`) y su propio dato («desde 2020»). La flecha no es un `true`: es una cosa con nombre y contenido.
+
+Ahora el **momento ¡ajá!**. Compara esta caja con la matriz de adyacencia del Vol.I:
+
+```
+Matriz de adyacencia (Vol.I):      Property Graph (lo que vierte una BBDD):
+    0   1                              id  + label + props     (para nodos)
+0  [  ] [T]                            id  + source + target   (para aristas)
+1  [T] [  ]                               + label + props
+```
+
+La matriz te dice que **hay** un enlace. El Property Graph te dice **qué** son los dos extremos, **de qué tipo** es el enlace, y **desde cuándo** existe. La topología es la punta del iceberg; el dato, la etiqueta y la identidad son el resto, y es ahí donde vive la base de datos.
+
+Y como este libro va de *bases de datos*, merece la pena ver un segundo ejemplo donde lo que importa no es social sino **de información pura**: un mini-mapa con distancias y una red de dependencias, para que grabes que el mismo esqueleto sirve para todos ellos.
+
+```
+Mapa (esqueleto + datos)                Dependencias de paquetes (esqueleto + datos)
+
+  Madrid ──[66]──▶ Toledo               app  ──[versión ">=2.0"]──▶ crateA
+  Madrid ──[52]──▶ Segovia              app  ──[versión ">=1.4"]──▶ crateB
+  Toledo ──[71]──▶ Cáceres              crateB ──[versión ">=0.9"]──▶ crateC
+  (cada punto = city: {pop})            (cada nodo = package: {ver, licencia})
+```
+
+En el mapa, los nodos son ciudades (con su población), las aristas carreteras (con su distancia). En las dependencias, los nodos son paquetes (con su versión y licencia), las aristas relaciones «depende de» (con su *rango de versiones compatibles*). Son mundos distintos, pero **el esqueleto es el mismo**: puntos y enlaces. Lo que los convierte en bases de datos útiles es lo que hemos vestido alrededor — los datos de cada punto, la etiqueta de cada enlace y un nombre estable para cada cosa. Fijarte en que el mismo esqueleto sirve para tan distintos problemas es, en sí mismo, la intuición más poderosa de este capítulo.
+
+Antes de seguir, dos detalles que te ahorrarán futuros tropiezos:
+
+1. **Las tres ropas están jerarquizadas.** El orden importa. La **identidad** es la más fundamental (existe aunque no haya propiedades); las **etiquetas** son estructurales y se consultan en bucle; las **propiedades** describen a un solo elemento a la vez. Quien pone el *tipo* en una propiedad está pagando una iteración por cada clasificación; quien pone el nombre en una propiedad está mezclando identidad y dato.
+2. **El vestido es asimétrico.** Los nodos visten las tres ropas de forma natural; las aristas visten *etiqueta* y *propiedades* casi siempre (en la mayoría de los modelos, una arista es «un verbo entre dos sustantivos»), pero su identidad depende del modelo (en el LPG es de primera clase; en RDF, primo del Vol.III, no lo es).
+
+## 1.4 Primera solución
+
+El Vol.I te dio una primera solución para representar un grafo en memoria: la **matriz de adyacencia**. Es una tabla `N × N` de casillas `true/false` donde la casilla `[i][j]` vale `true` si hay una arista que va del nodo `i` al nodo `j`.
+
+```
+      A   B   C            A  B  C
+  A [ F ] [ T ][ F ]      [ ] [✓][ ]
+  B [ T ][ F ][ T ]   →   [✓][ ] [✓]
+  C [ F ] [ T ][ F ]       [ ] [✓][ ]
+```
+
+Es una solución maravillosa para **analizar**. ¿Está conectado? ¿De quién es vecino el nodo 0? ¿Hay ciclos? Todas esas preguntas se contestan mirando casillas. Y es la solución que el Vol.I (caps. 1-2) te enseñó a leer. Es *el esqueleto*: solo te dice qué está conectado con qué, y nada más. Y hasta ahí, está perfecta — para *analizar*.
+
+## 1.5 Sus límites
+
+Pero ahora pídele algo más. Quieres que ese dibujo se convierta en **base de datos**. Y la matriz de adyacencia se rompe por los cuatro flancos:
+
+1. **¿Y las propiedades?** No hay ninguna casilla para «Ana tiene 36 años» ni para «el enlace empezó en 2020». El `true` no tiene dónde guardar *datos*. Si amplias la celda a `string` pierdes el `true/false` inmediato y empiezas a preguntarte por cada acceso cuánto cuesta comparar.
+2. **¿Y las etiquetas?** No hay forma de decir «Ana es *Person* y *Author*», ni «esta flecha es *KNOWS* y aquella *WORKS_AT*». La matriz no clasifica: solo existe o no existe el enlace. Y sin clasificar no puedes escribir la consulta más básica de una BBDD — «dame todos los *Author*» — sin recorrer cada celda.
+3. **¿Y la identidad estable?** Los nodos de la matriz son posiciones: `0`, `1`, `2`. Si borras el nodo del medio, «el nodo 1» pasa a significar otra cosa. El nombre de Ana ya no es estable: **se recicla**. Esto es aún peor en cuanto lo metes en disco: el día que reorganizas el fichero o persistes un grafo más pequeño, los índices se mueven y todo apunta al sitio equivocado. Es el origen del problema que el cap. 3 resolverá con `slotmap`.
+4. **¿Y la arista como cosa?** En la matriz, la arista es un bit. Pero «Ana conoce a Bo desde 2020» es una cosa con su propio dato; no cabe la fecha en un bit. Y un día querrás «todas las amistades desde 2015» o «el camino más corto en kilómetros», y la arista necesita guardar su propio dato — su **propiedad** — y un *tipo* — su **label** — para distinguirla de las demás.
+
+La raíz del problema: **la matriz de adyacencia responde a *estructura* (¿hay enlace?), no a *dato* (¿qué es cada cosa y qué significa el enlace?).** El grafo *analítico* del Vol.I sirve para recorrer; el grafo de una *base de datos* necesita además guardar qué es cada nodo, qué tipo de relación une a cada par y cómo nombrar cada cosa de forma estable. En términos de «cuándo usar cada cosa»: la matriz es válida para grafos pequeños y densos en los que la única pregunta es ¿estos dos están enlazados? — pero la BBDD vive de **clases de preguntas más variadas**: por tipo, por rango de valores, por camino entre X e Y, por camino mínimo ponderado, por vecindario entrante (el PageRank). Cada una de esas preguntas exige que la arista (y el nodo) tengan sitio para guardar **datos** y un **tipo**. La matriz, amada por los libros de algoritmos, no tiene ese sitio.
+
+## 1.6 Solución evolucionada
+
+La solución no es abandonar la estructura: es **vestirla**. Es la idea de un **property graph** — el modelo que Neo4j popularizó en 2007 y que el estándar **ISO/IEC 39075 (GQL)** terminó formalizando en 2024 (décadas después de que la idea circulara por la comunidad, la ISO la subió a estándar; eso es la señal de que dejó de ser una moda y se convirtió en el modelo de datos por defecto para grafos).
+
+Conceptualmente (porque los tipos concretos los verás en el cap. 7), un grafo de datos se define así:
+
+```
+Grafo de datos = G = (V, E)          ← el esqueleto (el grafo matemático)
+                       + LABELS      ← etiquetas / clasificación de cada cosa
+                       + PROPS       ← datos adjuntos (esquema)
+                       + IDENTIDAD   ← cada cosa tiene un nombre que no se recicla
+```
+
+Léelo en orden, porque es la tesis de todo el libro:
+
+> **Un grafo es una estructura de relaciones que, para ser útil como base de datos, exige identidad estable + datos adjuntos + etiquetas. El grafo matemático es el esqueleto; la BBDD viste el esqueleto.**
+
+Tres ropas, en este orden, por una razón concreta:
+
+1. **LABELS** van antes que **PROPS** en la decisión porque clasificar es la pregunta más barata y más rápida: «dame todos los *Author*» se contesta sin abrir ningún dato. Si Ana es una `Person`, una `Author` y una `Speaker`, la búsqueda «muéstrame los Author» mira primero la etiqueta (estructural, barata) y solo después abre el cajón de propiedades si hace falta.
+2. **PROPS** van después porque describen *a un solo elemento* a la vez (no iteran por todos). Son la información opaca que vive dentro del nodo o la arista: edad, ciudad, distancia, fecha, peso. Mientras que las etiquetas se indexan, las props se filtran por rango.
+3. **IDENTIDAD** es la primera y la más sutil: existe *aunque no haya ninguna propiedad ni etiqueta*. Es lo que permite decir «este expediente existe aunque la ficha esté vacía» o «este nodo sobrevivió a un crash sin perder su nombre». Sin identidad estable, las dos anteriores se desordenan en cuanto borras algo.
+
+Y la arista ya no es un bit: es una **cosa de primera clase** con su propio origen, destino, etiqueta (`KNOWS`) y datos («desde 2020»). Es exactamente lo que dibujamos en el §1.3: cada círculo con `id + label + props`, cada flecha con `label + props`. Ese es el traje que ponemos sobre el esqueleto del §1.4.
+
+Una nota sobre el lenguaje para no acumular sorpresas: cuando oigas **property graph** o **labeled property graph (LPG)** piensa en esto. Cuando leas **RDF** (Vol.III), piensa en otra cosa — una red de *triples* sin aristas con propiedades — que es primo cercano pero no idéntico. El Vol.II vive casi enteramente en LPG; el Vol.III lo contrastará con RDF y con el mundo semántico cuando llegue el momento.
+
+## 1.7 El ángulo de BBDD: ¿qué convierte esto en un motor?
+
+Podrías preguntarte: «vale, un grafo con datos es bonito, pero ¿por qué esto es *una base de datos* y no "una lista de nodos"?». Gran pregunta, y es justo la del **capítulo 6** de la Parte II («Qué convierte un grafo en una base de datos»). Aquí, solo el avance — cuatro requisitos que debe cumplir cualquier motor de BBDD, sean relacionales, documentales o de grafos, y que requieren justamente las tres ropas del §1.6:
+
+1. **Persistir** — que los datos sobrevivan a que apagues el ordenador. Una lista en RAM es un programa; una base de datos es un fichero al que puedes volver mañana, o dentro de un año, y leer en su forma original. Esto obliga a decidir *cómo serializar* cada `Value` (cap. 9) y *cómo estructurar el fichero* (caps. 10-12).
+2. **Indexar** — encontrar un nodo *sin mirar todos*. Si cada búsqueda implicase recorrer los millones de filas de Ana hasta dar con ella, el sistema se moriría al primer día. Necesitas índices: por id (hash, cap. 15), por rangos de propiedades (B+ tree, cap. 15), por vecindario (CSR persistente, cap. 14).
+3. **Recorrer por ambos lados** — contestar tanto «a quién apunta Ana» como «quién apunta a Ana». Por eso todo motor serio guarda una lista de adyacencia inversa además de la directa (lo verás en `MemoryStore` con `adj_in` y `adj_out`, caps. 7-8; y en el CSR dual, cap. 14).
+4. **Consultar** — hablar con los datos en alguna forma de lenguaje, no solo mediante API programática. Cypher, GQL, SPARQL, Gremlin. En este libro construiremos nuestro propio **LiraQL** (caps. 17-21): un subconjunto pequeño pero suficiente para los casos reales.
+
+Para que cada uno de esos requisitos cumpla su palabra, el grafo necesita exactamente las tres ropas del §1.6:
+
+- una **identidad estable** que siga siendo la misma tras guardar y leer (cap. 3);
+- unos **datos adjuntos tipados** que se puedan guardar, ordenar y comparar (caps. 7 y 9);
+- unas **etiquetas** que permitan buscar por tipo sin abrir cada ficha (cap. 7).
+
+En este capítulo de apertura no vas a construir nada de eso todavía. Vas a **ver el esqueleto**, entender **por qué hay que vestirlo**, y saber **qué ropa** hace falta y por qué no basta cualquier ropa. Cada una de esas tres ropas tiene su propio capítulo. La promesa es que, cuando llegues al cap. 6 («qué convierte un grafo en una base de datos»), ya tendrás la mitad del trabajo hecho: sabrás qué significa persistir, indexar, recorrer y consultar — y sabrás que las cuatro promesas dependen de la identidad, las propiedades y las etiquetas que ya hemos sembrado aquí.
+
+## 1.8 Los porqués (con fuentes)
+
+Vamos a dejar constancia de dónde nacen las ideas de las que dependemos. Sin fuentes, una afirmación técnica es solo opinión; con fuentes, es una línea del conocimiento de la humanidad.
+
+| Decisión | ¿Por qué? | Fuente |
+|---|---|---|
+| El grafo empieza en 1736 | Euler fue el primero en tratar «qué se conecta con qué» como un objeto matemático propio, sin depender de distancias ni formas. Es el acta de nacimiento de la teoría de grafos y el origen del término. | L. Euler, *Solutio problematis ad geometriam situs pertinentis*, Commentarii Academiae Scientiarum Petropolitanae 8, 1736. Recopilado en N. Biggs, E. Lloyd y R. Wilson, *Graph Theory 1736–1936*, OUP. |
+| Un grafo en su forma pura es `G=(V,E)` | La definición moderna más compacta: un conjunto de **vértices** `V` y un conjunto de **aristas** `E` que juntan pares de vértices. Es el «esqueleto» sobre el que construimos todo lo demás. | Definición estándar: J. Gross y J. Yellen, *Graph Theory and Its Applications*, 2ª ed., CRC Press. |
+| Un grafo de BBDD añade datos, etiquetas e identidad | Esa es la diferencia entre *estructura de computación* y *modelo de datos*. El **property graph** es el modelo: nodos etiquetados + aristas de primera clase con propiedades. El mundo lo estandarizó en 2024. | I. Robinson, J. Webber, E. Eifrem, *Graph Databases*, 2ª ed., O'Reilly/Neo4j, 2015; ISO/IEC 39075:2024 (*Graph Query Language*, GQL). |
+| Lo conceptual del capítulo no necesita tipos aún | El tipado exacto (`Value`, `id` de un tipo concreto) es una decisión de modelo de datos y se define bien en el cap. 7; aquí solo conceptuamos el *qué* para no disparar la memoria de trabajo del novato. | Regla de dificultad asimétrica del manual de estilo (Apéndice 0): una idea nueva por sección. |
+| La matriz de adyacencia es la primera solución y NO la final | La representación del Vol.I (caps. 1-2) brilla para «¿están conectados u y v?» en grafos pequeños y densos. Para construir una BBDD hay que pasar a **lista de adyacencia** (cap. 2) y a **CSR persistente** (cap. 14), pero *entender primero por qué la matriz se queda corta* es lo que hace al lector elegir con criterio. | Vol. I caps. 1-2; Vol. II cap. 2; el análisis de densidad y grado medio reaparece en el cap. 14. |
+| El orden de las tres ropas (identidad > etiqueta > propiedad) está jerarquizado | La identidad existe aunque no haya propiedades; las etiquetas estructuran; las propiedades describen a un solo elemento. Quien pone el tipo en `props["type"]` paga un escaneo por cada clasificación. Por eso se decide en este capítulo, no en el modelo de datos. | Regla de modelado de Robinson/Webber/Eifrem cap. 3; decisión formal en el `enum Value` y en `add_node`/`add_edge` del cap. 7. |
+
+*(El contraste «grafo matemático vs grafo de datos» también tiene un primo famoso en el modelado de bases de datos: el **modelo entidad-relación** de Peter Chen de 1976, donde las entidades y sus relaciones son la plantilla conceptual sobre la que se construyen tablas. El property graph es, en cierto sentido, ese modelo visto con ojos de punta —verás a qué sabe en el cap. 7.)*
+
+## 1.9 Ojo, cuidado con… (las trampas)
+
+Todo el mundo tropieza aquí de la misma manera. Si detectas estos tres síntomas a tiempo, te ahorrarás capítulos enteros de confusión:
+
+1. **«Todo grafo es un árbol.»** No. Un **árbol** es un grafo *muy especial*: conectado (una sola pieza), acíclico (sin bucles cerrados) y con *un solo camino* entre cualquier par de nodos. La gran mayoría de los grafos no son árboles: tienen ciclos, varias rutas, más de una componente. Si piensas que «grafo» y «árbol» son sinónimos, entender cuándo hay un ciclo o una componente suelta (cap. 5) se te va a atragantar. El árbol es el caso; el grafo es la clase.
+2. **Confundir el nodo con su dato.** «Borrar el nodo 0 es borrar a Ana.» No: borrar el nodo 0 borra la *posición* que llamamos Ana; el dato «Ana, 36, Madrid» vive *dentro* de ese nodo pero no *es* el nodo. Confundirlos es la causa de la identidad reciclada: si el nodo fuera el dato, cambiarte el nombre cambiaría tu identidad. La identidad es una cosa; el dato es otra (lo resolveremos a fondo en el cap. 3).
+3. **«Un grafo es solo la matriz de true/false.»** La matriz responde a *estructura*: dice si hay enlace. Una base de datos de grafos responde además a *qué* es cada extremo y *desde cuándo* existe el enlace. Sigue siendo útil para analizar (Vol.I), pero no la tomes por «el grafo entero» en una BBDD.
+4. **«Las propiedades y las etiquetas son lo mismo.»** No. Las **etiquetas** (`Vec<String>` por nodo) son nombres que clasifican y se consultan en un bucle sin abrir el cajón de la propiedad. Las **propiedades** (`HashMap<String, Value>` por nodo o arista) son los datos opacos que describen a un solo elemento. Quien pone el tipo en `props["type"]` paga un escaneo por cada clasificación, y tendrá problemas desde el cap. 7 en adelante.
+5. **«Un grafo es solo nodos y aristas, lo demás sobra.»** Una frase escuchada al terminar el Vol.I, cierta para el capítulo 1 de aquel volumen y falsa para el resto de este. Lo que «sobra» —propiedades, etiquetas, identidad estable— es **exactamente** lo que convierte un esqueleto en una BBDD. Si tu instinto te dice «no necesito etiquetas para empezar», recuerda: las etiquetas son el único modo de responder «dame todos los usuarios mayores de 30» sin abrir cada nodo. La pereza de no usarlas se paga con cada consulta.
+
+**Precisión de lenguaje (glosario)**: *grafo matemático* (estructura pura `V×E`) vs *grafo de datos / Property Graph* (esqueleto + dato + etiqueta + identidad); *nodo/vértice* (la posición) vs *dato* (lo que vive dentro); *identidad estable* (nombre que no se recicla) vs *índice* (posición que sí cambia al reorganizar); *label* (la etiqueta de la carpeta, qué tipo es) vs *propiedad* (el dato opaco de dentro). *Árbol* (grafo especial) vs *grafo* (la clase general). *LPG* (labeled property graph, aristas de primera clase, lo que construye este libro) vs *RDF* (triples sin aristas con propiedades; Vol.III).
+
+## 1.10 Una historia pequeña
+
+Los primeros días de LiraDB, antes de que existiera el modelo de datos del cap. 7, un nodo era un `HashMap<String, String>` y una arista un par de números en un conjunto. Ana se guardaba como `{"name": "Ana", "age": "36"}` —fíjate, **"36" entre comillas**, era texto. Y la arista entre Ana y Bo era apenas `(0, 1)`: un «hay enlace» sin nombre y sin fecha.
+
+Funcionó un día. Al siguiente, Ana quiso ordenar a sus contactos por edad y el resultado fue `1, 10, 2` — porque «36» y «102» son *textos*, y los textos se ordenan así. Después quiso saber desde cuándo conocía a cada uno, y no había ningún sitio en un bitset para «desde 2020». Quiso luego «dame todos mis amigos *Author*», y no había etiqueta que mirar. Quiso borrar a un contacto, y al día siguiente otro contacto «heredó» su hueco — el id se había reciclado. Y quiso apagar el portátil, volver a abrir el fichero al día siguiente, y... el grafo cargado difería ligeramente del grafo guardado. No mucho. Lo suficiente para que dos aristas apuntasen a un nodo que ya no existía, y un nodo que sí existía tuviese dos padres.
+
+El «esqueleto» de flechas y true/false era precioso para recorrer, y un desastre para *ser una base de datos*. Cada cosa que pedía Ana era un síntoma del mismo diagnóstico: **faltaba el modelo**. Escribir el modelo de datos (cap. 7) fue ese mismo fin de semana. La lección no fue «usa enums»; fue: **el grafo matemático es el esqueleto, y una base de datos necesita vestirlo de datos, etiquetas e identidad.** Lo que este capítulo acaba de sembrar. Si lo grabas a fuego — y por qué lo necesita cada una de las dos docenas de «Ana quiere...» que preceden — tendrás la mitad de la obra entendida antes de escribir la primera línea de Rust.
+
+## 1.11 Lo que te llevas
+
+- Un grafo es una **estructura de relaciones**: vértices unidos por aristas, con o sin dirección (`G=(V,E)`). Es el esqueleto.
+- Para que sea **útil como base de datos**, ese esqueleto se viste con tres ropas: **datos adjuntos** (las propiedades), **etiquetas** (qué tipo de cosa es cada elemento) e **identidad estable** (un nombre que no se recicla al reorganizar).
+- El **grafo matemático** es el esqueleto (estructura pura, genial para *analizar* y recorrer). El **grafo de datos / Property Graph** es el esqueleto vestido de esquema (lo que una BBDD *persiste*).
+- La **matriz de adyacencia** del Vol.I responde a *estructura* (¿hay enlace?); una BBDD de grafos responde además a *qué* es cada extremo y *desde cuándo* existe el enlace.
+- La arista de una BBDD es una **cosa de primera clase**: con origen, destino, etiqueta (`KNOWS`) y datos («desde 2020») — no un bit.
+- **La jerarquía importa**: identidad > etiqueta > propiedad. Quien pone el tipo en `props["type"]` o el nombre en `props["name"]` paga con cada clasificación y cada renombrado; poner cada cosa en su sitio es la forma correcta de construir el modelo.
+- **El orden de las tres ropas tiene consecuencias operativas**: las etiquetas estructuran y se indexan barato; las propiedades son opacas y se filtran lento; la identidad es el pegamento que permite que las dos anteriores sobrevivan a borrados, reorganizaciones y crashes. Cambia la BBDD entera si cualquiera de las tres falla.
+
+## 1.12 Pin de batalla
+
+> *«El grafo matemático es el esqueleto; la base de datos viste el esqueleto con datos, etiquetas e identidad. Quien confunde el esqueleto con el vestido, construye un motor que solo sabe dibujar flechas.»*
+
+### Resumen visual del capítulo (una sola mirada)
+
+| Aspecto | Grafo matemático (esqueleto) | Grafo de BBDD (esqueleto vestido) |
+|---|---|---|
+| **Unidad** | Vértice `v ∈ V`, arista `e ∈ E` | Nodo con `id + label + props`, arista con `id + source + target + label + props` |
+| **¿Tiene datos?** | No | Sí: `props` tipadas |
+| **¿Tiene identidad estable?** | No (es posición en una matriz) | Sí (`id` que no se recicla) |
+| **¿Tiene etiquetas?** | No | Sí (`labels` en nodos; `label` en arista) |
+| **Representación típica** | Matriz de adyacencia con bits (Vol.I cap. 2) | Property Graph (cap. 7): nodos + aristas + adjacencia |
+| **Para qué brilla** | Analizar (`¿existe u-v?`) | Persistir, consultar y clasificar (BBDD real) |
+| **Norma detrás** | `G = (V, E)` | `G = (V, E) + LABELS + PROPS + IDENTIDAD` |
+| **Lo que se pierde si solo tienes el esqueleto** | Nombre, edad, fecha, tipo de relación, identidad tras borrado | — |
+| **Origen histórico** | Euler, Königsberg, 1736 | Property Graph: Neo4j 2007; estándar ISO/IEC 39075 (GQL) 2024 |
+
+Si solo te llevaras **una tabla** del Vol.II entero, debería parecerse a esta.
+
+## 1.13 Si solo lees 30 segundos
+
+Un grafo es un conjunto de **vértices** unidos por **aristas** (`G=(V,E)`). Eso es el esqueleto, y es suficiente para *analizar* y recorrer — lo que ya hiciste en el Vol.I. Pero para que un grafo sea una **base de datos**, hay que vestir ese esqueleto con tres cosas que el esqueleto no tiene: **datos adjuntos** (las propiedades de cada nodo y arista), **etiquetas** (el tipo de cada cosa) e **identidad estable** (un nombre que no cambie al reorganizar). Ese es el *property graph*: el esqueleto + dato + etiqueta + identidad. Ésa es la diferencia entre «una estructura de computación» y «una base de datos de grafos», y el cimiento conceptual sobre el que construimos LiraDB.
+
+## Ejercicios resueltos
+
+**1. ¿Por qué un árbol es un grafo pero un grafo no tiene por qué ser un árbol?**
+
+Porque un árbol cumple tres condiciones *especiales* que la mayoría de los grafos no cumplen: está **conectado** (una sola pieza, sin piezas sueltas), es **acíclico** (no existen caminos cerrados que te devuelvan al punto de partida) y tiene **exactamente un camino** entre cualquier par de nodos. Un grafo general relaja todas esas condiciones: puede tener ciclos (redes de amistad), varias componentes (montones de islas conectadas) y más de una ruta entre dos nodos. Así que «árbol» es un subconjunto de «grafo»: todo árbol es grafo, pero no todo grafo es árbol. Confundirlos hace que no entiendas qué es un ciclo ni qué es una componente (palabras que usarás en el cap. 5).
+
+**2. En el ejemplo del §1.6 («Ana es Person y Author»), ¿por qué `Person` es una *etiqueta* y «36» una *propiedad*?**
+
+Porque cumplen funciones distintas. La **etiqueta** (`Person`, `Author`) *clasifica*: te dice qué tipo de cosa es el nodo, y es exactamente lo que una búsqueda por tipo ("dame todos los autores") necesita mirar, sin abrir nada más. La **propiedad** (`age: 36`, `name: "Ana"`) *describe*: son los datos opacos que viven dentro del nodo y que necesitas abrir para leer. Es la diferencia entre la *etiqueta de la carpeta* (la miras sin abrir para saber qué hay dentro) y las *notas que están dentro de la carpeta* (necesitas abrirla). Mezclarlas (guardar el tipo en `props["type"]`) obliga a escanear todas las propiedades para clasificar — un error que pagarás caro en el cap. 7.
+
+## Ejercicios propuestos
+
+**Esencial (recordar).** Sin mirar el §1.6, dibuja un minigrafo de **3 nodos con 2 aristas**. Para cada nodo escribe su `id`, su `label` y 2 propiedades; para cada arista escribe su `label`. Cuando termines, compara con el ejemplo del capítulo. Criterio (rúbrica): tu dibujo separa claramente `id` (identidad estable) de `label` (clasificación) de `props` (datos adjuntos), y cada arista tiene su propio label. Pistas: (1) el `id` es el nombre que no cambiaría si rebautizas la persona; (2) el `label` dice *qué tipo de cosa* es; (3) la `prop` es un dato concreto (una edad, una ciudad).
+
+**Intermedio (aplicar / spacing Vol.I caps. 1-2 / interleaving con la vida real).** Piensa en una **red de dependencias de paquetes de software** (por ejemplo, un proyecto Rust que depende de varios *crates*). Responde: ¿qué son los *nodos* y las *aristas*? ¿Qué *propiedades* querrías adjuntar a un nodo (paquete) y qué a una arista (A depende de B)? Y explica: ¿qué se pierde si representaras eso únicamente con la matriz de adyacencia del Vol.I cap. 2? Criterio: identificas nodos y aristas correctamente, pones datos concretos en nodos y aristas, y ves que la matriz solo guarda el «true/false» de «depende», perdiendo la versión o la condición de la dependencia. Pistas: (1) un paquete es la «caja», una dependencia es la flecha; (2) en la arista «A depende de B» podrías guardar la *versión* permitida; (3) la matriz de bits no tiene sitio para «solo si es la versión 2 » de esa dependencia.
+
+**Modelo de respuesta (rúbrica explícita)**:
+
+- *Nodos*: cada paquete (`crate`). Propiedades adjuntas: `nombre: String`, `versión_actual: SemVer`, `licencia: String`, `autores: Vec<String>`, `hash_del_código: String`. Etiquetas: `["Package"]` (o `["Package", "Local"]` si es un crate tuyo, `["Package", "External"]` si viene de crates.io).
+- *Aristas*: una relación «A depende de B» (dirigida). Propiedades: `versión_mínima: SemVer`, `versión_máxima: SemVer`, `features_activadas: Vec<String>`. Etiqueta (label): `"DEPENDS_ON"`.
+- *Por qué la matriz de bits se queda corta*: en la matriz basta con `deps[A][B] = true` para decir «A usa a B». Pero «A usa a B **solo si B ≥ 2.0 y < 3.0**» no cabe en una celda booleana: la celda solo guarda el `true`, no la *condición*. Y la pregunta «dame todas las dependencias que requieren una feature dada», como `serde/derive`, es trivial con la propiedad `features_activadas` de la arista; con la matriz obligaría a recorrer cada celda `[A][B]` y comprobar nada más que presencia, no condición. La analogía humana: «Ana conoce a Bo» (true/false) vs «Ana conoce a Bo desde 2020 y con grado de intimidad 7 sobre 10» (propiedades de arista). La matriz solo registra lo primero; la BBDD necesita lo segundo.
+
+**Experto (crear / interleaving cap. 2).** Toma el problema real del intermedio (dependencias de paquetes) y «traduce» su modelo a las tres representaciones de memoria que verás a fondo en el **cap. 2** — *edge list*, *adjacency list* y *CSR* — a nivel conceptual, y decide **cuál retendría mejor el dato + label + identidad** que acabamos de vestir. Criterio: produces las tres variantes y argumentas qué retiene cada una de las tres ropas (datos, etiquetas, identidad). Pistas: (1) la edge list es `(u, v)` — ¿dónde pondrías el label de la arista?; (2) la adjacency list agrupa por nodo — ¿dónde la `prop`?; (3) el CSR comprime los vecinos en un único array — ¿qué ropa sacrifica para ahorrar memoria? (Lo confirmarás en el cap. 2.)
+
+## Para profundizar
+
+- **L. Euler**, *Solutio problematis ad geometriam situs pertinentis*, 1736 — el acta de nacimiento. Está recopilado, con comentario, en N. Biggs, E. Lloyd y R. Wilson, *Graph Theory 1736–1936* (Dover), que es la mejor manera de leer cómo nació la disciplina y por qué tardó un siglo en tener nombre.
+- **J. Gross y J. Yellen**, *Graph Theory and Its Applications*, 2ª ed., CRC Press — la definición formal `G=(V,E)` y la diferencia entre grafo, dígrafo y multigrafo, si quieres la versión de referencia y neutral del modelo matemático.
+- **I. Robinson, J. Webber, E. Eifrem**, *Graph Databases*, 2ª ed., O'Reilly/Neo4j, 2015 — la definición canónica y didáctica del **property graph**: nodos etiquetados + aristas de primera clase con propiedades. Es lectura obligatoria para cualquiera que vaya a construir (o usar) una GDBMS.
+- **ISO/IEC 39075:2024**, *Graph Query Language (GQL)* — el estándar (2024) que convierte el property graph en modelo de datos de primera clase; es la confirmación de que la idea ya estaba en la comunidad y la ISO la subió a estándar, no al revés.
+- **P. Chen**, *The Entity-Relationship Model — Toward a Unified View of Data*, ACM TODS 1(1), 1976 — el primo relacional del property graph (entidades + relaciones): el puente conceptual entre grafos y tablas. Se vuelve a usar como contraste en el cap. 7 del Vol.II y en el Vol.III.
+- Dentro del libro: **cap. 2** (representaciones de memoria: edge list, adjacency list, CSR), **cap. 3** (identidad estable y `slotmap`), **cap. 7** (el modelo Property Graph tipado: `Value`, `label`, `props`), **cap. 6** (qué convierte un grafo en una BBDD), y, para el Vol.III, los caps. sobre RDF/OWL/SPARQL (cap. 41+) que contrastan LPG con el modelo de triples.
+
+## Mini-diálogo: en guardia nocturna
+
+> — Espera. O sea, que "grafo" no es solo dibujar círculos y flechas.
+>
+> — Círculos y flechas es el **esqueleto**. Es lo que ya sabías del Vol.I: lo que hay conectado. Pero para que sea una *base de datos* hay que vestirlo: cada círculo necesita una identidad estable que no se recicle, una etiqueta que diga qué tipo de cosa es, y un cajón de datos. Y cada flecha, además de apuntar, necesita decir de qué tipo es y desde cuándo existe.
+>
+> — Entonces el grafo matemático de Euler... ¿no sirve?
+>
+> — Sirve, y mucho — es la estructura de *relaciones*, y nadie la construye así de sólida sin Euler. Pero es la mitad de la historia. La otra mitad —el dato, la etiqueta, la identidad— es lo que convierte un grafo en una **base de datos**, que es todo el sentido de construir LiraDB en el resto del libro.
+>
+> — O sea que este capítulo es... ¿por qué importa el grafo en una BBDD?
+>
+> — Exacto. No vas a escribir ni una línea de código todavía. Vas a aprender *qué* cuesta hacer de un grafo una base de datos. Cuando el cap. 7 te pida tipar `Value` e `id`, ya sabrás por qué existe cada pieza. Y cuando el cap. 11 te pida persistir nodos, sabrás qué estás persistiendo: no flechas, sino *esqueletos vestidos*.
+>
+> — Una cosa más. ¿Y si solo me interesa el grafo matemático? ¿Me sobra todo el Vol.II?
+>
+> — Te sobra la mitad. El Vol.I te dio el analizador. El Vol.II te da el constructor. Si lo que quieres es leer grafos y aplicarles algoritmos en memoria, el Vol.I basta — y este capítulo lo habrás leído como «una nota al margen del Vol.I». Pero si quieres guardar grafos, consultarlos, recorrerlos por tipo, protegerlos ante un crash o, sobre todo, **comprender por qué las GDBMS modernas son como son**, este capítulo es donde empieza la conversación.
+
+---
+
+*(Próximo capítulo: 2 — Cómo representar un grafo en memoria. Aquí el grafo existía como idea y como estructura de datos; ahora veremos las tres representaciones — edge list, adjacency list, CSR — y cuál usar en cada circunstancia de un motor de BBDD.)*
+# Capítulo 2 — Cómo representar un grafo en memoria
+
+> *«No hay una forma de guardar un grafo. Hay preguntas, y para cada pregunta una forma que la hace barata y otra que la hace miserable.»*
+
+## 2.0 La anécdota de la esquina
+
+En 1977, en el departamento de informática de Yale, un equipo de matemáticos aplicados —Stanley Eisenstat, Andrew Sherman y sus colegas— publicó un paquete que no era un algoritmo ni una base de datos. Era una *forma de mirar los datos*. Llevaban años resolviendo sistemas de ecuaciones lineales con millones de variables: la matriz de un yacimiento de petróleo, de un puente, de una malla de elementos finitos. Esas matrices eran casi todo ceros. Guardar cada cero era un absurdo que no cabía en ninguna máquina de la época; pero si tirabas los ceros, ¿cómo seguías multiplicando la matriz por un vector sin perderte?
+
+Su respuesta —el **Yale Sparse Matrix Package**, en los informes YALEU/DCS/RR-112 y RR-114— fue comprimir la matriz en tres arrays planos: los valores distintos de cero, los índices de columna de cada uno, y los comienzos acumulados de fila. Hoy a ese formato lo llamamos **Compressed Sparse Row (CSR)**, y lleva medio siglo dando de comer a la computación científica.
+
+¿Y qué tiene que ver eso con tu base de datos de grafos? Todo. Porque la **matriz de adyacencia de un grafo es una matriz dispersa**: cada arista es un «distinto de cero», y en un grafo real los ceros son el 99,99 % de la superficie. La decisión que tomó el equipo de Yale en un laboratorio de matemáticas —*no guardes lo que no importa, y recuerda dónde empieza cada fila*— es exactamente la decisión que tomará el motor de LiraDB en el capítulo 14. Este capítulo es donde empiezas a pensar como ellos: no «¿cómo guardo un grafo?», sino **«¿qué operación voy a ejecutar, y qué guardado hace que sea barata?»**.
+
+Ese cambio de pregunta es sutil y, por eso mismo, el más difícil de adoptar. Un físico te diría que chocas contra un muro cuadrático; un ingeniero de bases de datos te diría que chocas contra un *patrón de acceso*. Los dos tienen razón, y este capítulo es la cámara lenta de esa colisión: primero la ves venir en una pizarra (matriz de adyacencia), después la mides (los terabytes de un grafo social), y al final huyes hacia las representaciones que de verdad habitan un motor real. Ninguna de las cuatro que verás es «la buena». Cada una es la buena *para una operación*. Por eso, antes de verlas, hay que dejar grabada a fuego la pregunta que las elige.
+
+## 2.1 Objetivo
+
+Al terminar este capítulo sabrás **que una representación de grafo no se elige en el vacío**: se elige por el patrón de acceso de la base de datos que la va a usar. Y sabrás dibujar, medir y comparar las cuatro candidatas que verás una y otra vez en este libro:
+
+1. La **matriz de adyacencia** — la que imprime el libro de algoritmos, O(V²), y que solo compite en grafos pequeños y densos.
+2. La **lista de adyacencia** — la que de verdad usa `MemoryStore` en el cap. 8 (`adj_out`, `adj_in`), O(V+E).
+3. La **edge list / lista de aristas** — el formato compacto de carga y de respaldo, O(E).
+4. El **CSR** — la «lista de adyacencia comprimida» en arrays planos, que volverá en serio en el cap. 14 y que nació en Yale en 1977.
+
+No vas a escribir código en este capítulo: la Parte I del Vol.II es conceptual, y el primer fichero real de `vol2-liradb` llega en el cap. 7. Pero vas a hacer algo más difícil y más duradero: **fijar en tu cabeza la cuestión que determina todo lo demás — *¿qué operación ejecuta la BBDD?*** Si este capítulo cumpliera su misión y solo recordaras una frase dentro de un año, sería exactamente esa.
+
+En concreto, al terminar serás capaz de:
+
+- Calcular a mano el coste de memoria O(...) de las cuatro representaciones para un grafo concreto y descartar las que no caben.
+- Decir, para cada operación de un motor (existe arista, vecinos, recorrer, exportar), cuál representación la hace barata y por qué.
+- Reconocer en código real (`MemoryStore`, cap. 8) que la elección «lista de adyacencia» no es decorativa: es la respuesta a una pregunta de acceso concreta.
+
+## 2.2 Problema
+
+Tienes un grafo. Quieres construir un motor de base de datos encima. La primera pregunta del constructor no es «¿qué algoritmo uso?», sino una que suena demasiado simple: **¿dónde viven los vecinos?** Suena a detalle trivial. No lo es. Y la mejor manera de verlo es dejando que la respuesta ingenua se estrelle sola.
+
+Imagina que guardas el grafo como una **matriz de adyacencia**: una tabla de `V × V` donde la celda `[u][v]` vale 1 si existe la arista u→v. Ahora coge un grafo realista —digamos el de una red social con 1.000.000 de nodos (personas) y 4.000.000 de aristas (amistades). Ese grafo tiene un **grado medio de 4**: cada persona conoce, en promedio, a otras 4.
+
+La matriz de ese grafo tiene `1.000.000 × 1.000.000 = 10¹²` celdas. A un bit por celda, **125 GB**. A un `u32` por celda —lo que de verdad usarías si quisieras distinguir tipos de relación—, **4 TB**. Y tu grafo entero, con todas sus aristas, ocupa nada. La matriz es un desierto con un lago: la densidad (aristas sobre celdas posibles) es `4 M / 10¹² = 4·10⁻⁶`. Cuatro partes por millón de la tabla tienen información.
+
+El problema de fondo es que **estás pagando por la superficie cuadrada del mundo** (V²) cuando tu grafo solo puebla un hilo de carretera (V+E). Y no es un problema abstracto: son literalmente 4 terabytes que no tienes. No estás discutiendo sobre cuál de dos algoritmos es medio nanosegundo más rápido; estás discutiendo si tu base de datos *funciona* o simplemente no arranca.
+
+Y hay un segundo matiz que se le escapa al recién llegado. Cuando un libro de algoritmos te enseña la matriz, te la enseña para *pensar*, no para *almacenar*. La matriz hace triviales las preguntas que se hacen las matemáticas («¿estos dos vértices están conectados?», un `1` o un `0`). Las matemáticas no se preocupan por barrer un millón de celdas para sacar a cuatro vecinos: tú, que vas a construir un motor, sí. El motor no pregunta «¿existe la arista?» un par de veces; lo pregunta *y* recorre vecindarios un millón de veces al día. La representación que elige un motor no puede ignorar ese hecho.
+
+Y un tercero, que es la causa de la mayor parte de las peleas con el compilador. En la matriz, cada arista es un bit. Pero «Ana conoce a Bo desde 2020» es una cosa con su propio dato; no cabe la fecha en un bit. Y un día querrás «todas las amistades desde 2015» o «el camino más corto en kilómetros», y la arista necesita guardar su propio dato — su **propiedad** — y un *tipo* — su **label** — para distinguirla de las demás. La matriz del Vol.I es el esqueleto; aquí ya sabes, por el cap. 1, que el motor viste el esqueleto, y la matriz desnuda no tiene dónde colgar el vestido.
+
+## 2.3 Modelo mental
+
+Piensa en el **mismo grafo pequeño dibujado de tres maneras**, y compruébalo: son tres espejos, no tres grafos. Un grafo de 4 personas —Ana conoce a Bruno y a Carlos; Bruno conoce a Carlos; Carlos conoce a Dana—, cruzado en las tres direcciones que vamos a usar durante todo el libro:
+
+```
+EL MISMO GRAFO:  Ana→Bruno, Ana→Carlos, Bruno→Carlos, Carlos→Dana
+
+MATRIZ DE ADYACENCIA          LISTA DE ADYACENCIA         CSR (comprimido)
+    A   B   C   D                 Ana: [B, C]            offsets=[0,2,3,4,4]
+  A  .   1   1   .                 Bruno:[C]              targets=[B,C,C,D]
+  B  .   .   1   .                 Carlos:[D]                 └nodo Ana┘
+  C  .   .   .   1                 Dana: []                     └Bruno┘ ...
+  D  .   .   .   .
+```
+
+- En la **matriz**, cada arista es una celda `[fila][col]`. Localizar «¿existe Ana→Bruno?» es `matriz[0][1]`: un doble índice, **O(1) instantáneo**. Pero el espacio que pagas es el cuadrado completo, con sus 12 celdas vacías. Cada `1` en la tabla cuesta, en realidad, todo lo que no se ve: la fila entera detrás de él.
+- En la **lista de adyacencia**, cada persona tiene su propia lista de a quién conoce. «¿Quiénes son los vecinos de Ana?» es `lista[0]`: una resta de dirección, y luego recorres `[B, C]`. Espacio solo para lo que existe. No hay superficie cuadrada que mantener: solo datos reales.
+- En el **CSR**, comprimes esas listas en un solo array plano de `targets` y otro de `offsets` que dice dónde empieza cada persona. La lista de Ana no es un objeto: es el intervalo `targets[0..2]`. Misma información que la lista de adyacencia, misma memoria, pero **contigua** — y por eso le gusta al planificador de la CPU y más tarde al disco.
+
+El **momento ¡ajá!** de este capítulo: **cada representación convierte en trivial una pregunta distinta.** La matriz es trivial para «¿existe esta arista?». La lista y el CSR son triviales para «¿quién es vecino de X y con quiénes?». Y ninguna de las tres es trivial para *todo* a la vez. Guardar un grafo no es elegir una figura bonita: es decidir **a qué operación le vas a regalar la velocidad** y a cuáles vas a cobrar más caro.
+
+Y un detalle del diseño que te perseguirá hasta el cap. 14: **la dirección.** El grafo del dibujo es dirigido: Ana conoce a Carlos, pero Carlos no conoce a Ana. «¿A quién conoce Ana?» (salientes) y «¿quién conoce a Ana?» (entrantes) son dos preguntas con dos respuestas. Cualquier representación que elijamos debería, si el motor lo pide, poder responder ambas con baratura parecida — motivo por el que `MemoryStore` (cap. 8) mantiene *dos* listas (`adj_out`, `adj_in`) y por el que el cap. 14 guardará *dos* CSR espejo.
+
+## 2.4 Primera solución
+
+La versión que escribe cualquiera al empezar es la **matriz de adyacencia**. Es el primer dibujo del libro de algoritmos, es fácil de razonar, y durante una clase entera parece impecable. CLRS, *Introduction to Algorithms*, cap. 22 —el manual enorme de este terreno— presenta las dos opciones canónicas (lista y matriz) y, de las dos, la matriz es la que visualiza mejor en una pizarra. Nadie lo puede negar: es *bonita*.
+
+```rust
+// Lo que tu instinto dibuja primero.
+// nota: n = V. La tabla tiene V*V celdas.
+struct MatrizAdy {
+    celdas: Vec<Vec<bool>>,   // celdas[u][v] = ¿existe u → v?
+}
+```
+
+Para comprobar si Ana conoce a Bruno: `celdas[0][1]`, un doble índice, sin buscar nada. Para los que conocen a Ana: barres la fila 0. Cuenta lo que acaba de pasar en la pizarra con nuestros 4 nodos:
+
+- Existe arista: un acceso `celdas[i][j]`. Ninguna otra representación lo hace más rápido.
+- Enlistar vecinos de Bruno: barres la fila de Bruno, `celdas[1][*]`, y guardas las columnas con `1`.
+- Espacio usado: `4 × 4 = 16` celdas para un grafo de 4 aristas.
+
+Los tests con un grafo de 4 nodos pasan. Tres personas, un puñado de aristas, una matriz de 4×4. Nada se queja. Ni siquiera te das cuenta de que ya has hecho una elección con consecuencias — porque para 4 nodos, *todas* las opciones son indiferenciables, y eso es lo insidioso de los juguetes.
+
+## 2.5 Sus límites
+
+Hasta que alguien trae un grafo con más de un puñado de nodos, y se acaba la fiesta. Reúne los tres síntomas con números de verdad; los re-verás, ampliados, en la tabla del cap. 14:
+
+1. **El espacio es O(V²) puro.** No importa cuán poquitas aristas tengas: si engordas el número de nodos, el cuadrado te devora. El grafo social del §2.2 necesita terabytes. No es un retoque: es un muro estructural escrito en la notación. A la pregunta «¿cabe?», la matriz responde con una constante que es V²; todo lo demás —cuántas aristas, qué grado— es ruido que no la modifica.
+2. **Recorrer vecinos es O(V), no O(grado).** Para saber a quién conoce Ana tienes que barrer *toda* la fila 0, aunque Ana conozca solo a 2 de un millón. Y disculpa por adelantado la ironía: la operación que más ejecuta una base de datos de grafos —«quién es vecino de quién», el corazón de un BFS y de un PageRank— es justo la que la matriz hace mal. El acceso O(1) de la matriz contesta una pregunta que el motor casi nunca hace; la pregunta que el motor hace de verdad (enlistar) la matriz la cobra a precio de fila entera.
+3. **El grafo real es disperso.** Los grafos de redes, de rutas, de la web, de conocimiento: todos tienen grado medio pequeño frente a V. La densidad cae como `E/V² ≈ (grado_medio)/V`, que tiende a 0. La matriz solo compite cuando un grafo es *denso* (E ≈ V²), y eso casi no existe fuera de los juguetes y de unos pocos casos específicos (grafos de co-ocurrencia muy conectados, el grafo completo de un campeonato).
+
+El diagnóstico no es «la matriz es mala». Es **«la matriz es la respuesta correcta a la pregunta equivocada»**: es brillante si tu operación central es «¿existe esta arista?» en un grafo pequeño y tupido, y es un despropósito para un motor que vive de recorrer.
+
+## 2.6 Solución evolucionada
+
+Cuando cambias la pregunta —de «¿existe esta arista?» a «¿quiénes son sus vecinos?»—, la elección se mueve sola hacia otra familia de representaciones. Aquí está el arsenal que manejarás en todo el libro, y la idea rectora de cada una.
+
+### 2.6.1 La lista de adyacencia — la que usa `MemoryStore` (cap. 8)
+
+Guardas un `Vec` por nodo con sus vecinos. Si tu grafo es dirigido y quieres responder tanto «¿a quién conoce X?» como «¿quién conoce a X?», guardas dos. En memoria, LiraDB lo hará literalmente así (cap. 8):
+
+```rust
+// Fragmento real de cap08_graph_store.rs (MemoryStore):
+pub adj_out: Vec<Vec<EdgeId>>,   // adj_out[u] = aristas que salen de u
+pub adj_in: Vec<Vec<EdgeId>>,    // adj_in[v]  = aristas que entran a v
+```
+
+Fíjate en un detalle pequeño que dice mucho: no guardamos `Vec<Vec<NodeId>>` de vecinos, sino `Vec<Vec<EdgeId>>` de **identificadores de arista**. En un Property Graph cada arista puede tener su propio tipo y sus propiedades, así que lo que la lista guarda es el ID de la arista, y desde ahí coges origen y destino cuando haga falta (una indirección extra que, en la práctica, cuesta poco). Lo esencial para este capítulo: **dos `Vec` por cada nodo, uno saliente y otro entrante.** «¿Quiénes siguen a Ana?» y «¿a quién sigue Ana?» son consultas distintas, y ambas merecen ser baratas — por eso hay dos listas, y por eso en el cap. 14 verás que el motor guarda **un par espejo** en CSR (forward y backward).
+
+El coste: espacio **O(V+E)**, «vecinos de u» en **O(grado de u)**, y nada que escanear para el recorrido de un BFS `u → out_edges(u) → targets`. El precio oculto: **mantener las dos listas sincronizadas** cuando borras un nodo o una arista — mira `delete_edge` del cap. 8: hay que hacer `retain` en `adj_out[source]` *y* en `adj_in[target]`; y `delete_node` detona una cascada que recoge todas sus aristas para borrarlas una a una. Una segunda moneda la paga la memoria a gran escala: cada `Vec` interior vive en su propio trozo del heap, así que un grafo de un millón de nodos es un millón de islotes dispersos. La representación funciona, pero no es *contigua*.
+
+### 2.6.2 La edge list — el formato de carga y de respaldo
+
+Es el más simple de todos: un `Vec` de pares `(u, v)`, uno por arista, en orden plano. Espacio **O(E)**, el más compacto de los tres. Su virtud es la compacidad y un orden natural: es justo lo que sacas de un fichero cuando *cargas* el grafo, o lo que vuelcas cuando *respaldas* todo. Es, de hecho, el formato de intercambio por defecto: una base de datos exporta su contenido como una larga lista de aristas, y otra lo importa leyendo esa misma lista.
+
+```
+// El mismo grafo en edge list:
+Ana→Bruno
+Ana→Carlos
+Bruno→Carlos
+Carlos→Dana
+```
+
+Su tragedia es la simetría con su virtud: la información está organizada *por conjunto*, no *por origen*. Para preguntar «¿quién es vecino de Ana?» tienes que escanear la lista completa **O(E)**, porque no hay manera de saltar a «las aristas de Ana» sin buscarlas. Edge list para *mover* el grafo; lista o CSR para *habitarlo*. Es la diferencia entre el inventario de un almacén (edge list) y el plano de los pasillos por los que caminas cada día (lista / CSR).
+
+### 2.6.3 El CSR — la lista de adyacencia comprimida (volverá en el cap. 14)
+
+CSR toma la idea de la lista de adyacencia y la aplasta en **dos arrays planos**: `offsets` (dónde empieza la lista de cada nodo) y `targets` (todos los vecinos, uno tras otro, sin huecos), más un `offsets[n]` final igual al número de aristas. Como viste en el §2.3, la lista de Ana no es un objeto: es `targets[offsets[Ana]..offsets[Ana+1]]`. Misma información y casi la misma memoria que la lista de adyacencia, pero **contigua**: la CPU la precarga de carrerilla (localidad de caché), el disco la persiste en menos saltos, y no hay una alocación por nodo.
+
+```
+// El mismo grafo en CSR (forward):
+offsets = [0, 2, 3, 4, 4]      // Ana empieza en 0, Bruno en 2, Carlos en 3, Dana en 4
+targets = [B, C, C, D]          // (sin aristas salientes de Dana, offsets[4]=4)
+```
+
+Su debilidad es la seña de identidad de «comprimido»: es incómodo de *mutar* en caliente. Insertar una arista puede «empujar» a todo el array `targets` si no queda hueco, y re-encajar los `offsets`. Por eso, en un motor en memoria que muta mucho (inserta, borra), el `Vec<Vec>` del cap. 8 es más cómodo; y por eso cuando LiraDB quiera *leer en ráfagas y persistir* el recorrido de manera barata sobre páginas, elegirá el CSR (cap. 14). Es el heredero directo del paquete de Yale de 1977, y su historia vuelve en el cap. 14 con el detalle completo de por qué dos arrays valen más que un millón de `Vec`.
+
+Una sutileza que pagarás si no la ves: para responder «¿cuántas aristas salen del nodo i?», en una lista de adyacencia calculas `lista[i].len()` (una lectura de longitud, O(1)). En el CSR, calculas `offsets[i+1] - offsets[i]` (una resta, también O(1), pero con dos accesos). En un grafo enorme esa resta se mide en milisegundos acumulados; lo verás en el cap. 14 cuando se cuente el coste real con `cargo bench`. No es un drama, pero merece estar en tu cabeza: el CSR cambia la *forma* de las preguntas, no solo la *velocidad*.
+
+### 2.6.4 Una cuarta olvidada que reaparecerá: el diccionario de aristas
+
+Hay una quinta forma que merece un párrafo porque la verás en bases de datos reales: el **mapa / diccionario de aristas** indexado por el par `(u, v)` — un `HashMap<(NodeId, NodeId), EdgeId>` o un árbol B+ sobre ese par. Existe por una razón muy concreta: la consulta «dame los datos de la arista entre Ana y Bo» es **O(1)** en hash y **O(log E)** en B+, sin importar el grado de Ana. Ninguna de las otras cuatro te la da así de barata: en la matriz es O(1) pero solo tienes el bit; en la lista de Ana o Bo es O(grado); en el CSR igual; en la edge list es O(E).
+
+El precio: el espacio se va a `O(E)` extra solo para el índice, y **no te resuelve los vecindarios** — para «vecinos de Ana» vuelves a la lista. Por eso los motores serios mantienen dos estructuras: una *lista de adyacencia* (o CSR) para recorrer, y un *índice de aristas* (hash o B+) para «dame esta arista». LiraDB combinará exactamente así cuando llegue el cap. 15. La regla es la misma: **una estructura por operación dominante**, y la combinación que elijas define el motor.
+
+Para cerrar: las cuatro (cinco, con el diccionario) representaciones no compiten en el vacío; compiten por **baratura de operación**. La matriz gana en «existe(u,v)» de un grafo denso; la lista y el CSR ganan en «vecinos(u)»; la edge list gana en «exportar / importar todo»; el diccionario gana en «dame esta arista concreta». Un motor serio no suele elegir una: **combina** y sabe cuándo está ejecutando cada operación. La pregunta «¿qué operación ejecuta la BBDD?» se contesta, casi siempre, con una combinación.
+
+## 2.7 Los porqués (grill)
+
+Reunamos la comparación en una sola tabla — la que te acompañará hasta el cap. 14 — y hagamos luego la ronda de «¿por qué así y no de otra forma?» que exige que cada elección rinda cuentas:
+
+| Representación | Espacio | «existe(u,v)» | «vecinos(u)» | Talento que la define |
+|---|---|---|---|---|
+| Matriz de adyacencia | O(V²) | O(1) | O(V) — barre la fila | responder una arista puntual |
+| Lista de adyacencia | O(V+E) | O(grado u) | O(grado u) — localiza en O(1) | recorrer vecindario (vecinos) |
+| Edge list | O(E) | O(E) — escanea | O(E) — escanea | mover / importar / exportar |
+| CSR | O(V+E) contiguo | O(grado u) | O(grado u) — localiza en O(1) | leer y persistir vecindario |
+
+**¿Por qué la matriz de adyacencia para «existe(u,v)» y no para BFS?** — Resuelve la *presencia* de una arista en O(1) con un doble índice. Se descartó para el recorrido de vecinos porque barres una fila entera (O(V)) aunque el grado sea 2. Precio: O(V²) de memoria. Si no lo supiéramos, guardarías un grafo de 1 M de nodos disperso como matriz: 4 TB. Es el mismo argumento de densidad que el cap. 14 convierte en cifra con tinta.
+
+**¿Por qué la lista de adyacencia para «vecinos de u»?** — Resuelve *enlistar* vecinos en O(grado), con O(V+E) de memoria. Se descartó para «¿existe u→v?» porque no hay más remedio que barrer la lista (O(grado)). Modo de fallo: un PageRank que necesita entrantes no va con una sola lista; hay que mantener una segunda (backward). El `MemoryStore` del cap. 8 duplicará la dirección (`adj_in`), y esa duplicación es la semilla del par forward / backward del cap. 14.
+
+**¿Por qué CSR?** — Resuelve lo que la lista resuelve, pero en arrays planos contiguos: mejor **localidad de caché** y un formato trivialmente persistible. Se descartó —hasta el cap. 14— por ser tedioso de *mutar*: en memoria el `Vec<Vec>` es más cómodo para insertar / borrar; el CSR brilla cuando lees y persistes, no cuando editas al vuelo. Fuente: **Yale Sparse Matrix Package, 1977** (informes YALEU/DCS/RR-112 y RR-114). Si no lo conociéramos, no sabríamos por qué el cap. 14 elige arrays planos para bajar la adyacencia a páginas.
+
+**¿Por qué existe la edge list?** — Resuelve la compacidad total (O(E)) y el formato natural de carga / respaldo. Se descartó para BFS porque no hay forma de saltar a los vecinos de u sin escanearla entera. Modo de fallo: una consulta «vecinos de u» se convierte en O(E); un BFS sobre edge list degrada a O(V·E).
+
+**¿Por qué mantener dirección inversa (`adj_in`)?** — Resuelve PageRank y «¿quién apunta a X?» sin pagar O(E) por consulta. El precio es duplicar el espacio de adyacencia y sincronizar ambas listas al borrar — tarea que ya hace `delete_edge` del cap. 8 con dos `retain`. Es la misma razón por la que el cap. 14 guardará un par CSR espejo (forward + backward).
+
+**¿Resuelve este cap. los IDs generacionales?** — No. Los pospone. La pregunta de CORPUS «¿por qué `slotmap` y no índices reciclados?» se responde en el cap. 3. Aquí solo se fija una pieza: el `usize` que nombra a un nodo es una **clave estable**, no una posición re-numerable — y por eso `MemoryStore` del cap. 8 guarda `Vec<Option<T>>` con huecos en vez de re-numerar al borrar. Piénsalo: cuando borras a Bruno, ¿renumeras a Carlos para «compactar» el array? Si lo haces, cambias el nombre de Carlos y rompes todas las aristas que lo mencionan. Eso es material del cap. 3.
+
+## 2.8 Trampas y errores comunes
+
+Todo el mundo tropieza aquí de la misma manera. Si detectas estos seis síntomas a tiempo, te ahorrarás capítulos enteros de confusión:
+
+1. **Creer que la matriz es la representación «correcta»** solo porque es la primera que te enseñaron. Antes de defenderla, calcula V². Si tu grafo tiende a pocas aristas por nodo, estás defendiendo terabytes.
+2. **Confundir «localizar la lista» con «recorrerla»**. En una lista de adyacencia, *localizar* a los vecinos de Ana es O(1); *recorrerlos* es O(grado de Ana). En un BFS lo que cuenta es el recorrido, y ese es barato en lista / CSR, no en matriz. Confundirlo te hace creer que matriz y lista empatan en recorrido cuando no empatan en absoluto.
+3. **Usar edge list, lista de adyacencia y CSR como sinónimos.** Edge list = pares planos; lista = un `Vec` por nodo; CSR = `offsets` + `targets` planos. Tres estructuras, tres perfiles de coste, tres usos.
+4. **Suponer que la elección en memoria vale para el disco.** Lo que brilla en RAM (un `Vec<Vec>` disperso por el heap) puede ser un desastre persistido en páginas: el cap. 14 volverá sobre esta herida y te mostrará por qué el CSR gana en disco incluso donde en RAM empataba.
+5. **Pensar que basta una sola representación.** Un motor responde operaciones distintas; la madurez es saber cuándo usar cada una (o combinarlas) *según la consulta que llega*.
+6. **Confundir GDBMS con biblioteca de algoritmos.** Aquí no eliges representación para que un algoritmo «se vea bonito» en una pizarra: eliges para que un *motor* responda millones de consultas. Eso cambia qué pesa más — el patrón de acceso, no la elegancia.
+
+**Precisión de lenguaje (glosario)**: `vecinos(u)` (toda la lista) ≠ `existe(u,v)` (una celda); **grado** ≠ **grado medio**; **denso** (E ≈ V²) ≠ **disperso** (E ≤ cV); **CSR** ≠ «matriz» — es una forma *comprimida* de la lista de adyacencia; **GDBMS / motor de BBDD** ≠ biblioteca de algoritmos; **lista de adyacencia** ≠ **edge list**; **forward** (`adj_out`) ≠ **backward** (`adj_in`).
+
+## 2.9 Una historia pequeña
+
+La primera versión de nuestro prototipo guardaba el grafo social de prueba —unas 30 personas y 90 amistades— como una matriz de adyacencia. Para 30 personas es una tabla de 30×30: se imprime en una hoja. Funcionó gloriosamente una mañana entera, mientras nuestros BFS eran del tamaño de un recreo.
+
+A la tarde, Ana importó el grafo real de un pequeño foro: 40.000 nodos y 300.000 aristas. La hoja se convirtió en un muro: `40.000² = 1.600 millones` de celdas, aunque el grafo solo tuviera 300.000 aristas — una densidad del 0,02 %. El CPU hacía gala: para enlistar el vecindario de cada nodo barría una fila de 40.000 celdas y encontraba 7. Íbamos a tardar una semana en hacer un BFS.
+
+No era un fallo de optimización. Era que habíamos elegido **la respuesta correcta a la pregunta equivocada**. Cambiamos a listas de adyacencia —una por nodo, `Vec` por `Vec`, una para salientes y otra para entrantes— y el mismo BFS que iba a tardar una semana tardó un parpadeo. La moraleja no fue «cambia de estructura». Fue que, desde entonces, en LiraDB nadie toca una representación sin preguntarse antes qué operación va a ejecutar el motor una y otra vez. Esa pregunta —no la tabla— es la que siempre estuvo mandando desde el principio, y no habíamos querido mirarla.
+
+## 2.10 Lo que te llevas
+
+- **La representación se elige por el patrón de acceso, no al revés.** La misma estructura que vuelve trivial un BFS es un despropósito para otra consulta; la pregunta que desbloquea todo es «¿qué operación ejecuta la BBDD?».
+- Las **cuatro candidatas** y su perfil: matriz O(V²) / O(1) en «existe» — solo grafos pequeños y densos; lista de adyacencia O(V+E) / O(grado) en «vecinos» — la elección de `MemoryStore` (cap. 8); edge list O(E) — el formato de carga / respaldo; CSR O(V+E) contiguo — la lista comprimida que el cap. 14 persistirá.
+- La **dirección inversa** (`adj_in`) no es un lujo: PageRank, «¿quién apunta a X?», caminos inversos y centralidad la necesitan. Sin ella, esas consultas degradan a O(E).
+- **Localizar ≠ recorrer**: en lista / CSR, *localizar* la lista de vecinos es O(1); *recorrerla* es O(grado). El BFS vive del recorrido.
+- **CSR como lista de adyacencia comprimida**: `targets` plano + `offsets` acumulado. Misma información que la lista, pero contigua. Por eso la CPU la ama y el disco la ama. Nació en Yale en 1977 (YSMP) y vuelve en el cap. 14.
+- **La representación en RAM ≠ la representación en disco**: lo que brilla en memoria puede ser un desastre persistido. La elección de hoy condiciona el cap. 14.
+
+## 2.11 Ojo, cuidado con…
+
+- **Defender la matriz sin haber calculado V².** Si tu grafo tiende a pocas aristas por nodo, V² te cuesta terabytes. La matriz no es «la forma» de un grafo: es la forma de una pregunta muy concreta (existe arista en grafo denso).
+- **Decir «vecinos de u: O(1) en lista»** sin distinguir localizar de recorrer. Lo que es O(1) es la indirección al `Vec`; lo que cuesta O(grado) es la iteración que el BFS ejecuta.
+- **Tratar edge list, lista y CSR como sinónimos.** Tres estructuras distintas con tres perfiles de coste y tres usos. Si las mezclas, mezclas las cifras de memoria del cap. 14.
+- **Olvidar la dirección inversa.** Un motor que solo guarda `adj_out` puede hacer BFS, pero no PageRank. El cap. 8 lo sabe, y por eso `adj_in` existe.
+- **Olvidar que la elección en RAM no se traslada tal cual a disco.** El cap. 14 te demostrará que el CSR gana en persistencia incluso donde en RAM empataba con `Vec<Vec>`.
+
+## 2.12 Lo que hemos sacrificado
+
+Toda elección tiene un precio. Lo que cada representación del capítulo te cobra por darte lo que te da:
+
+- **Matriz**: accesibilidad O(1) a cambio de O(V²) de memoria. En un grafo disperso es un coste insoportable; en un grafo denso (co-ocurrencia, n = 50, casi todos enlazados) es la elección obvia.
+- **Lista de adyacencia**: baratura de recorrido a cambio de un millón de `Vec` dispersos en el heap. La localidad de caché sufre; la mutación (insertar / borrar) es cómoda. La sincronización de `adj_out` y `adj_in` es trabajo que paga el `delete_edge`.
+- **Edge list**: compacidad total y simplicidad a cambio de O(E) en «vecinos de u». Sirve para mover el grafo, no para habitarlo.
+- **CSR**: localidad y persistencia barata a cambio de mutaciones incómodas. Insertar una arista puede empujar `targets` y re-encajar `offsets`; por eso en un motor que muta mucho se prefiere `Vec<Vec>` y se reserva el CSR para cuando se lee / persiste en ráfagas (cap. 14).
+
+## 2.13 Cómo lo hace una BBDD real
+
+Las cuatro representaciones viven, con variantes, en motores serios:
+
+- **Neo4j** usa **listas de adyacencia** para cada nodo, con sus relaciones almacenadas como registros de primera clase con punteros al nodo origen y destino. Mantiene ambas direcciones (`adj_out` / `adj_in` análogos) para que las relaciones puedan recorrerse en ambos sentidos con la misma baratura. Verás el mismo patrón en `MemoryStore` (cap. 8). Además, Neo4j persiste cada relación como un registro físico en disco con un identificador estable (el «relationship id» que aquí será `EdgeId`).
+- **TigerGraph** usa **listas de adyacencia en formato CSR** dentro de su motor en memoria, precisamente por la localidad de caché y por la facilidad de bajarlo a disco en una sola pasada. El CSR vive en producción, no solo en los libros: el cap. 14 lo materializa con cifras reales. TigerGraph lo llama «storage format» y lo trata como el canon; cualquier consulta Cypher que hagas se compila contra ese CSR.
+- **Amazon Neptune** y **JanusGraph** mantienen una **edge list implícita** (tabla de aristas) como almacén canónico y construyen **índices de adyacencia** sobre ella para acelerar vecindarios — una arquitectura que combina dos representaciones: la edge list para responder «dame todas las aristas» y la lista (o el CSR) para responder «vecinos de u». Sobre esa base añaden caché en memoria que se parece mucho a un `MemoryStore` como el del cap. 8.
+- **PostgreSQL con la extensión AGE** (graph sobre Postgres) usa tablas: nodos en una tabla, aristas en otra con `source_id` y `target_id`. Cuando haces «vecinos de u», Postgres hace un index scan sobre `source_id` — el equivalente industrial de nuestra edge list con índice. La moraleja para LiraDB: la lista de adyacencia «no hace falta inventarla desde cero» si tienes un buen índice; pero el CSR es más rápido que un index scan cuando el acceso es por *vecindario completo*.
+- **Memgraph** usa listas de adyacencia en memoria y serializa a disco en formato CSR comprimido, optimizando para que las páginas que contienen los vecinos de un nodo estén contiguas. El mismo recorrido que aquí dibujamos a mano, industrializado.
+- **ArangoDB** y **OrientDB** almacenan grafos como documentos JSON enlazados por identificadores; cada nodo lleva literalmente en su documento las claves de sus vecinos. Es la versión «lista de adyacencia implícita en el documento» — equivalente conceptual al `adj_out` del `MemoryStore`, con la ventaja de que el documento también lleva las propiedades (el vestido del cap. 1).
+- **Virtuoso** (usado por la web semántica) trabaja con triples, pero a nivel de almacenamiento usa una combinación de mapas hash por sujeto + predicado y de CSR-like layouts para los predicados más consultados. Su mapa hash es exactamente el «diccionario de aristas» del §2.6.4.
+
+**Retos para el lector (esencial / intermedio / experto)**:
+
+- *Esencial*: para el grafo del §2.3, dibuja la matriz, la lista de adyacencia y la edge list. Identifica la operación «vecinos de Ana» y di cuántas celdas / entradas / posiciones se barren en cada representación. ¿Cuál es la única en la que esa operación cuesta O(grado)?
+- *Intermedio*: dado un grafo con 50 nodos y 200 aristas (densidad ≈ 0,08), ¿qué representación es la más barata en memoria? ¿Y con 50 nodos y 1.200 aristas (densidad ≈ 0,48)? ¿En qué punto el CSR y la matriz de `bool` empatan en memoria?
+- *Experto*: tu BBDD tiene que responder consultas Cypher como `MATCH (a)-[:KNOWS]->(b)` desde cualquier nodo origen, y debe permitir recorrido inverso `MATCH (b)<-[:KNOWS]-(a)`. ¿Una sola estructura basta? Justifica frente a las alternativas.
+
+## 2.14 Pin de batalla
+
+> *«No hay una forma de guardar un grafo. Hay preguntas, y para cada pregunta una forma que la hace barata y otra que la hace miserable. Pregunta antes de elegir.»*
+
+### Resumen visual del capítulo (una sola mirada)
+
+| Representación | Espacio | «existe(u,v)» | «vecinos(u)» | Mejor para… | La usa… | Origen |
+|---|---|---|---|---|---|---|
+| **Matriz de adyacencia** | O(V²) | **O(1)** | O(V) | grafos pequeños y densos; responder aristas puntuales | los libros de algoritmos como visualización | tradición matemática, formalizada en CLRS cap. 22 |
+| **Lista de adyacencia** | O(V+E) | O(grado u) | **O(grado u)** (localizar O(1)) | mutar en memoria; recorrido BFS/DFS | `MemoryStore` del cap. 8 (`adj_out`, `adj_in`) | convención canónica de CLRS cap. 22 |
+| **Edge list** | O(E) | O(E) | O(E) | cargar / respaldar / intercambiar el grafo | formatos de import / export; tabla de aristas de AGE | la forma más antigua de escribir un grafo |
+| **CSR** | O(V+E) contiguo | O(grado u) | **O(grado u)** (localizar O(1)) | persistir y leer en ráfaga | LiraDB persistente (cap. 14); TigerGraph; Memgraph | **Yale Sparse Matrix Package, 1977** |
+
+Si solo te llevaras **una tabla** del capítulo, debería parecerse a esta.
+
+## 2.15 Si solo lees 30 segundos
+
+Una matriz de adyacencia vale para «¿existe esta arista?» en un grafo pequeño y denso, y es un desastre en cualquier grafo realista por culpa de O(V²). Una lista de adyacencia vale para «vecinos de u» en O(grado), con espacio O(V+E) — es la elección de `MemoryStore` en el cap. 8 (`adj_out`, `adj_in`). Una edge list vale para mover / exportar el grafo, O(E). El CSR es la lista comprimida en arrays planos, contigua y persistible — la recoge el cap. 14. La pregunta que las elige es siempre la misma: **¿qué operación ejecuta la BBDD?**
+
+## Ejercicios resueltos
+
+**1. Localizar vs recorrer en una lista de adyacencia.** Para el grafo del §2.3, ¿cuánto cuesta localizar a los vecinos de Carlos y cuánto recorrerlos? — *Localizar* es `lista[índice_de_Carlos]`: un acceso de array, **O(1)**. *Recorrer* es iterar su lista, que tiene 1 elemento (solo Dana): **O(grado de Carlos) = O(1)**. El matiz: localizar es O(1) *siempre*; recorrer es O(grado), y el grado medio es lo que manda. En la matriz, en cambio, localizar *y* recorrer coinciden en ser caros: para obtener a los vecinos de Carlos barres su fila completa, **O(V)** aunque tenga 1 vecino.
+
+**2. ¿Por qué un BFS ama la lista de adyacencia y aborrece la edge list?** — Un BFS, en cada paso, toma un nodo y enlista a sus vecinos para visitarlos. En la lista de adyacencia, «vecinos de u» es O(grado u), así que el BFS completo es O(V+E). En una edge list, «vecinos de u» te obliga a escanear *todas* las aristas para quedarte con las que tocan a u: O(E) por nodo, y el BFS degrada a O(V·E). La edge list guarda el grafo de forma compacta, pero no organiza la información *por origen*, que es justo el eje de acceso de un recorrido. (Esta es la semilla del cap. 4 del Vol.II, donde el BFS se aterriza sobre `MemoryStore`.)
+
+## Ejercicios propuestos
+
+**Esencial (recordar/aplicar — retrieval).** De memoria, sin mirar el capítulo: dibuja el grafo «Ana→Bruno, Ana→Carlos, Bruno→Carlos, Carlos→Dana» de tres maneras — (a) matriz de adyacencia, (b) lista de adyacencia con dirección saliente, (c) edge list. Luego coteja tus tres figuras contra el modelo mental del §2.3 y verifica que las tres representan exactamente el mismo grafo. Criterio de evaluación: la arista Bruno→Carlos debe aparecer como `1` en la celda de matriz, como un elemento en la lista de Bruno, y como un par `(Bruno, Carlos)` en el edge list.
+
+**Intermedio (analizar — calcula la memoria).** Dado un grafo de **V = 1.000.000** nodos y **E = 4.000.000** aristas (grado medio 4, ids de 32 bits = 4 bytes), calcula el coste aproximado de memoria de cada representación y di cuáles caben en una máquina de ~16 GB de RAM:
+
+- Matriz de adyacencia con `u32` por celda.
+- Matriz de adyacencia con 1 bit por celda.
+- Lista de adyacencia (datos: un `EdgeId` de 4 bytes por arista saliente = 4 M targets, más la cabecera `Vec` por nodo).
+- Edge list (un par `(u,v)` de 8 bytes por arista).
+- CSR (`offsets`: (V+1)·4 B; `targets`: E·4 B).
+
+*Pistas (graduadas)*: (1) la matriz es V² × bytes_por_celda; (2) el CSR es la suma de sus dos arrays; (3) la lista de adyacencia, al ser la misma información que el CSR pero con una cabecera de `Vec` y una alocación por nodo, nunca puede ser más barata que el CSR — en la práctica lo supera en decenas de MB solo por las cabeceras. *Solución de referencia*: matriz u32 ≈ **4 TB**; matriz a 1 bit ≈ **125 GB**; CSR ≈ (1 M + 1)·4 + 4 M·4 ≈ **20 MB**; edge list ≈ 8·4 M ≈ **32 MB**; lista de adyacencia ≈ CSR + overhead por nodo (≈ 24-32 B) ≈ **40-50 MB**. Veredicto: las dos matrices no caben; de las que caben, el CSR es la más ceñida y contigua.
+
+**Experto (crear — anclaje al cap. 8 y cap. 14).** Una base de datos de grafos te dice su perfil de carga: sus consultas dominantes son **recorridos BFS desde muchos orígenes**, y además ejecuta un **PageRank periódico** que necesita, para cada nodo, sumar la influencia de *quienes le apuntan a él* (vecinos entrantes). Diseña la representación en memoria de su adyacencia: ¿qué estructura(s) eliges, necesitas dirección inversa, y contra qué alternativa lo justificas? *Pistas*: conviene una lista o CSR por cada dirección para que ambos recorridos sean baratos; descarta la matriz por O(V²) y la edge list por «vecinos de u» O(E). *Criterio*: argumentas en contra de al menos una alternativa y conectas tu decisión con la estructura `adj_out` + `adj_in` del `MemoryStore` (cap. 8, `cap08_graph_store.rs` líneas 79-80) y con el par CSR forward / backward del cap. 14.
+
+## Para profundizar
+
+- **Yale Sparse Matrix Package (YSMP), 1977** — informes YALEU/DCS/RR-112 y RR-114 (Eisenstat, Gursky, Schultz, Sherman). El origen del CSR; alto valor histórico, difícil de encontrar digitalizado.
+- **«Introduction to Algorithms» (CLRS), cap. 22** — la *convención* canónica de las listas de adyacencia en los libros de algoritmos, con su análisis O(V+E) frente a la matriz O(V²). De aquí saca el Vol.I la notación.
+- **«The Art of Computer Programming» (Knuth), vol. 4A, §7.4.1** — las formas de representar grafos en memoria y el «traverse» como operación definitoria que decide qué estructura sirve.
+- **«Database Internals» (Alex Petrov), caps. 2-3** — cómo un motor real combina el layout de datos en memoria y en páginas; el puente directo hacia el cap. 14.
+- **Cap. 8 del Vol.II** (`cap08_graph_store.rs`) — el código que *ancora* este capítulo: lee `MemoryStore` y ve `adj_out` / `adj_in` en su hábitat, junto a las dos direcciones y a la duplicación síncrona al borrar.
+- **Cap. 14 del Vol.II** — donde el CSR se construye, se verifican sus invariantes y se persiste sobre páginas; esta lectura es el «después» que este capítulo prepara, con las mismas cifras de memoria que usas en el ejercicio intermedio.
+- **Cap. 3 del Vol.II** — donde el ID deja de ser «un `usize`» y pasa a ser una clave estable que sobrevive al crash y al reciclaje de espacio; la pregunta de CORPUS sobre `slotmap`.
+
+## Mini-diálogo: en la cafetería de la universidad
+
+> — O sea, que la matriz de adyacencia que me enseñaron en algoritmos... ¿no sirve?
+>
+> — Sirve perfectamente. Sirve para responder «¿existe la arista de Ana a Bruno?» en O(1). Lo que no sirve es para el trabajo que hace un motor de grafos: «¿quiénes son todos los vecinos de Ana?» en un grafo de un millón de nodos. Eso es lo que un motor ejecuta millones de veces al día. Y para eso, una matriz de un millón de millones de celdas no solo es lenta: no cabe.
+>
+> — Entonces la lista de adyacencia es la buena, y ya está.
+>
+> — Es la buena para recorrer, que es lo que domina un BFS y un PageRank. Pero no para «¿existe esta arista?» puntual, ni para exportar el grafo entero — eso es edge list. Ese es el punto: no hay «la buena». Hay la buena *para lo que tu base de datos ejecuta de verdad*. La pregunta es la que elige, no la tabla.
+>
+> — ¿Y cuándo acabamos decidiendo?
+>
+> — Cuando dejes de preguntarte «¿cómo guardo esto?» y empieces a preguntarte «¿qué pregunta le voy a hacer a esta base de datos un millón de veces?». Ahí la representación se elige sola — y te darás cuenta de que estabas guardando una arista, pero pensando en un vecindario.
+
+---
+
+*(Próximo capítulo: 3 — Identidad, referencias y datos estables. Aquí vimos que la forma de guardar depende de la operación; ahora veremos la moneda que toda representación usa para nombrar a los nodos — el ID — y por qué un `usize` estable es una cosa y un índice que se re-numera es otra bien distinta.)*# Capítulo 3 — Identidad, referencias y datos estables
+
+> *«Un objeto no se cita por el lugar donde está. Se cita por quién es. El lugar cambia; el quién no.»*
+
+## 3.0 La anécdota de la esquina
+
+En los años sesenta, los fichadores de un autor de humor tecnológico — hacía décadas que guardaban sus chistes en **tarjetas perforadas** apiladas en una caja — cometieron un error que se hizo legendario en las oficinas de computación: reordenaron la pila para "quedar más ordenados" y, al hacerlo, **renumeraron las tarjetas desde 1**. De un día para otro, todas las fichas que apuntaban "la tarjeta 47 habla de Dijkstra" pasaron a estar en blanco o, peor, a apuntar a otra cosa — sin que nadie avisara. El contenido de cada tarjeta seguía siendo el mismo; lo que se rompieron fueron las *referencias*, porque estaban ancladas a la *posición física* en la pila, y la posición se movió. Lo más cruel del chiste es que las tarjetas no tenían nada de malo después de la reordenación — estaban exactamente igual de perforadas, con los mismos agujeros. Lo único que cambió fue el *número escrito a mano* en la esquina, y eso bastó para tirar abajo medio archivo. Cada referencia cruzada del libro — "la tarjeta 47 habla de...", "ver también la 12", "citada por la 88" — quedó apuntando al vacío o, peor, a una ficha sin parentesco ninguno con la original.
+
+Ese chiste encierra la lección más profunda de este capítulo — y una a la que toda base de datos debe sobrevivir día sí y día también: **confundir la identidad con la posición es apostar a que nada cambie nunca de sitio.** En un sistema de ficheros, un descriptor de archivo cerrado y reasignado; en C, un puntero a un array redimensionado; en un grafo de base de datos, el `id` de un nodo. Todos son lo mismo cuando se quedan colgando: una promesa de "esto sigue siendo esto", rota por el simple acto de mover, borrar o reinsertar.
+
+Este capítulo define qué hace que una identidad sea **estable**, por qué un índice de array no puede serlo, y esboza la solución que LiraDB ya tiene prometida desde las líneas 3-6 de su código ancla (`cap07_modelo.rs`): las **eras generacionales** (`(slot, generation)`), donde cada borrado incrementa la generación y un id viejo «apunta a nada» en lugar de apuntar al dato equivocado.
+
+## 3.1 Objetivo
+
+Al terminar este capítulo sabrás distinguir dos cosas que la mayoría de la gente confunde toda su vida: **IDENTIDAD** (el *quién* — un nombre que no cambia mientras el elemento exista) y **DATO** (el *qué* — el contenido, la posición, el valor, que sí puede cambiar). Y, con eso, entenderás por qué LiraDB no puede quedarse en `pub type NodeId = usize` como identificador definitivo y por qué el comentario honesto del `cap07_modelo.rs` («en el cap 3 se sustituirán por IDs generacionales (slotmap)») es la pieza que ahora vamos a colocar.
+
+En concreto, terminarás sabiendo:
+
+1. **Por qué un índice de array NO es un id**: borrar o reinsertar lo corrompe, o por corrimiento, o por reciclaje silencioso.
+2. **Qué es un id estable**: un nombre que sobrevive a añadir, borrar y reordenar elementos.
+3. **Qué lo hace posible**: la **era / generación** por slot — el id pasa a ser `(slot, generation)`.
+4. **Qué es el problema ABA** y por qué es el enemigo jurado del reciclaje de ids.
+5. **Por qué una BBDD elige claves surrogate** (inventadas, estables) sobre claves naturales (reales, mutables).
+
+Este es un capítulo conceptual de la Parte I: no implementaremos un módulo de código nuevo, pero colocaremos la pieza que el `cap07_modelo.rs` dejó anunciada desde la primera línea de sus identificadores.
+
+## 3.2 Problema
+
+Retoma el minigrafo de Ana y Bo (cap. 1). Imagina que lo tienes en un simple array:
+
+```
+índices:    0       1       2
+nodos:  [Ana]    [Bo]    [Carlos]
+```
+
+La arista "Ana conoce a Bo" se representa (en versión simple) como el par de índices `(0, 1)`. El `1` dice «esto, al final, apunta a Bo». Fácil, rápido, barato. Funciona... hasta que deja de funcionar. Ahora borra a `Bo`:
+
+```
+índices:    0    1(hueco)    2
+nodos:  [Ana]    [   ]    [Carlos]
+```
+
+¿Qué haces con el hueco? Tienes dos malas opciones, y ambas rompen algo:
+
+- **Opción A — corre el array a la izquierda**: `[Ana][Carlos]`, y ahora `Carlos` pasó del índice 2 al 1. La arista `(0, 1)` que decía «conozco a Bo» ahora dice «conozco a Carlos». Corrompida en silencio. Todas las referencias al índice ≥ 1 también.
+- **Opción B — deja el hueco y rellena cuando puedas**: mañana insertas a `Dani`, y el «hueco 1» que quedó de `Bo` lo ocupa `Dani`. La arista `(0, 1)` que decía «conozco a Bo» ahora dice «conozco a Dani». Corrompida en silencio *otra vez*.
+
+El problema de fondo es uno solo: **usaste una posición física como nombre, y la posición es volátil.** El índice `1` no es *Bo*; es *el lugar donde en este momento reside algo*. La identidad quedó atada al sitio, y el sitio se mueve.
+
+Date cuenta de que esto es independiente del lenguaje, del sistema operativo y del tipo de grafo. Es la misma trampa que cae un array de C (`malloc` + `realloc` reubica el bloque y el viejo `&arr[i]` queda colgando), un `ArrayList` de Java (doblado por encima del umbral y los `Integer` cacheados de antes ahora apuntan al elemento equivocado), un descriptor de archivo de POSIX (cerrado y reasignado por otro `open()`), un `WeakReference` de Java/Python/Rust sin contraparte GC robusta. En todos los casos, lo que se corrompe no es el dato en sí — es la *promesa* de que «esta cosa sigue siendo la misma». Cuando esa promesa se ata a una *dirección*, la dirección se reasigna sin avisar; cuando se ata a un *nombre*, el nombre puede quedarse quieto incluso mientras el contenido se mueve. La elección entre atar la promesa a una dirección o a un nombre es la elección que divides este capítulo en dos.
+
+Este es exactamente el problema del que LiraDB no puede escapar, porque una base de datos de grafos es *referencias por todas partes*: cada arista refiere a su `source` y su `target`, cada lista de adyacencia guarda los `EdgeId` de sus vecinos, el `trait GraphStore` del cap. 8 los expone, y el BFS del cap. 4 los recorrerá. Si esos ids fueran posiciones, un solo borrado envenenaría el grafo entero sin lanzar un solo error.
+
+## 3.3 Modelo mental
+
+Piensa en un **hospital con un archivo de expedientes** (retomamos la imagen del cap. 7, ahora llevada al extremo):
+
+- En el archivo hay **estanterías con huecos**. Cada expediente ocupa una casilla (un **slot**). Si un expediente se retira, su casilla queda vacía — no se «corren» todos los demás para tapar el hueco, porque **renumerar expedientes rompería todos los enlaces** que dicen «el expediente 2 era el cardiólogo».
+- El **número de expediente (el id)** es un *nombre*: lo puso la secretaría cuando el paciente entró y **no cambia nunca**, por mucho que el expediente se mueva de estantería, se vacíe una casilla vecina, o el paciente cambie de teléfono.
+- El **teléfono es un dato (una clave natural)**: el paciente puede cambiarlo, y de hecho lo hará — pero cambiarlo NO debe hacer que «el expediente de Ana» apunte a otra persona.
+
+Ahora el giro que resuelve el reciclaje. Una casilla que se vacía podría *volver a usarse* mañana para otro expediente. ¿Cómo distinguimos «este hueco 2 es el viejo expediente de Bo» de «este hueco 2 ahora es el de Dani»? Añadimos un **número de legajo (generación)** que sube cada vez que la casilla se vacía:
+
+```
+slot 1, generación 7   →  era el expediente de Bo (liberado)
+slot 1, generación 8   →  ahora es el expediente de Dani
+```
+
+Visualmente, la estantería del archivo pasaría de algo perfectamente plano (un casillero por paciente) a un casillero donde cada hueco lleva, pintado al lado, un sello de cera con la fecha de su última vida:
+
+```
+              ┌──────── estantería generacional ─────────┐
+              │                                           │
+  slot 0      │  [ Ana,      legajo 3 ]    «ocupado»     │
+  slot 1      │  [ ——,       legajo 8 ]    «hueco quemado»│ ← fue Bo
+  slot 2      │  [ Carlos,   legajo 2 ]    «ocupado»     │
+  slot 1'     │  [ Dani,     legajo 9 ]    «recién llegado»│ ← mismo slot físico, otro lógico
+              │                                           │
+              │  referencia vieja (slot 1, legajo 7): ya NO casa
+              │  referencia nueva (slot 1, legajo 9): apunta a Dani
+              └───────────────────────────────────────────┘
+```
+
+Una referencia que «recordaba» `(slot 1, generación 7)` sigue existiendo, pero ya NO coincide con `(1, 8)`: **apunta a nada** (aborto rápido) en vez de apuntar silenciosamente a Dani. El id real, en LiraDB, es la pareja **`(slot, generation)`** — no el slot desnudo.
+
+```
+                ┌────────────────────────  slotmap model ─────────────────────────┐
+  Ingénuo:      Vec<Option<T>>  (tombstones del cap. 8)
+    0: Some(Ana)   1: None      2: Some(Carlos)
+                   ▲   hueco enterrado (NO re-numerado)
+   arista 0→1 dice «conozco el slot 1»: HOY señala al vacío,
+                                          MAÑANA a Dani. AMBIGUO.
+
+  Con generación:  slots: Vec<(T, generation)>
+    slot 0: (Ana,    3)
+    slot 1: (None,   8)     ← fue liberado: la generación subió a 8
+    slot 2: (Carlos, 2)
+    slot 1: (None,   8)     → ahora inserto Dani: slot 1 pasa a (Dani, 9)
+  Un id viejo (1, 7) compara 7 != 9 → «nada, abortar».
+  Un id (1, 9) → «Dani».  INEQUÍVOCO.
+```
+
+Dos ideas son el corazón del capítulo:
+
+1. **IDENTIDAD ≠ POSICIÓN.** El id es un nombre lógico, inmutable; el slot es un hueco físico, volátil. Separarlos es lo que permite que las referencias sobrevivan.
+2. **GENERACIÓN ≠ DATO.** La generación no es un atributo del elemento; es una *marca de nacimiento del slot* que mide cuántas vidas ha tenido la casilla. Subirla al liberar impide que un id viejo «caiga» en un dato nuevo.
+
+### El momento ¡ajá!
+
+> *«Un índice de array es una DIRECCIÓN que se rompe al mover las cosas. Un id con generación es un NOMBRE que aguanta. La promesa de LiraDB — "un id no cambia mientras el elemento exista, y liberarlo no lo reasigna a otro" — se compra exactamente aquí: un contador por slot.»*
+
+## 3.4 Primera solución
+
+La solución ingenua que probablemente ya estás pensando es la del código ancla del cap. 7: **`pub type NodeId = usize`** — un id que ES el índice.
+
+```rust
+// Solución ingenua (la del cap. 7, correcta solo mientras no se borre).
+pub type NodeId = usize;
+
+let mut nodos: Vec<Node> = vec![ana, bo, carlos];
+let quien_conozco = nodos[1]; // «Bo» — mientras el índice 1 sea Bo.
+```
+
+Es la más barata y legible que existe: **`nodos[i]` es O(1)**, no gasta memoria extra, y el `i` se lee solo. Es *perfecta* como puntal pedagógico — por eso el cap. 7 la usa. Su única condición es un supuesto que nadie dijo en voz alta: *nada se borra nunca, ni se reordena, ni se reinserta en un hueco*.
+
+Si tu programa es de los que *leen y dibujan* (como los algoritmos del Vol.I), esta solución basta. Si es de los que *leen, escriben, borran y vuelven a escribir* (como cualquier base de datos de la historia), no basta — y por eso este capítulo existe. La trampa está en que el «supuesto no dicho» parece razonable al principio: «¿quién va a borrar un nodo, si los nodos son datos?» Mucha gente, resulta. Y basta un solo borrado para que todas las referencias implícitas a ese índice queden mintiendo en silencio. Cuando el cap. 7 escribe `pub type NodeId = usize;`, nos está diciendo exactamente esto: *esto es un andamio, ahora te toca subir a por la pieza de arriba*.
+
+## 3.5 Sus límites
+
+La solución se rompe en cuanto el grafo es *vivo* — es decir, en cuanto lo tratas como una base de datos y no como una estructura de juguete. Tres escenarios, tres formas de morir:
+
+1. **El corrimiento.** Borrar `Bo` (índice 1) y «compactar» hace que `Carlos` pase a ocupar el índice 1. La arista que «recordaba» el 1 ahora saluda a Carlos. **Referencia que miente** — el peor modo de fallo, porque *parece* correcta.
+2. **El reciclaje (bug ABA).** Dejar el hueco y rellenarlo después con `Dani` reutiliza el índice 1. La referencia vieja al 1 sigue siendo 1, pero ya es Dani. **Referencia que miente otra vez**, ahora sin que haya corrido nada: el hueco se rellenó.
+3. **La dependencia del orden físico.** Cualquier reordenamiento — importar un fichero en otro orden, compactar en disco (cap. 16) — invalida todas las referencias si el id fuera la posición.
+
+La raíz es una sola y ya la conoces: **el índice es una dirección, no un nombre.** Y una base de datos vive de nombres estables: un `Edge` refiere `source` y `target`; una lista de adyacencia refiere `EdgeId`; el BFS del cap. 4 guardará ids en su cola y en su conjunto de visitados. Si el id es un índice, cada borrado corrompe el conjunto entero de referencias *sin lanzar ningún error*.
+
+Fíjate en lo aterrador del matiz: **no es que se caiga el sistema — es que no se entera nadie.** Una arista que apunta al nodo equivocado es un error de datos tolerable («¿por qué Carlos es amigo de Dani si nunca se vieron?»), no una señal de fallo. Esa «corrupción silenciosa» es exactamente lo que LiraDB no puede permitirse.
+
+## 3.6 Solución evolucionada: las eras generacionales
+
+La idea tiene nombre propio en el mundo Rust: **generational arenas**, y existe implementada, además de en LiraDB, en crates como `slotmap`. El modelo es frío y elegante — un `Vec` por arena con, al menos, dos datos por slot:
+
+```rust
+// La forma conceptual (no la API final del cap. 7):
+struct Slot<T> {
+    value: Option<T>,      // None = tombstone, Some = habitado
+    generation: u32,       // cuántas veces se ha liberado este slot
+}
+struct Arena<T> {
+    slots: Vec<Slot<T>>,   // NUNCA re-númeramos los slots
+    free: Vec<usize>,      // cola de slots libres que se pueden reutilizar
+}
+// El id NO es el slot: es el par (slot, generation).
+type Id = (usize, u32);
+```
+
+Las reglas que hacen todo el trabajo:
+
+1. **Insertar**: toma un slot de `free` (o amplía el array), pon `value = Some(x)` y devuelve el id **`(slot, generación_actual)`**.
+2. **Leer**: `buscar(id)` devuelve `Some` solo si `slots[slot].generation == id.generation` y el slot está `Some`. Si no, `None`.
+3. **Borrar**: pon `value = None`, añade el slot a `free`, e **incrementa `generation`**. El id viejo queda «quemado»: ya nunca coincidirá.
+
+El acoplamiento con el `MemoryStore` del cap. 8 es exacto: el `Vec<Option<Node>>` de la solución ingenua se convierte en un `Vec<(Option<Node>, u32)>`. Cada slot del array del cap. 8 *ya* lleva un `None` como tombstone; la generación es el campo adicional que lo hace seguro reciclarlo. Esa es la asimetría que distingue el cap. 3 del cap. 8: el cap. 8 entiende que borrar es `slots[id] = None`; el cap. 3 añade que, además, hay que *subir la generación* del slot. Es la única operación nueva — una asignación de un `u32` y un `push` a `free` — que compra toda la promesa de estabilidad.
+
+El `slotmap` real de Rust lo expresa casi igual (módulo `slotmap::new_key_type` + `SlotMap`), y es lo que LiraDB importará cuando crezca: la misma forma `(slot, generation)` y, encima, optimizaciones que nosotros ni necesitamos — slots secundarios en páginas, freelists con hints de generación, etc. Para nuestro capítulo basta con la forma conceptual; la eficiencia es materia del Vol.II cuando la arena pase de Miles a Decenas de Millones de elementos.
+
+Vuelve al ejemplo. Borras a `Bo` del slot 1: la generación de `1` pasa de 7 a 8. Insertas a `Dani»; ocupa el slot 1 con generación 9 (porque borrar lo subió a 8, e insertar sobre libre otra vez lo sube a 9 — el esquema exacto varía, lo constante es que *sube al reutilizar*). Ahora la referencia vieja que «recordaba» `(1, 7)`:
+
+```
+buscar((1, 7))  →  slots[1].generation == 9  ≠  7  →  None   («ya no existe, aborta»)
+buscar((1, 9))  →  slots[1].generation == 9, value == Dani → Some(Dani)
+```
+
+El id viejo **no encuentra nada**; no cae sobre Dani. El error dejó de ser silencioso: se convierte en un `None` que el código puede manejar (el cap. 8 añade la costumbre de `get_* -> Option`, y el cap. 4 el BFS descubre que un visitante ya no existe). Y la arista `(0,1)` del ejemplo ingenua, tras el borrado, da `None` en vez de un falso «Carlos» o un falso «Dani».
+
+Ese es el salto de calidad que este capítulo anuncia y que el código ancla promete: **`NodeId = usize` se convierte en `(slot, generation)`** — y como el cap. 7 guardó los alias `NodeId`/`EdgeId` en un único `type alias`, migrar tocará un punto, no cien.
+
+## 3.7 Por qué así y no de otra forma
+
+1. **¿Por qué `(slot, generation)` y no un UUID por nodo?** Porque LiraDB quiere ids *contiguos y O(1)*: el slot da el acceso directo al array; la generación añade una comparación de u32. Un UUID (16-28 bytes) sería estable pero *no adyacente*, y tendrías que buscarlo en un `HashMap` por cada acceso. Coste del UUID: memoria y hashing en cada lectura. Elegimos el par (slot, gen): casi gratis y estable.
+
+   — Entonces, ¿cuándo usaría alguien un UUID? Cuando la identidad debe ser **global** (otra máquina puede nombrarla sin coordinación), lo que LiraDB no necesita en su núcleo. Más adelante (import/export, cap. 32) sí aparecerán *claves externas* — pero esas son *datos*, no identidad interna.
+
+2. **¿Por qué no validar con un solo contador global de generaciones?** Porque acoplarías todos los slots a la misma era: bastaría que *un* slot se reciclara para que la «era mundial» suba y **invalide referencias perfectamente válidas a otros slots**. La generación tiene que ser POR slot, para que liberar una casilla no dañe a las demás. Es la diferencia entre aislar y tiranizar.
+
+3. **¿Por qué el id nunca se re-reutiliza a sí mismo, aunque el slot sí?** Porque reutilizar el *slot físico* es deseable (ahorro de memoria: no hacerla crecer sin límite); lo que se prohíbe es reutilizar el *id lógico*. La generación es el contrato que nos permite quedarnos con la ventaja (compactación de slots) y descartar el peligro (id-reuse). Por eso el cap. 8 dirá: *«los tombstones (`None`) dejan huecos que nunca se reutilizan; en producción, los ids generacionales y los slots reciclables con número de generación lo resolverían»*.
+
+4. **¿Por qué `u32` y no `u64` o `u16` para la generación?** Por la misma regla que ya conocemos: el contador tiene que ser lo bastante grande para no volver a cero mientras el slot viva, y lo bastante pequeño para no malgastar bytes. Un `u32` da 4 mil millones de reciclados por slot — a un ritmo de 1000 borrados por segundo, son 50 días de vida útil; a un ritmo humano (unos pocos borrados por minuto cuando el grafo está en reposo), son siglos. Un `u16` (65 535) se queda corto: una noche de pruebas intensivas lo desbordaría y haría fallar la comparación de generación sin motivo aparente. Un `u64` no aporta nada útil a cambio de 4 bytes extra por slot, que se vuelve molesto cuando el slot guarda enteros pequeños. **`u32` es el equilibrio clásico**, y es el que `slotmap` adoptó por defecto; LiraDB heredará esa elección.
+
+5. **¿Por qué no almacenamos la generación como sello global?** Porque entonces todos los ids nacerían en un mismo instante y morirían en el mismo: cualquier borrado de cualquier elemento sube el reloj y obliga a invalidar todas las referencias pendientes. Una sola escritura remota mal sincronizada (p.ej. una arista de un WAL a medio loguear) cascadearía en un «apunta a nada» para todos los nodos del grafo. La generación **por slot** es la partícula mínima de contabilidad necesaria: cada hueco lleva su propio reloj, independiente, y aislar es la única forma de tener un sistema estable por construcción.
+
+## 3.8 La trampa maestra: el problema ABA
+
+Si algo debes llevarte de este capítulo, es el nombre y la cara del enemigo: el **problema ABA**, la forma canónica del id-reuse, conocido de sobra en programación concurrente (Herlihy et al., *The Art of Multiprocessor Programming*, cap. 10).
+
+- **A** es un slot con valor.
+- **B**: el valor se borra; el slot queda libre.
+- **A** (otra vez): un valor nuevo ocupa el slot.
+
+Si una referencia «vio» el slot durante B y «vuelve» después del segundo A, cree que está hablando con el mismo de antes — porque solo miraba el lugar, y el lugar devuelve un valor. Es el mismo nombre, otra cara. En un *lock-free stack*, el ABA hace que una operación *compare-and-swap* sobre «el mismo puntero» cambie un nodo reinsertado y corrompa la estructura; en un grafo, hace que una arista apunte al recién llegado.
+
+La generación es el antídoto clásico: no comparas *solo* el slot (A→B→A parece el mismo), comparas **`(slot, generation)`**, y la generación cambió entre el primer A y el segundo. El «mismo» deja de ser el mismo. Esa es, palabra por palabra, la razón por la que se habla de «A-B-A» cuando se explica por qué los índices desnudos son traicioneros.
+
+## 3.9 Claves surrogate vs naturales (o «por qué el email no es el id»)
+
+Una vez separas **identidad de dato**, una decisión de diseño aparece sola: ¿qué uso como id, una clave natural (que es un dato) o una clave surrogate (que invento)? LiraDB elige **surrogate**: un id sintético, inmutable, sin significado intrínseco, generado por la arena.
+
+La clave natural — el `email`, el `nombre`, el `DNI`, el valor que «se lee solo» — es un **dato**: mutable, cambiante, y no tuyo para congelar. El día que un usuario cambia su email, todas las referencias que usaban el email como clave de enlace (las aristas «amistad», las notas «quién lo conoce») se rompen, porque el dato dejó de ser lo que era. En una BBDD relacional, cambiar una clave natural foránea obliga a cascadas de actualización o deja huérfanos; en un grafo, huérfanos significa aristas que apuntan al vacío (Kleppmann, *Designing Data-Intensive Applications*, cap. 3, y la convención clásica del diseño relacional).
+
+La clave surrogate — el id de la arena — vale por lo que NO dice: no significa nada del mundo real, y por eso **nada del mundo real puede cambiarla.** Un id no es «el email de Ana»; es «el expediente 0». Si Ana cambia de email, el `0` no se inmuta; la arista `(0, ...)` sigue refiriendo al mismo elemento, y solo actualizas el dato `props["email"]`. Esa es la sabiduría del capítulo: **cuando el id no puede cambiar, las referencias no pueden romperse por un dato mutable.**
+
+Y no es un detalle teórico: si guardas `email` como clave única en una tabla relacional y tu usuario cambia de dirección, tu `UPDATE` debe recorrer TODAS las tablas donde `email` aparece como foreign key. Un día que se te olvide una, esa foreign key queda colgando de la dirección vieja — el equivalente exacto de nuestra arista que apunta al nodo equivocado. Las BBDD serias evitan esto desde hace décadas; LiraDB lo aplica al grafo desde la primera línea. Un buen test para saber si una columna es un id o un dato: **pregúntate «¿qué pasa si el usuario lo cambia?».** Si la respuesta es «algo se rompe», no era un id; era un dato. Si la respuesta es «solo se actualiza un valor», sí era un id.
+
+## 3.10 Estabilidad después de un crash (la promesa que dejamos anclada)
+
+El CORPUS pregunta por la **estabilidad de los IDs tras crash + recovery** — y esta es la promesa que este capítulo coloca y que los caps. 28-30 (WAL y recuperación) harán cierta. El ingrediente que aporta la generación es doble:
+
+1. **El id no cambia mientras el elemento existe.** Por mucho que un `MemoryStore` se reabra, el slot y la generación de un elemento vivo se conservan; el id lógico sigue siendo el mismo. (En el disco, la cámara de bytes — caps. 9-11 — persistirá el par `(slot, generation)` junto al dato.)
+2. **Un id liberado jamás se reasigna.** Tras un crash, podría darse la tentación de «renumerar desde cero» (más limpio, más compacto). LiraDB no lo hará: re-numerar invalidaría las referencias externas que alguien guardó antes del crash. Con generaciones, un id viejo sencillamente «ya no existe» — y eso es un estado *detectable*, no una corrupción.
+
+No lo implementamos aquí — es material de la Parte VI. Pero conviene quedarse con la ecuación mental: **generación = la vacuna contra que un crash «reutilice» una identidad por accidente.** Cuando en el cap. 28 escribas el WAL y en el 29 recuperes un fichero, recordarás que cada id era un `(slot, generation)` y que re-numerar habría sido perder todo lo que este capítulo protege.
+
+Y para que la promesa no quede en intenciones, vamos a firmarla en términos que cualquier capítulo posterior pueda verificar:
+
+- El id se **escribe** en el WAL junto al `before` y `after` de la operación (cap. 28).
+- El id se **recupera** del disco leyendo exactamente los mismos bytes (`slot`, `generation`, `value`) que estaban antes del fallo (cap. 29).
+- El id se **compara** con la regla `slots[id.slot].generation == id.generation` cada vez que se intenta resolverlo — incluso después de un recovery, no solo durante la ejecución normal.
+- Si una herramienta externa (un índice secundario, un fichero de exportación) guarda un id, ese id sigue siendo válido después de un crash + recovery, mientras el elemento siga vivo. La condición es: la generación nunca se reinicia globalmente; solo se incrementa, y solo por slot. Cualquier esquema que reinicie generaciones a 0 al arrancar está rompiendo la promesa que este capítulo firma.
+
+## 3.11 Ojo, cuidado con…
+
+1. **Tratar el índice como nombre estable.** El síntoma clásico es una variable `let j = i;` que «recuerda» a `i` y luego usa `grafo[j]` esperando el mismo de antes. Cuando algo se borra o se reordena, `j` ya no es lo que era. Pregúntate siempre: ¿este número es *a quién* (id) o *dónde* (posición)?
+2. **Compactar y re-numerar para «quitar huecos».** Compactar el almacenamiento *físico* está bien (cap. 16) SI conservas la identidad lógica. Lo que no se puede hacer es «reordenar y renumerar los ids», porque reescribes todas las referencias a la vez. La compactación de LiraDB reordena; no re-numera.
+3. **Usar una clave natural como id.** Cambias el email y rompes las amistades. La clave natural vive en `props`; el id es la clave surrogate.
+4. **Reutilizar el slot sin generación.** Rellenar un hueco físico ahorra memoria; hacerlo *sin* subir la generación es exactamente el bug ABA. Quieres las dos cosas: slot reciclado, id quemado.
+5. **Confundir «reutilizar el slot» con «reutilizar el id».** Reusar el slot sin quemar el id es la definición exacta de ABA. La generación es lo que separa el ahorro legítimo del bug silencioso.
+6. **Pensar que el id puede «nacer antes de tiempo».** Un error sutil: asignar ids cuando un objeto aún no existe (por ejemplo, en una caché especulativa). El id debe entregarse en el mismo momento que el elemento entra en la arena; si lo entregas antes, te has comprometido con un slot que luego puede reciclarse y le has mentido a quien lo recibió. La regla de oro: **el id y el primer valor del slot nacen juntos** — `insert()` devuelve `(slot, generation)` *después* de poblar el slot; nunca antes.
+
+- **Glosario**: **identidad** (el «quién» estable) vs **valor/dato** (el «qué» mutable); **índice** (posición física) vs **id** (nombre lógico); **slot** (casilla) vs **elemento** (lo que vive en ella); **tombstone** (`None`, hueco enterrado); **generación / era** (cuántas veces se liberó la casilla); **ABA problem**; **surrogate key / natural key**; **dangling pointer** (puntero que quedó colgando); **id-reuse**.
+
+## 3.12 Lo que te llevas
+
+- **Un id no es una posición.** El índice depende del orden físico y se corrompe al borrar, reordenar o reinsertar (corrimiento o reciclaje).
+- **Un id ESTABLE es un nombre lógico** que no cambia mientras el elemento existe, y cuya liberación no lo reasigna a otro.
+- **La era generacional** (`(slot, generation)`) compra esa estabilidad por menos de un contador por slot: cada borrado sube la generación, y un id viejo «apunta a nada» en vez de a un dato equivocado (antídoto del problema ABA).
+- **Claves surrogate, no naturales:** el id no significa nada del mundo real para que el mundo real no pueda cambiarlo; el email va a `props`, no a la identidad.
+- **Estabilidad tras crash = no renumerar nunca:** la generación es la garantía de que un crash no reutilice una identidad por accidente (confirmado en caps. 28-30).
+
+## 3.13 Una historia pequeña
+
+Cuando escribimos el `cap07_modelo.rs`, hicimos trampa con buena conciencia: `pub type NodeId = usize`, y un comentario honrado — *«se sustituirán por IDs generacionales (slotmap)»*. Al principio parecía suficiente. Ana escribió el primer test del `MemoryStore` (cap. 8): tres nodos, dos aristas, todo el mundo a su sitio. El test pasó a la primera. Luego escribió un segundo test, más realista: borrar un nodo y reinsertar otro en el hueco. Y al ejecutar el invariante — «la arista `0 → 1` debe seguir apuntando al nodo 1 original» — el test pasó también, porque casualmente el nodo reinsertado tenía los mismos datos que el borrado. La lección que nos dio ese «pasa-verde» no es que el código estuviera bien: es que **los tests con datos felices no descubren bugs de identidad**. Tuvimos que añadir `assert_ne!(vecinos_de_cero, [nuevo])` para forzar al código a fracasar. Fracasó. Y entonces entendimos que la identidad no es un campo que se rellena: es la **promesa** de que las referencias sigan siendo válidas para siempre — y esa promesa se compra con una generación por slot, no con datos coincidentes.
+
+Es la misma razón por la que ningún test que solo verifique «las props del nodo son las que escribí» atrapará el bug ABA. La identidad se prueba con **referencias cruzadas**: «esta arista debe seguir apuntando al elemento que apuntaba antes; aunque ese elemento sea exactamente igual a otro, no es el mismo». Es un test incómodo de escribir, y por eso casi nadie lo hace — y por eso esta clase de bugs sobreviven hasta producción.
+
+## 3.14 Ejercicios resueltos
+
+**1. ¿Por qué una arista de un grafo es tan sensible al id-reuse?**
+
+Porque una arista *es* una pareja de referencias: `(source, target)`. Si `target = 1` era «Bo» y, tras borrar y reinsertar, el `1` ahora es «Dani», la arista dice «Ana conoce a Dani» sin que ninguna línea de código se entere. No es un crash, no es un `None`: es la **corrupción silenciosa** más peligrosa, porque pasa las validaciones (el nodo existe) y solo falla el *semántico* (es el equivocado). Por eso el `MemoryStore` del cap. 8 usa tombstones (`None`) — sin re-numerar — y por eso LiraDB añadirá la generación para permitir reutilizar el slot físico sin reutilizar la identidad.
+
+**2. ¿Qué cambia exactamente cuando borro `(slot, generation)` y por qué se dice que «las generaciones no reutilizan ids»?**
+
+Al borrar, pongo `value = None`, añado el slot a `free` y **incremento `generation`**. Mañana, al reinsertar un elemento en ese slot, la generación ya **no es la de antes** (subió al liberar, y quizá de nuevo al ocupar). Cualquier id `(slot, gen_antigua)` que alguien conservara falla la comprobación `generation` y devuelve `None`. Así, el *slot* se reutiliza (ahorro de memoria) pero el *id lógico* jamás se recicla: el sistema es capaz de distinguir «la v4 de este slot» de «la v7». Esto es justo lo que el test de `buscar((1, 7))` del §3.6 demuestra con números.
+
+## 3.15 Ejercicios propuestos
+
+**Esencial (recordar — retrieval).** Sin mirar el capítulo, escribe de memoria la definición de *id estable* frente a *índice*, y el mecanismo generacional completo: qué es `(slot, generation)`, qué hace un borrado (borrar + incrementar generación) y qué devuelve un id viejo al buscar (nada). Criterio: tus tres afirmaciones cubren que (1) el id es un nombre inmutable, (2) un borrado sube la generación del slot, y (3) un id con generación vieja «apunta a nada» en vez de al dato recién insertado. Verifica contra §3.6 y §3.8.
+
+**Intermedio (interleaving — referencias/punteros).** En C, `int *p = &arr[i];` y luego «compactar» o redimensionar `arr` deja a `p` **colgando** (dangling pointer): apunta a una dirección que ya no es `arr[i]`, o que ahora es otro elemento. Explica cómo la generación de LiraDB es el análogo seguro de ese puntero colgante: ¿qué sustituye a la «dirección de memoria» en el id `(slot, generation)`? ¿qué hace la comprobación de generación que el puntero de C no tiene? Pistas: (1) el puntero de C guarda solo la dirección; el id guarda *dos* números (slot y generación); (2) al compactar en C, `&arr[i]` ya no es válido pero C no lo sabe; en LiraDB, ¿qué «lo sabe»?; (3) ¿en qué se parecen «dirección reciclada» (C) a «slot reciclado sin generación» (el bug ABA)? Criterio: relacionas *dangling pointer* con *generación quemada* y explicas que ambos son el mismo problema de identidad estable.
+
+**Experto (crear / analizar).** Simula en un snippet el doble escenario: (a) un `Arena` con `Vec<Option<T>>` SIN generación donde insertas, borras y reinsertas en el mismo slot — observa cómo una variable `id = slot` señala ahora al recién llegado; (b) el mismo `Arena` con `(T, generation)` — observa cómo `buscar((slot, gen_vieja))` devuelve `None` mientras `buscar((slot, gen_actual))` devuelve el dato. Criterio: tu test comprueba que sin generación el id antiguo «apunta al recién llegado» (ABA) y con generación «apunta a nada».
+
+## Para profundizar
+
+- **El crate `slotmap`** (Rust) — la implementación de referencia de *generational arenas*: lee su doc para ver la forma real `(slot, generation)` y cómo expone `get`, `insert`, `remove` y el contador de versiones. Es la semilla del futuro tipo de id de LiraDB.
+- **Generational arenas en motores ECS** (p.ej. `bevy_ecs` / `legion`) — el mismo patrón usado para referencias estables a entidades en juegos; la literatura de *generational indexing* como forma de evitar el id-reuse en sistemas donde los objetos nacen y mueren por frame. La motivación es idéntica: cada sistema quiere que el id de una entidad siga siendo válido mientras esa entidad exista.
+- **El problema ABA en concurrencia** (Herlihy, Shavit, *The Art of Multiprocessor Programming*, cap. 10) — la forma canónica del id-reuse y por qué los algoritmos sin bloqueos lo evitan con versiones (`versioned CAS`). Aunque nosotros no usamos concurrencia lock-free todavía, la misma idea de comparar *dirección + versión* es lo que aquí se traduce a *slot + generación*.
+- **Surrogate vs natural keys en diseño de BBDD** (Kleppmann, *Designing Data-Intensive Applications*, cap. 3) — la regla clásica «el id no debe depender del dominio» y por qué las claves sintéticas estables (UUIDs, enteros autoincrement, hashes) son la costumbre en sistemas reales.
+- **Database Internals** (Alex Petrov), caps. 2-3 — layouts de página y *generational storage*; explica por qué la idea de generación reaparece en *log-structured merge trees* y *copy-on-write B-trees*: a otro nivel (páginas en vez de slots), el problema es el mismo.
+- **Weak references en sistemas GC** (patrones de Java `WeakReference`, CPython, Rust `Weak<T>`) — la otra cara de la moneda: referencias que *deliberadamente* quieren caducar. Un `WeakRef` en una arena generacional detecta exactamente la misma «caducidad» que el `None` del cap. 8 — pero para objetos compartidos, no para ids. Buen puente mental entre el mundo de las identidades estables y el de la memoria gestionada.
+- Dentro del libro: **cap. 7** (por qué `usize` hoy y la nota de `slotmap` que este cap. cumple), **cap. 8** (los tombstones `Vec<Option<T>>` a los que coloca la generación), **cap. 14** (CSR/segmentos, donde la posición física y el id lógico vuelven a separarse), **cap. 16** (compactación real que reordena el almacenamiento físico sin re-numerar identidades), **caps. 28-30** (la «estabilidad tras crash» que este cap. promete), y en el Vol.I **cap. 2** (la representación como «dónde físico»).
+
+## Mini-diálogo: en guardia nocturna
+
+> — Venga, ¿de verdad es para tanto un número? Es un `usize`, son cuatro líneas.
+>
+> — Ese `usize` es la diferencia entre una referencia y un accidente. Borras un nodo del medio y, si el id es la posición, la arista que «recordaba» el 1 ahora saluda a otro. Sin error, sin aviso: corrupción silenciosa.
+>
+> — Pero el `Vec<Option<T>>` del cap. 8 ya deja los huecos...
+>
+> — Sí, el tombstone evita el *corrimiento*: borrar el 2 no mueve a los demás. Pero si mañana reinsertas y el hueco se vuelve a llenar, el índice viejo apunta al recién llegado. Eso es el bug de ABA en persona. La generación sube al liberar: el id viejo sigue siendo el mismo número, pero *quemado* — ya no encuentra nada.
+>
+> — O sea, que para que el BFS del cap. 4 pueda guardar ids sin miedo...
+>
+> — Exacto. La identidad se vuelve un nombre que no cambia mientras el elemento vive, y que al morir no lo hereda nadie. Con eso, una cola puede guardar un id, un `GraphStore` puede referirlo, un WAL puede loguearlo sin miedo a que recicle. Todo el resto del motor cuelga de esta promesa.
+
+---
+
+*(Próximo capítulo: 4 — El primer recorrido: búsqueda en anchura (BFS). Aquí la identidad era estable como idea; ahora verás un algoritmo que LA RECORRE — que guarda ids en una cola y en un conjunto de visitados, asumiendo que un id estable no cambiará a mitad del cruce del grafo. BFS sobre el grafo con ids estables es la primera prueba de que la identidad que definimos aguanta ser utilizada.)*
+# Capítulo 4 — El primer recorrido: búsqueda en anchura (BFS)
+
+> *«"Existe un camino" es la pregunta más barata que una base de datos de grafos puede responder bien — y la más cara que responde mal.»*
+
+> **Convenio de volumen (Apéndice 0 §0.6)**: la teoría algorítmica de BFS ya se publicó en el **Vol. I**. Este capítulo del **Vol. II** no la re-explica: la **reorienta**. Aquí BFS no es un ejercicio de pizarra; es **la operación fundamental que el motor de una base de datos de grafos debe soportar**, y el cimiento de la cercanía (`closeness`, cap. 24) y del "menor número de saltos" que responde toda consulta de alcanzabilidad. Lo que aquí es una **idea**, `liradb-workspace` lo ejecuta por **fábrica** en los caps. 24 y 26. Al que ya "se sabe" BFS este capítulo le da el *para qué de un motor*; al novato le da el modelo mental correcto antes de tocar una sola línea del trait `GraphStore` (cap. 8).
+
+## 4.0 La anécdota de la esquina
+
+En 1967, el sociólogo **Stanley Milgram** envió 296 cartas por Estados Unidos con una única regla: pasar el sobre a un desconocido de Boston **solo a través de alguien conocido por su nombre de pila**. Nadie esperaba el resultado: la mayoría llegó en **menos de seis entregas**. De esa cadena nació la idea de los **seis grados de separación** — y, décadas después, la pregunta que Facebook y LinkedIn convirtieron en negocio: *"¿a cuántos saltos está Ana de Zoe?"*.
+
+Años antes, en los años 50, la cosa era más modesta y más concreta. Ingenieros como **Edward F. Moore** se preguntaban cómo un robot podía salir de un **laberinto** sin dar vueltas inútiles. Y en 1959, **Edsger Dijkstra** publicó un algoritmo para el trayecto más corto en redes con distancias reales. La clave de todos era la misma: **no te lances a explorar hasta el fondo; déjate avanzar en olas, nivel a nivel, desde el origen.** Ese "avanzar en olas" es la **búsqueda en anchura** (Breadth-First Search, BFS). Y aunque nació en los laberintos y las redes sociales, las bases de datos de grafos modernas la han convertido en el corazón de su motor. Este capítulo te explica esa ola.
+
+## 4.1 Objetivo
+
+Al terminar este capítulo sabrás **por qué un motor de grafos responde "¿existe un camino entre A y B?" sin pestañear**, y entenderás el mecanismo exacto: el recorrido **por niveles** con su **cola FIFO** y su regla de **visita**. Tres ideas:
+
+1. La **frontera** — los nodos a exactamente *k* saltos del origen, la "ola" que se expande.
+2. La **cola FIFO** — la estructura que encola los nodos para que la expansión respete el orden de los niveles.
+3. La **complejidad O(V+E)** — por qué cuesta tan poco y por qué una marca de visita es lo que hace que termine.
+
+Y un rumbo: este BFS es el mismo que la **centralidad de cercanía** del cap. 24 (`closeness_centrality`) y el **BFS por fronteras / streaming** del cap. 26 (`bfs_fronteras`, `bfs_streaming`) ejecutan sobre el trait `GraphStore` del cap. 8. Aquí lo ves como idea; allí lo ejecutas como corazón del motor.
+
+## 4.2 Problema
+
+Imagina que LiraDB (todavía conceptual — el modelo del cap. 7 y la API del cap. 8 están por venir) recibe una consulta cotidiana:
+
+> **"¿Está Zoe conectada con Ana, y a cuántos saltos?"**
+
+En una red social real, Ana y Zoe no se conocen, pero comparten una amiga, y esa amiga conoce a Zoe. La respuesta no es un simple "No"/"Sí": es "sí, a **2** saltos". El "a cuántos" es tan importante como el "Sí": es la semilla de la **cercanía**, del **camino más corto**, de "amigos de amigos".
+
+La trampa: una BBDD **relacional** (SQL) responde "amigos de amigos" con un **join** — emparejar usuarios y volver a emparejar. A 2 saltos ya es un producto cruzado costoso; a 6 es una pesadilla combinatoria (los "seis grados" de Milgram). La pregunta en esencia es **recorrer el grafo desde Ana**: visitar sus amigos, luego los amigos de sus amigos, y ver cuándo aparece Zoe. Ese recorrido es **BFS**, y es lo que un motor de grafos hace **nativamente**, sin joins, en tiempo que no explota. El reto, pues, no es "si" se puede recorrer — es **recorrer con orden y conteo**: garantizar el **camino más corto** y saber a qué nivel.
+
+## 4.3 Modelo mental
+
+Deja caer una **piedra en un estanque**:
+
+- La piedra es el **origen** (Ana).
+- Las **olas** que se expanden son los **niveles**: ola 1 = amigos de Ana
+  (nivel 1), ola 2 = amigos de esos amigos (nivel 2), etc.
+- La **frontera** es la **ola actual**: nodos a exactamente *k* saltos.
+- **Cada nodo se descubre una sola vez**, cuando la ola lo toca por
+  primera vez — y *esa* es, por construcción, su distancia mínima.
+
+La **cola FIFO** es el "muelle" donde se amontonan los nodos de la ola
+actual para sacarlos en el orden en que llegaron (= orden de nivel).
+
+```
+            ·            ← nivel 2 (ola lejana)
+         ·   ·
+       ·   F   ·         ← nivel 1 (la FRONTERA = ola media)
+       ·  [·]  ·             [·] = origen (nivel 0)
+       ·   ·   ·         ← · = nodos ya descubiertos
+         ·   ·
+            ·
+  ONDA: nivel 0:[origen]  nivel 1:[v1,v2]  nivel 2:[v3,v4,v5,v6]
+  Cola FIFO: origen → v1,v2 → v3,v4,v5,v6 → ...
+  Regla: descubro un nodo UNA vez, y eso fija su nivel mínimo.
+```
+
+**La distancia sale sola.** Como los niveles se expanden en orden,
+cuando la ola toca a Zoe en el nivel 2 ninguna ola anterior pudo
+alcanzarla por menos: si hubiera un camino de 1 salto, la ola del nivel
+1 la habría tocado antes. Descubrir en *k* **es** estar a *k* saltos —
+la estructura de olas lo **garantiza**. El que avanza en olas no se
+pierde en el laberinto — barre por distancia y nunca vuelve atrás en
+círculos, porque ya marcó lo visitado.
+
+**El momento ¡ajá!**: *descubrir un nodo en el nivel k es, por
+construcción, estar a k saltos del origen.* No hace falta comparar
+rutas: la ola ya trae la respuesta.
+
+## 4.4 Primera solución
+
+El recorrido más natural de un novato: **"recorrer por orden de aparición"** — miras los vecinos según van saliendo, sin cola explícita ni marca de nivel:
+
+```
+recorrido ingenuo(nodo origen):
+    vistos = conjunto vacío
+    lista  = [origen]
+    mientras haya por expandir:
+        v = siguiente nodo de lista
+        si v no está en vistos:
+            añade v a vistos
+            para cada vecino w de v:
+                añade w a lista          # "a ver cuándo llego"
+    devuelve lista
+```
+
+Funciona para la existencia: acabas visitando *todos* los nodos alcanzables desde Ana. Los tests mentales pasan. Zoe aparece en la lista — en algún lugar. Un novato razonable diría "listo, la encontré".
+
+## 4.5 Sus límites
+
+Y entonces llega la pregunta incómoda:
+
+> **"Ya la encontré. Pero... ¿a cuántos saltos está Zoe de Ana?"**
+
+La respuesta del recorrido ingenuo es basura: te devuelve la **lista completa sin orden por distancia**. No sabes si Zoe está a 1 salto o a 5; el orden depende del accidente del layout, no de la distancia.
+
+En un grafo **con ciclos** (casi siempre los hay), el `si v no está en vistos` salva *parcialmente* al recorrido, pero no le da **cuántos** saltos: no se guarda el nivel. Lo que esta versión rompe exactamente:
+
+- **"¿a qué distancia?"** → no hay niveles;
+- **"¿quién está en el nivel 2?"** → lista sin capas;
+- **"¿amigos de amigos en ≤ k saltos?"** → imposible sin la profundidad.
+
+Necesitamos la **evolución**: cola FIFO + marca de nivel.
+
+## 4.6 Solución evolucionada
+
+La solución tiene dos piezas, y cada una arregla exactamente un límite.
+
+**Pieza 1 — La cola FIFO.** En vez de "siguiente nodo de la lista" a lo bruto, sacamos _el más antiguo_ (primero en entrar, primero en salir). Mételos por el final y sácalos por el principio. Esto fuerza que **se acaben de expandir todos los del nivel *k* antes de tocar los del *k+1***, porque los del nivel *k* entraron antes. Esa propiedad convierte "recorrer" en "recorrer **por niveles**".
+
+**Pieza 2 — La distancia por nivel.** Cada nodo, al ser descubierto, recibe su nivel: `distancia[vecino] = distancia[padre] + 1`. Como el descubrimiento es por olas, esa distancia es la **mínima**. Alternativamente (más compacto) una "frontera" como lista por nivel — `niveles[0] = [Ana]`, `niveles[1] = amigos`, `niveles[2] = amigos de amigos`, etc. — exactamente lo que verás como `RecorridoBfs { niveles: Vec<Vec<NodeId>> }` en el cap. 26.
+
+**Regla de visita — el secreto de que termine.** Marcamos cada nodo como visitado **en el momento de descubrirlo (al encolarlo), no al sacarlo**. Si lo marcaras al sacar, el mismo nodo del nivel *k* entraría a la cola *k* veces (una por cada vecino que lo descubra), rompiendo niveles y duplicando trabajo. Al marcar "al descubrir", cada nodo entra a la cola exactamente una vez, sus vecinos se expanden una sola vez, y el algoritmo **termina** en O(V+E) aun con ciclos.
+
+```
+BFS por niveles (frontera a frontera):
+    dist[Ana] = 0 ; encola(Ana) , marca(Ana)
+    frontera_actual = [Ana]
+    mientras frontera_actual no vacía:
+        siguiente = []
+        para cada v en frontera_actual:
+            para cada vecino w de v:
+                si w NO está marcado:
+                    dist[w] = dist[v] + 1
+                    marca(w); siguiente.push(w)
+        frontera_actual = siguiente
+    # niveles[0]=[Ana], niveles[1]=amigos, ..., dist[k] = nivel
+```
+
+Observa la belleza de la variante "por fronteras": no necesitas pila explícita ni descolar; la lista `siguiente` **es** la siguiente ola. Esa misma separación por olas es la que el cap. 26 explota para leer **solo** las adyacencias de la frontera actual (streaming), sin tocar el grafo entero.
+
+## 4.7 Código completo ejecutable
+
+Este capítulo es **conceptual**: no construye aún el motor (eso empieza con el `GraphStore` del cap. 8). Pero el BFS de este capítulo **sí está escrito en el workspace**, en los caps. que lo ejecutan por fábrica. Ancla los nombres para que, al llegarlos, reconozcas el mismo algoritmo:
+
+**En `liradb-workspace/crates/vol2-liradb/src/cap26_proyeccion.rs`** (el BFS por niveles sobre el store del cap. 26):
+
+- `RecorridoBfs { niveles: Vec<Vec<NodeId>> }` con la doc: *"Frontera a
+  frontera: `niveles[k]` = nodos descubiertos a k saltos"* — justo la
+  `frontera_actual` / `siguiente` de §4.6.
+- `bfs_fronteras` / `bfs_streaming` — el iterador **perezoso** que pide
+  una frontera, produce la siguiente y lee del store bajo demanda. Ese
+  "99,9% de lo leído no se va a usar" que evita el cap. 26 es,
+  literalmente, la ola: no expandimos el estanque entero, solo la
+  frontera.
+- `visitado: BitSet` — la marca de visita de §4.6 hecha bitset.
+- `StreamStats { nodos_visitados, aristas_leidas, ... }` — la prueba
+  medible de que O(V+E) no es un eslogan: cuenta cada lectura.
+
+**En `.../src/cap24_centralidad.rs`**: `closeness_centrality` (Freeman
+con corrección **Wasserman-Faust** para componentes desconectadas) hace
+*"un BFS por nivel sobre la proyección NO ponderada (distancias =
+saltos)"* — por cada origen, un BFS como el tuyo, y suma las distancias.
+Su `O(V·(V+E))` anotado es "V veces nuestro O(V+E)".
+
+En ambos, el patrón es el de este capítulo: **cola / fronteras + visita
++ nivel**. No los caces línea por línea todavía; basta con que, cuando
+los veas, reconozcas la ola que aprendiste aquí.
+
+## 4.8 Prueba de fuego
+
+La prueba de fuego es **conceptual y cruzada**:
+
+1. **A mano**: dibuja un grafo pequeño, ejecuta BFS con papel y lápiz (el ejercicio `recordar` del final), y comprueba que tu orden de descubrimiento por niveles coincide con la cola FIFO "de libro". Es la misma verificación que hará el cap. 26 al comparar contra sus `niveles` ordenados por id (determinismo).
+2. **En el workspace**: reconoce tu algoritmo en `closeness_centrality(&s, GraphDirection::Both)` del cap. 24 — para el camino `0-1-2-3` devuelve `0.75` para el centro y `0.5` para los extremos: justo lo que predice "el centro está a menos saltos de todos". Y en `bfs_fronteras(&s, 0, GraphDirection::Out, Presupuesto::profundidad(1))` → `Some(vec![0])`: la frontera 0 es el origen, nada más se lee.
+
+**¿Qué fallaría si te saltaras este capítulo?** Frente al código del cap. 26, no sabrías qué es `niveles[k]` ni por qué la frontera se ordena por id (determinismo); frente al cap. 24, la centralidad te olería a "suma mágica" en lugar de a "un BFS por nodo". El síntoma detectable: un muro de `Vec<NodeId>` y `u32` sin el ojo que ve la ola de Ana.
+
+## 4.9 Qué hemos sacrificado
+
+Tres concesiones:
+
+1. **No soporta pesos de arista.** Cada arista "vale 1 salto". Si tu red son carreteras con kilómetros o vuelos con precio, "2 saltos" no es "2 km". Ese es el territorio de **Dijkstra** (cap. 22); BFS es el caso con pesos 1.
+2. **Guarda todo lo visitado.** Para no repetir, lleva un conjunto de visitados y, en la variante de cola, la distancia. En grafos enormes eso es memoria; el cap. 26 lo vuelve perezoso (solo retiene la frontera) con sus presupuestos y un `BitSet`.
+3. **No te dice el camino completo.** BFS ordena descubrimientos pero no reconstruye él solito la ruta exacta (eso requiere guardar el predecesor). Para el *menor número de saltos* basta la distancia.
+
+## 4.10 Cómo lo hace una BBDD real
+
+En un GDBMS, BFS **es** la unidad de consulta. "¿Existe un camino entre A y B?" (y "¿a cuántos saltos?") es LA pregunta que justifica existir a una base de datos de grafos frente a un SGBD relacional: donde SQL paga un self-join producto-cruzado (O(n²) o peor en tablas grandes), el motor de grafos hace **un BFS en O(V+E)** sobre sus adyacencias compactas (CSR, cap. 14). El tipo de almacenamiento cambia el *coste de la lectura de vecinos*, no la estructura de olas — eso responde la pregunta crítica de `CORPUS.yml`: *BFS sobre CSR vs sobre HashMap de listas* es **el mismo BFS**; cambia `adyacencia` (contigüidad y caché en CSR, dispersión por llaves en un hash), **no** el orden de niveles.
+
+Herramientas maduras:
+
+- **Neo4j**: `MATCH (a)-[*1..2]-(z) RETURN count(*)` va por caminos de a
+  lo más 2 saltos; a veces guía búsquedas bidireccionales por anchura.
+- **TigerGraph / Memgraph**: BFS y "menor número de saltos" son funciones
+  de primer nivel de su lenguaje de consulta.
+- **Facebook/Instagram**: "¿quién está a 1/2/3 saltos?" alimenta motores
+  de grafos que recorren en anchura el grafo social bajo demanda.
+
+El BFS que aquí es una ola es, allí, una consulta de milisegundos.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: por qué `bfs_fronteras(&s, 0, GraphDirection::Out,
+  Presupuesto::profundidad(1))` no lee más allá de la frontera 0 (cap. 26).
+- *Intermedio*: si usaras **pila** (DFS) en vez de cola, ¿seguiría
+  garantizando "2 saltos"? ¿por qué?
+- *Experto*: diseña en palabras un BFS **bidireccional** (ola desde Ana
+  y desde Zoe a la vez) y justifica por qué puede ser más barato en
+  grafos enormes que un BFS desde un solo lado.
+
+## 4.11 Lo que te llevas
+
+- **La frontera es la ola actual**: nodos a exactamente *k* saltos. Se expande toda; su vecindad no visitada es la siguiente ola.
+- **La cola FIFO materializa el orden por nivel**: saca primero lo más antiguo; jamás expandes el nivel *k+1* antes de acabar el *k*.
+- **La visita es la que hace terminar**: marcar al descubrir (no al sacar) garantiza que cada nodo entra a la cola una vez → O(V+E) en grafos cíclicos.
+- **BFS = "camino más corto" cuando cada arista vale 1.** Con pesos, es Dijkstra (cap. 22); con profundidad, es DFS (cap. 5).
+- **Alcanzabilidad en un origen cuesta O(V+E)**, no comparar V² pares: la promesa del motor de grafos frente al join relacional.
+- **Lo que aquí es idea, allí es el corazón**: `closeness_centrality` (cap. 24) y `bfs_fronteras` / `bfs_streaming` (cap. 26) ejecutan ESTE BFS sobre el `GraphStore` del cap. 8.
+
+## 4.12 Ojo, cuidado con…
+
+- **Marcar la visita al SACAR, no al DESCUBRIR.** Error nº 1: el mismo
+  nodo del nivel *k* entra a la cola una vez por cada vecino que lo
+  descubre; duplicas expansión y rompes los niveles. Marca al descubrir
+  (encolar).
+- **Usar pila o "lista sin orden" y llamarlo BFS.** Con pila es DFS (no
+  garantiza distancia); con lista a lo bruto, sin niveles. Falta el orden
+  FIFO y la pregunta "¿a cuántos saltos?" no tiene respuesta.
+- **Confundir BFS con Dijkstra ponderado.** Si las aristas tienen peso,
+  BFS miente: "3 saltos baratos" puede ser peor que "4 saltos caros".
+  BFS solo sirve cuando cada arista cuenta 1 → con pesos, cap. 22.
+- **Confundir "encontrar algo" con "encontrarlo con distancia mínima".**
+  Un recorrido que encuentra a Zoe sin control de nivel te da existencia,
+  no el menor número de saltos. La ola es lo que añade la distancia.
+- **Creer que el tipo de almacenamiento cambia el algoritmo.** BFS
+  sobre CSR o sobre HashMap es el mismo BFS: cambia el coste de
+  `adyacencia`, no el orden de niveles (pregunta crítica de
+  `CORPUS.yml` vol-II-cap-04).
+
+| Término | Significado exacto | No confundir con |
+|---|---|---|
+| Frontera / nivel | Nodos a k saltos del origen | Visita — la marca que impide volver |
+| Visita | Nodo ya descubierto (no se vuelve) | Descubrimiento — primera vez que lo toca la ola |
+| Alcanzabilidad | Existe (al menos) un camino | Conectividad / componente — cap. 5 |
+| Camino mínimo BFS | Menor número de saltos | Camino de peso mínimo — Dijkstra, cap. 22 |
+| Cola FIFO | Saca lo más antiguo | Pila LIFO — DFS, cap. 5 |
+
+## 4.13 Pin de batalla
+
+> *«En un grafo, cada arista que avanzas barre el límite que no has visto. La frontera es tu único frente: quien la respeta llega por el camino más corto; quien la ignora, dando vueltas.»*
+
+## 4.14 Si solo lees 30 segundos
+
+BFS recorre un grafo **por niveles** desde un origen: la **frontera** (nodos a exactamente *k* saltos) se expande completa, y su vecindad no visitada forma la siguiente ola. Lo garantiza una **cola FIFO** y la regla de **visitar al descubrir**, que hace terminar el algoritmo en O(V+E) aun con ciclos. Por eso "¿existe un camino entre A y B y a cuántos saltos?" es la pregunta que un motor de grafos responde barata — nativo, sin joins —: un BFS desde A. Es la idea que `closeness_centrality` (cap. 24) y `bfs_fronteras` (cap. 26) ejecutan por fábrica sobre el `GraphStore` (cap. 8).
+
+## 4.15 Una historia pequeña
+
+Cuando empezamos LiraDB en el papel, "consultar el grafo" sonaba a abrir una tabla y mirar. Hasta que Ana pidió algo inocente: *"¿quién está a menos de tres saltos de mí?"*. Lo intentamos con la intuición del capataz SQL — un join, luego otro, y otro— y la hoja de cálculo se llenó de combinatoria antes de acabar la primera columna. Aquella noche, dibujando la red social en la pizarra del taller, uno de nosotros trazó círculos concéntricos alrededor de Ana y dijo: *"es una ola, no una tabla"*. Marcamos el anillo a 1 salto, el de 2, el de 3... y la consulta pasó de "imposible" a "obvia". Desde entonces, cada vez que LiraDB responde en milisegundos "están a 2 saltos" a un lector que esperaba la eternidad, es esa ola dibujada la que lo hace — la misma ola que verás ejecutar en el cap. 24 y por streaming en el cap. 26.
+
+## Ejercicios resueltos
+
+**1. ¿Por qué al marcar la visita "al descubrir" el BFS termina en
+O(V+E)?**
+
+Cada nodo se descubre una vez (al encolarlo lo marcas), así que cada
+nodo se expande a lo sumo una vez: eso son V expansiones. Al expandir
+un nodo examinas todas sus aristas de salida; en total, cada arista se
+examina a lo sumo una vez desde cada extremo, eso son E (o 2E en no
+dirigido). La suma es O(V+E). La marca de visita lo garantiza: sin
+ella, en un grafo cíclico un nodo volvería a entrar infinitas veces y
+el bucle no terminaría.
+
+**2. ¿Por qué si BFS descubre a Zoe en el nivel 2, entonces 2 ES la
+distancia mínima?**
+
+Porque los niveles se expanden en orden estricto. Si existiera un
+camino de 1 salto, la ola del nivel 1 habría tocado a Zoe antes de que
+la del nivel 2 se expandiera. Como tocarla "por primera vez" ocurre
+solo cuando la ola avanza en orden, un descubrimiento en el nivel *k*
+implica que ninguna ola anterior lo logró — la distancia mínima es *k*.
+(Es el argumento del §4.3 "la distancia sale sola", y el que CLRS 22.2
+formaliza.)
+
+## Ejercicios propuestos
+
+**Esencial (retrieval).** Dibuja: `Ana` → {`Bruno`, `Clara`, `David`}; `Bruno` → {`Elena`, `Fran`}; `Clara` → `Gonzalo`. Ejecuta BFS **a mano** desde `Ana`: contenido de la cola en cada paso, visitados, y **orden de descubrimiento por niveles**. Sin mirar el capítulo. Comprueba contra `niveles = [[Ana],[Bruno,Clara,David],[Elena,Fran,Gonzalo]]`. _(Verificable: compáralo con el `niveles` de un BFS por niveles del cap. 26.)_
+
+**Intermedio (analizar).** Traduce "¿quién está a exactamente 2 saltos de Ana?" y "¿existe un camino de Ana a Gonzalo?" a pasos de BFS. ¿En qué fallaría un SQL self-join para lo primero? Argumenta O(V+E) frente a O(V²).
+
+**Experto (crear / interleaving con cap. 7).** Modela (con la voz del cap. 7) un mini-grafo personas → aeropuertos → vuelos **dirigidos** (`VUELA_DE(A→B)` no sirve a la inversa). Recorre en BFS dirigido desde "tú" hasta "Hong Kong" y da su distancia en saltos; anota qué aristas descartas por sentido.
+
+## Para profundizar
+
+- **CLRS, "Introduction to Algorithms" — cap. 22** (Elementary Graph
+  Algorithms): BFS formal, la prueba de que descubre caminos mínimos no
+  ponderados, y la complejidad O(V+E).
+- **E. W. Dijkstra, "A Note on Two Problems in Connexion with Graphs"
+  (1959)**: el algoritmo de caminos mínimos ponderados; entiéndelo
+  como el hermano mayor de BFS (BFS = el caso con pesos 1).
+- **E. F. Moore** y la búsqueda en laberintos de los años 50: el
+  origen del "barrer por anchura".
+- **S. Milgram (1967)**, "The Small-World Problem": el experimento de
+  los seis grados que convirtió el BFS en una pregunta de grafos
+  sociales.
+- **Workspace**: `liradb-workspace/crates/vol2-liradb/src/cap24_centralidad.rs`
+  y `cap26_proyeccion.rs` — el BFS de este capítulo, escrito como un
+  motor real.
+- **L. C. Freeman (1978)** sobre centralidad de cercanía, y la
+  corrección de **Wasserman-Faust** para componentes desconectadas
+  (base del cap. 24).
+
+## Mini-diálogo: en guardia nocturna
+
+> — Vale, ola, frontera, niveles... Pero ¿por qué tanta ceremonia para "encontrar si hay un camino"? ¿No basta con empezar y ver qué aparece?
+>
+> — Porque el motor no pregunta "¿existe alguna manera de llegar?", pregunta "¿existe, **y cuál es el menor número de saltos**?". Si solo recorres sin niveles, encuentras a Zoe, pero no sabes si está a la vuelta de la esquina o al otro lado del planeta.
+>
+> — Y la cola... ¿qué pinta el orden ahí?
+>
+> — La cola es la que obliga al orden. Sin ella, expandes a lo bestia y rompes el "nivel a nivel". Con ella, la ola avanza bien formada y una sola vez por nodo. Eso — y nada más — es lo que hace que "¿están conectados?" cueste O(V+E) y no una eternidad.
+>
+> — O sea que el poder del motor de grafos no está en memorizar el grafo, sino en esta ola.
+>
+> — Exacto. El grafo solo se guarda; la ola es la que consulta. Y ahora ves que cada "¿a cuántos saltos?" que un lector hace a una base de datos de grafos es, por debajo, esta ola de Ana. En el cap. 5 la empujaremos hacia la profundidad — y descubriremos que hay mundos, componentes, a los que ni siquiera esta ola llega.
+
+---
+
+*(Próximo capítulo: **5 — DFS, componentes conexos, orden topológico y SCC**. Aquí el BFS nos mostró una ola por niveles; la profundidad explora hasta el fondo y vuelve, y con ella sabremos si el grafo se parte en mundos separados — las componentes — y cómo ordenar tareas con dependencias.)*# Capítulo 5 — Profundidad, ciclos y componentes (DFS, componentes conexos, ordenación topológica, SCC)
+
+> *«Un mapa no responde preguntas por sí solo. Pero casi todas las preguntas que se le hacen a un mapa se pueden escribir de cuatro maneras distintas.»*
+
+## 5.0 La anécdota de la esquina
+
+En 1979, William Feldman llevaba meses viendo cómo un mismo dolor atacaba a los programadores de los laboratorios Bell: **compilar un programa grande significaba compilarlo todo, y saber qué exactamente había que recompilar era un lío de proporciones épicas**. De aquel dolor nació `make`, la herramienta que tomaba un fichero de dependencias —"el paquete `db.o` necesita `db.c` y `types.h`; `db.c` necesita `types.h`"— y decidía el **orden** en el que había que ejecutar los pasos.
+
+`make` hacía algo muy concreto y muy elegante: si cada tarea solo puede arrancar cuando sus dependencias terminaron, el orden de ejecución debe cumplir que **toda dependencia aparezca antes que quien depende de ella**. Ese orden tiene nombre: **ordenación topológica** — y un algoritmo de 1962 (el de Arthur Kahn) lo calcula en tiempo lineal.
+
+Y está la pesadilla que todo usuario de `make`, `dpkg`, `cargo` o `npm` conoce en carne propia: la **dependencia circular**. `A` necesita `B`, `B` necesita `C`, y `C` necesita `A`. El sistema no puede decidir cuál va primero: está atrapado en un **ciclo**. El instalador lo escupe con un mensaje amargo — "dependency cycle" — y se rinde.
+
+Ese mensaje de error es una de las ideas más importantes de toda la ciencia de grafos: **detectar un ciclo, precisamente cuando y solo cuando existe**, es un problema resoluble de forma elegante y exacta. Y del otro lado del mismo concepto se levantan las **componentes fuertemente conexas** (SCC): los grupos de paquetes condenados a depender unos de otros en círculo, que un gestor tiene que resolver o romper.
+
+Este capítulo cierra la Parte I del camino. El Volumen I ya te enseñó estos algoritmos; aquí los vas a **reencuadrar**: DFS, componentes conexas, ordenación topológica y SCC no son cuatro ejercicios sueltos del Vol.I, sino **las cuatro preguntas estructurales que un motor de base de datos de grafos debe saber responder**. Son las consultas que LiraDB calculará cuando la construyas.
+
+## 5.1 Objetivo
+
+Al terminar este capítulo serás capaz de distinguir —sin dudarlo— **cuatro preguntas distintas que se le hacen a un mismo grafo**, y de ejecutar a mano la respuesta a cada una:
+
+1. **¿Cuántos trozos tiene el grafo y quién está con quién?** — *componentes conexas* (no importa la dirección).
+2. **¿Hay un ciclo?** — la *detección de ciclos*, que nace del *DFS* y de la arista hacia un vértice gris.
+3. **¿Qué orden de tareas respeta todas las dependencias?** — la *ordenación topológica* de un DAG.
+4. **¿Qué grupos irreductibles de dependencia mutua existen?** — las *componentes fuertemente conexas* (SCC) de un grafo dirigido.
+
+Y, más importante aún, entenderás por qué una **base de datos de grafos** tiene que responder estas preguntas como parte de su esencia — no como aplicaciones externas, sino como las **consultas estructurales** que hacen del almacenamiento un sistema de verdad. Este es el último capítulo de la Parte I; el cap. 6 abrirá la Parte II preguntándose qué convierte un grafo en una base de datos.
+
+## 5.2 Problema
+
+Cuando un usuario de una base de datos de grafos pregunta, no pregunta "ejecuta mi algoritmo". Pregunta cosas de negocio — y muchas de ellas son, en el fondo, **preguntas estructurales sobre el grafo**:
+
+- ¿Este dispositivo alcanza a aquel servidor por *alguna* ruta de cables? → **conectividad**.
+- ¿Mi red eléctrica tiene un lazo que provocaría sobrecarga? → **detección de ciclos**.
+- ¿En qué orden tengo que cargar estas tablas para que cada dependencia exista antes de que se use? → **ordenación topológica**.
+- ¿Qué módulos forman un grupo donde todos dependen de todos, y que por tanto deben desplegarse juntos o no desplegarse? → **SCC**.
+
+El problema es que durante mucho tiempo, en muchos sistemas, estas respuestas se buscaban *después*, por fuerza bruta: ¿conectado? → prueba todas las rutas. ¿Cíclico? → prueba todos los órdenes. Cada una de esas búsquedas es exponencial o francamente inabordable.
+
+El cambio de paradigma —que el Vol.I ya te mostró y que aquí vamos a anclar— es que **cada una de estas preguntas tiene una respuesta en tiempo lineal, O(V+E)**, con un recorrido bien pensado. No hay que adivinar: hay que *recorrer*. Y un motor de base de datos los calcula igual que una base relacional calcula un índice: porque son **derivables del grafo** y **baratos de mantener encima de un log de mutaciones**. La Parte V (caps. 22-26) los ejecutará sobre datos persistentes; aquí entendemos el *qué* antes del *cómo se persiste*.
+
+## 5.3 Modelo mental
+
+El modelo mental está en el propio título: **una sola figura de mapa, mirada cuatro veces, respondiendo cuatro preguntas**. Cogemos un mismo grafo —nueve nodos, con un ciclo escondido— y le ponemos encima cada pregunta:
+
+```
+GRAFO BASE (9 nodos, DIRIGIDO):             (a) DFS: árbol de profundidad
+                                              + arista de retroceso en ROJO
+   0 ──→ 1 ──→ 2                                 0 ──→ 1 ──→ 2
+   │      │      ▲                                ──╮ │
+   │      ▼      │                                  │ 3        ... del ciclo:
+   │      3 ──→ 4 ──→ 5                             │ ▼       6 ──(retroceso)→ 1
+   │      │      │   │                              │ 4
+   │      ▼      ▼   ▼                              │ │  5
+   │      6      7   8──(otra isla)                 ▼ │  7
+   └── ciclo: 1→3→4→6→1                             ╰►6
+```
+
+Las cuatro miradas sobre el MISMO esqueleto de nueve nodos:
+
+```
+(b) COMPONENTES CONEXAS (vista NO dirigida):      (c) DAG de tareas → ORDEN topológico:
+    {0,1,2,3,4,5,6,7}   y   {8}                     0→1→3→4→6→2→5→7→8
+    → 2 "islas": dentro de la grande,                  (cada flecha va de antes a después)
+      todo se alcanza sin mirar la dirección
+
+(d) SCC (dirigida): colapsa el ciclo                  ⓐ = {1,3,4,6} (un SCC)
+    {1,3,4,6} en el supernodo ⓐ:                      0→ⓐ → 2 → 5 →7→8
+    0→ⓐ · ⓐ→2 · ⓐ→5 · 5→8 · 6→7 ...
+    ¡El resultado es SIEMPRE un DAG!                   → este DAG se ordena con Kahn
+```
+
+El **momento ¡ajá!**: cuando ves la vista (d) todo encaja. Un grafo dirigido, por cíclico que parezca, se reduce **siempre** a un DAG colapsando cada SCC en un supernodo. De ahí que (d) se apoye en (c): **la ordenación topológica del grafo condensado te dice en qué orden deshacer o desplegar los ciclos**. Las cuatro preguntas no son islas: son capas del mismo mapa, y juntas hacen de un montón de bytes una base de datos de grafos.
+
+## 5.4 Primera solución: el DFS y el ciclo
+
+Empezamos por el que nos da la lupa: el **DFS** (búsqueda en profundidad). Donde BFS recorre por capas con una cola —y por eso *minimiza pasos* (Vol. I cap. 4)—, el DFS baja hasta el fondo con una pila, o con recursión, que es la misma pila: recorre cada rama hasta agotarla antes de retroceder.
+
+La diferencia crítica respecto a BFS es que el DFS *estructura el recorrido*. Para hacer esa estructura visible, los libros clásicos (Cormen y compañía, CLRS cap. 22) usan **tres colores**:
+
+- **blanco**: no se ha visitado;
+- **gris**: está en la pila — se está explorando una rama que pasa por él, aún no cerrada;
+- **negro**: su rama terminó, ya se cerró.
+
+En la figura (a) recorremos empezando por 0: descubrimos 1 (gris), de ahí 3 (gris), de ahí 4 (gris), de ahí 6 (gris)… y 6 tiene una arista hacia **1, que ya es gris**. Eso es el detector de ciclos.
+
+### ¿Cómo detecta DFS un ciclo?
+
+Esta es la pregunta crítica del capítulo, y merece una regla de oro:
+
+> **Una arista que alcanza un vértice GRIS es una arista de retroceso, y toda arista de retroceso pertenece a un ciclo.**
+
+¿Por qué? Porque si estás explorando la rama de `1` y llegas a `6`, y `6` apunta de vuelta a `1`, entonces dentro del recorrido actual hay un camino `1→…→6` y la arista `6→1` lo cierra: es un ciclo. No importa volver al *nodo raíz* del recorrido (aquí, 0): el ciclo `1→3→4→6→1` no pasa por 0. Lo que importa es volver a un nodo **que siga en la pila** —un gris— porque eso significa "estás dentro de mi rama, y volverse a uno mismo dentro de la rama es dar una vuelta entera".
+
+*(Nota de oficio: una arista hacia un vértice NEGRO —ya cerrado— NO es un ciclo. Es simplemente un puente entre una rama terminada y la actual; al cerrar el negro, ya no estás "volviendo a uno mismo", estás tendiendo un puente a algo ya calculado.)*
+
+### La primera versión ingenua
+
+Un novato, al "detectar" un ciclo, suele hacer esto:
+
+```
+marcar visitado (solo blanco/negro, SIN gris)
+DFS(v): marcar v visitado
+    para cada vecino w de v:
+        si w no está visitado: DFS(w)
+```
+
+Sin el gris, este código **no ve ningún ciclo**. Puede dar la vuelta completa del ciclo `1→3→4→6→1`, marcar 1, 3, 4, 6 de negro uno tras otro, y al llegar a la arista `6→1` encontrarse el 1 ya negro… y no encender ninguna alarma. El grafo más simple del mundo con un ciclo que no pasa por la raíz **rompe este detector en silencio**. Por eso el gris no es un lujo: es lo que convierte "recorrer" en "detectar ciclos".
+
+## 5.5 Sus límites
+
+El DFS es potente, pero solo detecta ciclos — y confunde si se usa para lo que no toca:
+
+1. **No muestra los "trozos"**: si corres UN solo DFS partiendo de 0, visitarás todo lo alcanzable desde 0; el nodo 8, si no es alcanzable, se queda intacto, pero un solo DFS no te numera las piezas.
+2. **No diferencias direcciones bien**: en un grafo dirigido, un DFS desde 0 no "ve" que 8 es otra isla aunque 8 esté conectado mirando el grafo sin flechas.
+3. **El orden de los vecinos cambia el árbol**: si exploras las aristas en otro orden, el árbol de profundidad cambia (la *existencia* de un ciclo no, por fortuna — pero el *árbol* sí).
+4. **No da la orden**: el DFS, aunque recorras todo, no te dice qué tarea ejecutar antes en un DAG. Necesita el truco de Kahn.
+
+Para responder "¿cuántos trozos?" basta un truco que se monta encima de cualquiera de los dos recorridos: **arranca un nuevo recorrido cada vez que quede un nodo blanco, contando un arranque como una componente**.
+
+## 5.6 Solución evolucionada (a): componentes conexas
+
+La pieza 1 es trivial encima de DFS *o* BFS:
+
+```
+componentes_conexas(grafo NO dirigido, o vista simétrica del dirigido):
+    num = 0
+    para cada nodo s en orden:
+        si s ya está etiquetado: sigue
+        num += 1                       # nuevo arranque = nueva componente
+        recorre desde s (BFS con cola o DFS con pila)
+            etiquetando cada nodo alcanzable con num
+```
+
+Cada arranque encuentra una **componente conexa**: un conjunto donde desde cualquier punto llegas a cualquier otro *sin preocuparte por la dirección de las flechas*. En el diagrama (b), la vista no dirigida de nuestros nueve nodos produce dos componentes: la grande `{0..7}` y el nodo suelto `{8}`.
+
+Aquí está la pieza de anclaje con el código **real** del proyecto. En
+
+```
+liradb-workspace/crates/vol2-liradb/src/cap25_comunidades.rs
+```
+
+hay una función llamado justo como lo que estamos describiendo, `componentes_conexas`. Su esqueleto es este:
+
+```rust
+pub fn componentes_conexas(store: &dyn GraphStore) -> Result<ComponentesResult, ComunidadesError> {
+    let g = GrafoPonderado::proyectar(store, &WeightSource::Constant(1.0))?;
+    let n = g.len();
+    let mut componente = vec![usize::MAX; n];
+    let mut num = 0usize;
+    for s in 0..n {                        // barrido por índice: numeración por menor miembro
+        if componente[s] != usize::MAX { continue; }
+        let mut cola: VecDeque<usize> = VecDeque::new();
+        componente[s] = num;
+        cola.push_back(s);
+        while let Some(v) = cola.pop_front() {
+            for &(w, _) in &g.vecinos[v] {
+                if componente[w] == usize::MAX {
+                    componente[w] = num;
+                    cola.push_back(w);
+                }
+            }
+        }
+        num += 1;
+    }
+    // -> ComponentesResult { particion, stats }
+}
+```
+
+*(He cortado la función a su esqueleto; el código completo vive en el cap. 25. Dos detalles que ya deberías reconocer del capítulo de BFS (cap. 2 o Vol. I cap. 4): el `VecDeque` como cola y el barrido por índice que numera las componentes por su menor miembro — un patrón de determinismo que un motor de BD exige.)*
+
+Y el detalle que es el espejo exacto de lo que estás aprendiendo: **el doc-comment de esa función advierte que "las componentes FUERTEMENTE conexas (dirección respetada) son OTRO algoritmo (Tarjan, Vol. I cap. 7) y otra pregunta"**. Cuando leas ese comentario en el cap. 25, lo reconocerás al instante: nosotros aquí lo estamos cimentando.
+
+**Componente conexa ≠ SCC.** La componente conexa te dice "hay un cable entre estos dos" — en ambos sentidos, porque miramos el grafo *sin* flechas. La SCC te dice algo más exigente y dirigido.
+
+## 5.7 Solución evolucionada (b): ordenación topológica (Kahn)
+
+Cambiemos de pregunta. Ahora el grafo es un **DAG** — un grafo dirigido acíclico: un conjunto de tareas donde cada arista "debe hacerse antes que". ¿En qué orden ejecutas todas las tareas para que ninguna dependencia se ejecute antes de sus antiguos?
+
+La receta de **Arthur Kahn (1962)** es la más transparente:
+
+```
+orden = []
+cola = todos los nodos con GRADO DE ENTRADA 0   (nada los necesita antes)
+mientras cola no esté vacía:
+    v = sácalo de la cola
+    orden.push(v)
+    para cada w tal que hay arista v→w:
+        entrada[w] -= 1
+        si entrada[w] == 0: cola.push(w)
+si orden.len() < nº de nodos:  Hay un CICLO
+```
+
+Funciona así: siempre hay al menos una tarea sin pendientes → hazla y "retírala del tablero", reduciendo la deuda de sus dependientes. Si al final procesaste todos los nodos, obtienes un orden donde **cada flecha va de antes a después**: ese es el orden topológico. Si quedan nodos sin procesar, es que **nunca hubo un nodo con grado de entrada 0 al final**: hay un ciclo alimentándose a sí mismo, y la señal exacta es "quedamos con vértices sin procesar". En el diagrama (c), el orden `0→1→3→4→6→2→5→7→8` es uno válido para el DAG de tareas.
+
+Es exactamente el mecanismo de `make`, `dpkg`, `cargo` y `npm`: el "orden de ejecución" respeta dependencias, y cuando aparece un ciclo, **el detector ES la propia cola que se queda corta** — no un error adivinado, sino el resultado exacto del algoritmo. Ese "si sobran vértices, hay un ciclo" es la misma regla de oro en su versión topológica: un DAG *siempre* tiene al menos un nodo sin dependencias; si en algún momento no lo hay, te estás moviendo sobre un ciclo.
+
+## 5.8 Solución evolucionada (c): SCC — Kosaraju y Tarjan
+
+Última pregunta, la más exigente. En un grafo **dirigido**, define las **componentes fuertemente conexas** (SCC): los conjuntos donde, *siguiendo las flechas*, de cada vértice llegas a cada otro. En la figura (d), el ciclo `1→3→4→6→1` es un SCC: cada nodo del grupo alcanza a cada otro con flechas a favor. El nodo `8` es su propio SCC de un solo vértice (no se alcanza a sí mismo salvo con un camino trivial).
+
+La idea decisiva es la **condensación**: colapsa cada SCC en un **supernodo**. El resultado **es siempre un DAG** — el *grafo de condensación*. ¿Por qué no puede haber un ciclo entre supernodos? Porque si existiera, todas sus flechas se cerrarían, sus nodos se alcanzarían entre sí siguiendo las flechas, y por definición serían… el MISMO SCC. Los supernodos, unidos entre sí, forman un DAG, y ese DAG se ordena topológicamente con Kahn. Por eso SCC y topológica son dos caras de la misma moneda.
+
+Hay dos algoritmos históricos para calcular los SCC, y la pregunta crítica del capítulo (guardada en el `CORPUS.yml` del proyecto) es **"¿cuándo Kosaraju y cuándo Tarjan?"**. Respondámosla con precisión:
+
+- **Kosaraju (1978)**: **dos pasadas**. Primera: un DFS que anota el *orden de finalización* de cada nodo. Segunda: un DFS sobre el **grafo transpuesto** (todas las flechas invertidas), procesando los nodos en orden de finalización decreciente. Cada árbol de esa segunda pasada es un SCC. Es **sencillísimo de explicar y de demostrar**, y por eso es el favorito para escribir correctamente a la primera. Coste: dos recorridos — **lee las aristas dos veces**, una sobre el grafo y otra sobre el transpuesto.
+- **Tarjan (1972)**: **una sola pasada**, con un índice extra llamado **`lowlink`** — el vértice de menor índice de descubrimiento alcanzable desde la pila actual. Cuando el `lowlink` de un vértice coincide con su propio índice de descubrimiento, ese vértice es la raíz de un SCC terminado, y todo lo que esté por encima en la pila se expulsa como un SCC. Coste: **una sola pasada**, sin transpuesta — más rápido en la práctica y sin aristas leídas de más.
+
+**En código real, ¿cuándo cada uno?** La regla que el oficio ha consolidado:
+
+> Usa **Kosaraju** cuando la claridad y la baja probabilidad de bug importen más que el rendimiento — grafos medianos, didácticos, o donde la doble lectura de aristas sea despreciable. Usa **Tarjan** cuando el grafo sea ENORME y leer las aristas dos veces sea el cuello de botella real, o cuando no puedas materializar el grafo transpuesto entero. Tarjan es el que elige producción exigente; Kosaraju el que elige la cabeza clara de un aprendiz.
+
+No hay un "bueno y malo": hay un **trade-off entre simplicidad/demostración y una sola pasada/velocidad**. Tenerlo presente te permite decidir con criterio, que es justo lo que la pregunta exige. (Este es también el punto en el que la historia se vuelve curiosa: el algoritmo de Kosaraju se describió en una nota privada de diciembre de 1978 y solo se divulgó en el libro de Aho-Hopcroft-Ullman de 1983 — casi una década después. Una idea bellísima que tardó años en aparecer en un texto porque su autor no la publicó de inmediato.)
+
+## 5.9 Los porqués (grill con el oficio)
+
+Para cada decisión de estas cuatro respuestas, la pregunta de fondo es "¿por qué así y no de otra forma?". Las seis decisiones que este capítulo te pide interiorizar:
+
+**1. ¿Por qué cuatro conceptos separados y no un bloque "recorridos"?**
+Porque son cuatro preguntas de negocio distintas. Mezclarlos es la misconcepción número uno del tema; separarlos es lo que evita que confundas "¿está todo conectado?" con "¿puedo ir de A a B siguiendo las flechas?". El ancla del código real lo confirma: `componentes_conexas` usa la vista **simétrica**, porque la pregunta de conectividad ignora la dirección.
+
+**2. ¿Por qué tres colores y no "visitado/sin visitar"?**
+Porque sin el gris no se detectan ciclos. El gris es "estoy en la pila"; una arista a un gris es una vuelta dentro de la rama. Con solo blanco/negro, el ciclo `1→3→4→6→1` pasaría desapercibido. Alternativa descartada: recorrer y volver a mirar — no sale a cuenta ni es exacto. Modo de fallo si no lo haces: respondes "no hay ciclos" cuando sí los hay.
+
+**3. ¿Por qué la vista simétrica para componentes conexas (y qué pasaría si usara la dirigida)?**
+Porque "hay un cable" no depende de la dirección de la flecha. Si usaras SCC para esa pregunta, dos nodos unidos por UNA sola flecha no estarían en la misma componente, y una red físicamente conectada parecería rota. El doc-comment del cap. 25 distingue explícitamente las dos preguntas.
+
+**4. ¿Por qué Kahn y no probar todos los órdenes?**
+Probar todos los órdenes es O(n!), inabordable. Kahn es O(V+E) y, de regalo, su "cola que se vacía antes de tiempo" es exactamente el detector de ciclos. Alternativa descartada: topológica por DFS inverso — válida, pero menos intuitiva para la analogía de tareas y dependencias que hace `make`.
+
+**5. ¿Por qué colapsar SCCs siempre da un DAG?**
+Porque si hubiera un ciclo entre supernodos, serían el mismo SCC por definición de alcanzabilidad mutua. Esta propiedad es la que une SCC con topológica: el grafo de condensación siempre se puede ordenar.
+
+**6. ¿Por qué esto son "consultas del motor" y no "aplicaciones"?**
+Porque una BD de grafos las calcula como **índices estructurales derivados**: O(V+E), cacheables y invalidables al mutar el grafo — exactamente el patrón de un índice en una BD relacional. Lo verás aplicado en la Parte V.
+
+## 5.10 Cómo lo hace una BBDD real (y qué hemos sacrificado)
+
+Este capítulo fue conceptual a propósito — es de la Parte I, antes de persistencia y consultas. Lo que aprendiste aquí no se implementa todavía en LiraDB, pero ES el contrato que la Parte V cumplirá. Las cuatro respuestas vuelven —sobre **datos persistentes**— en los capítulos de esa parte:
+
+- **Caminos, conectividad y centralidad** → caps. 22, 24 (Dijkstra, PageRank).
+- **Componentes conexas y agrupaciones** → cap. 25 (con `componentes_conexas` como punto de partida de las comunidades, y su proyección simétrica ponderada).
+- **Ejecutar estos recorridos sin agotar la memoria** cuando el grafo no cabe en RAM → cap. 26 (proyección, streaming, frontiers).
+
+Y en producción, una BD de grafos comercial no recalcula a ciegas cada vez. Estas consultas se tratan como **índices estructurales derivados**: se calculan en O(V+E), se cachean mientras el grafo no muta, y se invalidan al insertar o borrar nodos y aristas. Ese mismo patrón —"derivar, calcular una vez, invalidar al mutar"— es el que verás en los índices reales (hash, B+) de la Parte III y en el modelo Volcano de la Parte IV.
+
+**Qué hemos sacrificado** por hacerlo conceptual: no viste un solo test automático nuevo (tus comprobaciones aquí son a mano, sobre papel); no optimizaste ni un nanosegundo; y Tarjan y Kosaraju los presentamos en versión narrativa, no en su implementación íntegra. Lo que ganaste es lo más caro de recuperar luego: **no confundir los cuatro conceptos** y **saber por qué un motor los necesita**. Ese cimiento es el que hace que, cuando en el cap. 25 leas `componentes_conexas` con su doc-comment hablando de SCC "como otra pregunta", lo reconozcas al instante.
+
+**Retos para el lector (esencial / intermedio / experto):**
+
+- *Esencial*: en `componentes_conexas`, ¿por qué el barrido numera las componentes por su menor miembro? ¿Qué pasaría si el orden de los nodos en el vecindario cambiara?
+- *Intermedio*: explica con tus palabras por qué una arista hacia un vértice NEGRO no es un ciclo, pero una hacia un GRIS sí.
+- *Experto*: decide —sin buscar— si para el grafo de 9 nodos de la figura usarías Kosaraju o Tarjan, y justifica qué perderías eligiendo el otro.
+
+## 5.11 Lo que te llevas
+
+- **DFS ≠ BFS**: BFS minimiza pasos con cola; DFS estructura el recorrido con una pila y tres colores.
+- **Detectar un ciclo** = encontrar una **arista a un vértice gris** (una arista de retroceso). No es "volver al nodo inicial".
+- **Componentes conexas** = partición del grafo en trozos donde todo es alcanzable (vista no dirigida o simétrica). En LiraDB, `componentes_conexas` del cap. 25 lo implementa con BFS.
+- **Ordenación topológica** = en un DAG, un orden donde cada arista va de antes a después. Kahn (1962) lo hace con una cola de grado de entrada 0, y "si sobran vértices" es un ciclo.
+- **SCC** = en un grafo dirigido, los trozos donde de cualquier vértice llegas a cualquier otro siguiendo las flechas. Colapsarlos **siempre** da un DAG. Kosaraju (1978) simple pero doble lectura; Tarjan (1972) una sola pasada con `lowlink`.
+- **Son los índices estructurales del motor**: estas cuatro respuestas son las consultas de negocio que una BD de grafos debe poder responder en O(V+E).
+
+## 5.12 Ojo, cuidado con…
+
+- **SCC ≠ componente conexa**: la componente ignora la dirección; la SCC exige llegar *y* volver siguiendo las flechas. Detector: dos nodos unidos por SOLO `0→1` están en la misma componente conexa pero en SCC distintos.
+- **Detectar ciclos "volviendo al origen"**: con el DFS correcto solo es un ciclo la arista que apunta a un vértice **gris**. Una arista a un negro ya cerrado no lo es.
+- **Aplicar ordenación topológica a un grafo con ciclos**: la cola de Kahn se vacía dejando vértices sin procesar; "el orden que sobre" NO es topológico. Señal exacta: `orden.len() < nº de nodos`.
+- **Decir "esto es del Vol.I, ya lo vi"**: lo viste como algoritmos de juguete; aquí son las consultas estructurales del motor. La Parte V los volverá a usar sobre datos persistidos.
+
+**Precisión de lenguaje (glosario):** *componente conexa* (no dirigida) vs *SCC* (dirigida); *arista de árbol / retroceso / adelante / cruzada* (según el color del otro extremo); *DAG* (dirigido acíclico) vs *condensación* (el DAG de los SCC); *orden topológico* (cada flecha de antes a después) vs *orden de DFS* (orden de descubrimiento); *blanco / gris / negro* (sin visitar / en la pila / cerrado).
+
+## 5.13 Pin de batalla
+
+> *«No tienes que buscar el orden: tienes que recorrer el grafo. Quien recorre en profundidad ve los ciclos; quien cuenta los arranques ve los trozos; quien sigue el grado de entrada ve el orden; quien colapsa los ciclos ve el DAG que siempre estuvo ahí.»*
+
+## 5.14 Si solo lees 30 segundos
+
+A un mismo grafo se le hacen cuatro preguntas. Con el **DFS** (recorrido en profundidad que colorea blanco/gris/negro) detectas **ciclos**: una arista a un vértice gris es un ciclo. Contando cuántos arranques de recorrido haces sobre la vista **no dirigida** obtienes las **componentes conexas** (los trozos donde todo se alcanza). En un DAG, el algoritmo de **Kahn** (cola de grado de entrada 0) ordena las tareas respetando dependencias — y "si sobran vértices" es un ciclo. Y en un grafo dirigido, **Kosaraju** (simple) o **Tarjan** (una pasada) calculan las **SCC**, que al colapsarse siempre dan un DAG. Son las consultas estructurales de una base de datos de grafos.
+
+## 5.15 Una historia pequeña
+
+Cuando arrancamos a modelar la futura LiraDB como proyecto, lo primero que dibujamos sobre la pizarra no fue una página de disco ni un buffer pool: fue un grafo con nueve nodos y un ayudante preguntando, en voz alta, *qué exactamente quería saber cada futuro usuario*. A la mañana siguiente, el mismo grafo —sin cambiar un solo nodo ni una arista— ya había respondido cuatro cosas: "es un cable y una isla suelta", "hubo un lazo en el circuito de alimentación", "este es el orden de montaje", y "este trío de módulos no se puede desplegar por separado". Nadie había escrito una sola línea de almacenamiento. Pero todo el mundo en la sala entendió por fin **que esos algoritmos no eran un repaso del Volumen I: eran el vocabulario con el que le íbamos a preguntar a nuestra base de datos**. A partir de ese día dejamos de perseguir algoritmos sueltos y empezamos a perseguir preguntas.
+
+## Ejercicios resueltos
+
+**1. ¿Cómo detecta exactamente el DFS un ciclo?**
+Cuando, al explorar una arista `v→w`, el vértice `w` está **gris** — todavía en la pila de recursión, parte de la rama actual. Decimos que `v→w` es una arista de retroceso, y esa arista cierra un ciclo formado por el camino de `w` a `v` más la propia flecha de vuelta. Una arista hacia un vértice **negro** (ya cerrado) no es un ciclo. Por eso el color gris es indispensable: sin él el detector no ve nada.
+
+**2. ¿Por qué la vista de `componentes_conexas` del cap. 25 es SIMÉTRICA, y qué pasaría si usara la dirigida?**
+Porque "componente conexa" pregunta por alcanzabilidad SIN dirección: si `0` envía a `1`, ambos están físicamente unidos. La vista simétrica lee cada arista en ambos sentidos. Si usara la dirigida (SCC), dos nodos unidos por una sola flecha no estarían en la misma componente aunque estén conectados por un cable — la red parecería rota cuando no lo está. El coste de la vista simétrica es que pierdes la información de flujo, que es justo lo que la SCC recupera.
+
+**3. ¿Qué hace `make` cuando encuentra una dependencia circular?**
+Con `make`/`dpkg`/`npm`, el orden topológico (Kahn) deja de progresar: en algún momento no hay ninguna tarea con grado de entrada 0, porque cada una espera a otra. `orden.len() < n` es la señal exacta de ciclo. El gestor no inventa un orden: **denuncia la circularidad** y se detiene, porque un orden que no respete dependencias no es un orden válido.
+
+## Ejercicios propuestos
+
+**Esencial (recordar/aplicar).** Toma el grafo base de la figura 5.3 (nueve nodos, dirigido: `0→1`, `1→3`, `3→4`, `4→6`, `6→1`, `1→2`, `4→5`, `5→8`, `6→7`). Ejecuta a mano un DFS desde `0`, anota el **orden de descubrimiento** y de **finalización** de cada nodo, y marca la arista de retroceso que revela el ciclo. Después, olvida las flechas y numera las **componentes conexas** de la vista simétrica. Verifícalo contra los diagramas (a) y (b). *Pistas*: (1) un nodo es "retroceso" cuando reapareces sobre uno **gris**; (2) cada arranque de recorrido sobre un nodo sin visitar es UNA nueva componente; (3) el ciclo se cierra con una flecha hacia arriba en tu árbol. *Criterio*: la única arista de retroceso marcada es `6→1`, y hay 2 componentes conexas.
+
+**Intermedio (analizar — interleaving topológica + mundo real).** Modela "montar una base de datos" como un DAG de tareas: `asignar páginas → escribir registros`; `reservar buffer → cargar página`; `crear catálogo → escribir índices`; `compilar → enlazar → ejecutar`; y que `crear catálogo → compilar` también sea una dependencia. (a) Aplica Kahn y escribe un orden topológico válido. (b) Añade la dependencia `ejecutar → compilar` de modo que se forme el ciclo `compilar → enlazar → ejecutar → compilar`; explica en una frase por qué ya NO hay orden y qué está diciendo la "cola que se queda corta". *Pistas*: (1) Kahn arranca de grado de entrada 0; (2) un ciclo deja ≥1 vértice sin procesar; (3) `make` lo reporta como "dependency cycle". *Criterio*: tu orden (a) respeta TODAS las flechas de antes→después, y tu diagnóstico (b) señala que la cola se vació sin procesar todo.
+
+**Experto (crear — gancho a la Parte V).** Toma el grafo dirigido de la figura y reduce sus **SCC**: colapsa el ciclo `{1,3,4,6}` en un supernodo `ⓐ`, deja `{0}`, `{2}`, `{5}`, `{7}`, `{8}` como sus propios SCC, y dibuja el **grafo de condensación** con las flechas restantes. Demuestra que es un DAG y ordénalo topológicamente (Kahn). Luego decide —y justifica con la regla de §5.8— si para este grafo usarías Kosaraju o Tarjan. *Pistas*: (1) un SCC es un ciclo o un nodo aislado; (2) entre SCC no puede cerrarse un nuevo ciclo por definición; (3) el orden de los supernodos es la respuesta a "¿en qué orden desplegar?". *Criterio*: el grafo de condensación es acíclico, tu orden de supernodos respeta las flechas, y tu elección de algoritmo está justificada por claridad vs velocidad.
+
+## Para profundizar
+
+- **Cormen, Leiserson, Rivest, Stein — *Introduction to Algorithms* (CLRS), 3ª ed.** — el cap. 22 es la referencia canónica: DFS con los tres colores, la clasificación de aristas (de árbol / retroceso / adelante / cruzada), la detección de ciclos y el algoritmo de SCC de Tarjan completo.
+- **Tarjan, R. E. — “Depth-first search and linear graph algorithms”, SIAM J. Computing 1(2):146-160 (1972)** — el paper original donde el DFS se usa para SCC y otras decisiones de grafos en una sola pasada.
+- **Kahn, A. B. — “Topological sorting of large networks”, CACM 5(11):558-562 (1962)** — el algoritmo que da nombre a la ordenación por grado de entrada.
+- **Aho, Hopcroft, Ullman — *Data Structures and Algorithms* (1983), §9.6** — donde se documentó formalmente el algoritmo de Kosaraju (descrito en una nota suya de diciembre de 1978); la historia de una idea que tardó años en publicarse.
+- **Feldman, S. I. — “Make — A Program for Maintaining Computer Programs” (1979)** — el artículo de la anécdota: cómo `make` resolvió el orden de recompilación y popularizó la ordenación topológica y la denuncia de ciclos.
+
+## Mini-diálogo: en guardia nocturna
+
+> — O sea que, al final de todo, "componente conexa" y "SCC" son solo dos preguntas con dos respuestas distintas sobre el mismo dibujo.
+>
+> — Exacto. Componente conexa pregunta "¿hay cable entre A y B?" mirando el mapa sin flechas. SCC pregunta "¿puedo ir de A a B siguiendo las flechas y volver?" — mucho más exigente.
+>
+> — Y las otras dos —ciclo y orden—, ¿van por el mismo lado?
+>
+> — Son el reverso de la misma moneda y enganchan con la vida real. `make`, `dpkg`, `cargo` y `npm` viven a vueltas con la ordenación topológica: no ejecutan nada hasta que las dependencias dejan de bloquearse. Y el día en que una dependencia circular atasca la cola, ese "¡no hay orden!" es la respuesta exacta de Kahn, no un error adivinado.
+>
+> — Entonces, cuando construyamos LiraDB… ¿esto ya está resuelto?
+>
+> — Resuelto en tu cabeza. Y eso es precisamente lo que hace falta antes de tocar una página de disco: saber qué le vas a preguntar al mapa. Eso es lo que el cap. 6 va a estudiar —qué convierte un grafo en una base de datos, no en una biblioteca de algoritmos sueltos.
+
+---
+
+*(Próximo capítulo: 6 — Qué convierte un grafo en una base de datos. Aquí las preguntas estructurales respondían sobre un grafo en memoria; el cap. 6 abre la Parte II y se pregunta qué hace falta para que estos mismos conceptos pasen de ser los de una biblioteca de grafo a los de un sistema que los persiste y consulta.)*
+# Capítulo 6 — Qué convierte un grafo en una base de datos
+
+> *«En RAM un grafo es lo que calculas; en una base de datos es lo que persiste, lo que consultas y lo que guardas aunque todo se apague. La diferencia no es el algoritmo: es la persistencia, y todo lo que cuelga de ella.»*
+
+## 6.0 La anécdota de la esquina
+
+En 1970, Edgar Codd publicó en *Communications of the ACM* once páginas que, medio siglo después, siguen siendo la frontera entre «datos que se usan» y «datos que se guardan». El artículo se llamaba *«A Relational Model of Data for Large Shared Data Banks»* (CACM, vol. 13, núm. 6, pp. 377-387), y su tesis de apertura era una declaración de independencia: los usuarios de una gran base de datos «deben estar protegidos de tener que saber cómo se organizan los datos dentro de la máquina». En otras palabras: el *cómo* guardas los datos no debería apretar el *qué* puedes preguntarles.
+
+Pero Codd escribió teoría. La demostración vino seis años después con **System R**, el prototipo de IBM — firmado por Astrahan, Blasgen, Chamberlin, Eswaran, **Jim Gray** y nueve colegas más en *ACM Transactions on Database Systems* (1(2), pp. 97-137, 1976). System R no era solo un lenguaje elegante: era un motor que **guardaba**, **recuperaba** y **mantenía consistente** los datos frente a fallos y a varios usuarios a la vez. Tenía logging, recovery y control de acceso en un entorno de actualización compartida. System R fue la primera vez que el mundo vio a un DBMS funcionando de verdad con las cuatro promesas que Codd solo había teorizado.
+
+¿Por qué abre así un capítulo sobre grafos? Porque LiraDB — el motor que este libro entero construye — va a rehacer ese camino, pero para grafos. Y el punto es que hay un instante concreto en que un «grafo que calcula» se convierte en una «base de datos que guarda». Ese instante es lo que este capítulo quiere que veas venir, cincuenta años de historia en la mano.
+
+## 6.1 Objetivo
+
+Hasta aquí, en la Parte I, aprendiste a *pensar en grafos*: a definirlos (cap. 1), a representarlos en memoria — edge list, lista de adyacencia, CSR (cap. 2), a darles identidad estable (cap. 3), a recorrerlos con BFS (cap. 4) y con DFS/componentes/topológica/SCC (cap. 5). Todo eso es extraordinario, y todo eso tiene un límite silencioso: **vive en RAM, y la RAM se vacía al cerrar el programa.**
+
+Este capítulo es el puente. Su objetivo es responder a la pregunta que da título al libro y que se convierte en tu propósito durante los próximos treinta y cuatro capítulos:
+
+> **¿Qué convierte un grafo en una base de datos?**
+
+Y para responderla, vamos a hacer dos cosas que quizá no esperabas:
+
+1. **Cerrar la Parte I**, recogiendo en un mapa lo que ya sabes — no para repetirlo, sino para mostrarte que eras el pasajero de la primera estación de un viaje más largo.
+2. **Abrir la Parte II**, presentando el esqueleto del motor que el resto del libro construye, organizado en **cinco pilares** que irás levantando, capítulo a capítulo, parte a parte.
+
+Al terminar, sabrás exactamente por qué se construye LiraDB, qué piezas tiene, y qué capítulo del libro levanta cada pieza. El resto de la obra será ir llenando la casilla donde este capítulo puso la etiqueta.
+
+## 6.2 Problema
+
+Tomemos literalmente todo lo que has construido en los cinco capítulos anteriores. Tienes un `PropertyGraph` incipiente — o, más modestamente, un `Vec` de listas de adyacencia. Lo pueblas con un millón de nodos y tres millones de aristas. Ejecutas un BFS y encuentras en qué componente está cada nodo — como en el cap. 5. Después haces `exit` y cierras el terminal.
+
+Y ahí está el problema, con toda su crudeza:
+
+> **El grafo que tardaste en construir no está en ninguna parte.**
+
+Se fue con el proceso. De «el mundo conocido» del programa ya no queda ni un bit. Si querías mantener el resultado de tu BFS, o los nodos que añadiste, o las aristas que ponderaste, tuviste que guardarlo TÚ, a mano, a un formato que inventaste, sin que nada te ayudara a volver a leerlo.
+
+Detente un segundo y mira lo que implica. Has invertido cinco capítulos en construir algo extraordinariamente elegante: el grafo vestido del cap. 1, con la representación adecuada del cap. 2, con ids estables del cap. 3, con algoritmos eficientes de los caps. 4-5. Pero todo eso es un programa: un programa que, cuando termina, deja el mundo exactamente igual que como lo encontró, salvo por el calor residual del CPU. Si te pidiera un cliente que repitiese la consulta mañana con los mismos datos, tendrías que volver a empezar desde cero. Y si te pidiera añadir un nodo nuevo, no podrías porque el nodo anterior ya no existe.
+
+Ahora agrava el problema por los cinco costados:
+
+- **El tiempo.** Ese grafo no desapareció por descuido: desapareció porque la RAM es volátil por diseño. No hay ninguna estructura de datos en memoria que sobreviva al apagado; para eso existe el disco, y nadie te ha enseñado aún a hablarlo.
+- **El tamaño.** Tu grafo cabe en RAM hoy. Uno real — el grafo social del planeta, el de los vuelos del mundo, el de los papers citados entre sí — no cabe. ¿Recorres un grafo que desborda la memoria leyendo de un fichero? Ese problema nuevo no existe en toda la Parte I.
+- **La pregunta.** En RAM puedes *calcular* «¿está conectado A con B?» recorriendo. Pero sobre un grafo persistente quieres *preguntarlo en un lenguaje*, que el motor averigüe por ti, y que la respuesta sea coherente aunque otros estén escribiendo a la vez.
+- **La confianza.** Si un proceso se cae por la mitad de una escritura, ¿el grafo queda a medias? ¿corrupto? ¿recuperable? Una «estructura en memoria» ni se plantea eso — y por eso no es una base de datos.
+- **El recorrido.** Tus algoritmos del Vol.I eran bellos sobre `Vec<Vec<NodeId>>`, pero ahora los necesitas sobre datos que viven en disco. ¿Cómo recorrer un grafo que no cabe en RAM sin leerlo todo?
+
+La raíz del problema es la misma en todos los casos: **las estructuras de datos de la Parte I responden a «¿cómo represento y recorro esto en RAM?», pero ninguna responde a «¿cómo lo guardo, lo pregunto, lo protejo y lo recorro cuando deja de caber en RAM?».** Ese segundo grupo de preguntas es lo que convierte un grafo en una base de datos.
+
+Y aquí está la ironía que importa: **las preguntas del segundo grupo no son «más difíciles» que las del primero — son de otra naturaleza**. Una lista de adyacencia en RAM y un fichero en disco no son «lo mismo con más memoria»: el disco lee bloques, no bytes; el fichero no se puede «recorrer en o(n)» sin saber qué hay al principio; y un fallo eléctrico puede dejar bytes a medias. Esto obliga a re-diseñar el modelo para un medio con reglas distintas. Esa es la razón por la que el libro tiene Partes enteras dedicadas a «persistir» y a «recorrer sobre persistido» — no son adornos, son respuestas a problemas que la Parte I ni siquiera sabía que existían.
+
+## 6.3 Modelo mental: el viaje de cuatro estaciones
+
+Imagina un ferrocarril con cuatro estaciones. En cada una se sube algo que la anterior no podía llevar, y el destino final es el motor que construiremos. Es el mapa completo de lo que este libro hace.
+
+```
+�──────────────────────────────────────────────────────────────────────────┐
+│                            EL VIAJE DE LiraDB                             │
+│          (lo que ya hicimos  →  lo que este libro construye)             │
+└──────────────────────────────────────────────────────────────────────────┘
+
+ ESTACIÓN 1            ESTACIÓN 2            ESTACIÓN 3            ESTACIÓN 4
+ GRAFO EN RAM          GRAFO EN DISCO        GRAFO CONSULTABLE     GRAFO TRANSACCIONAL
+ -----------           ---------------       -----------------     -------------------
+ Vec / HashMap / CSR   páginas + pager        un LENGUAJE que       nadie se pierde a
+ lista de adyacencia   + buffer pool +        pide datos (LiraQL)   medio escribir:
+ BFS / DFS / SCC       índices (Parte III)    (Parte IV)            WAL, recovery,
+ (PARTE I)             (caps. 11-16)          (caps. 17-21)         MVCC (Parte VI)
+        |                     |                      |               (caps. 27-30)
+        └─── muere al ────────┴───¿le pregunto?─────┴──¿y si fallo?──┘
+             cerrar el        se recorre sin         se responde        sobrevive al crash
+             proceso          cargar todo en RAM     con un motor
+
+  + VAGÓN LATERAL:   ALGORITMOS SOBRE EL GRAFO PERSISTENTE  (Parte V, caps. 22-26)
+  + VAGÓN DE CIERRE: EL MOTOR COMO PRODUCTO REAL            (Partes VII-VIII, caps. 31-40)
+```
+
+El viaje es exactamente la historia de la informática de datos: primero aprendiste a representar (estación 1), ahora toca *persistir* (estación 2), luego *consultar* (estación 3) y finalmente *ser fiable bajo concurrencia* (estación 4). Cada estación añade lo que la anterior no podía:
+
+| Estación | Añade | Responde | Coste nuevo que introduce |
+|---|---|---|---|
+| 1 · RAM | velocidad, recorrido | «¿cómo represento/recorro?» | volatilidad: muere al salir |
+| 2 · Disco | durabilidad | «¿cómo guardo y encuentro?» | lentitud del disco, formato |
+| 3 · Consulta | un lenguaje | «¿cómo le pregunto al motor?» | parser, plan, ejecución |
+| 4 · Transaccional | consistencia | «¿cómo no corromperlo?» | logging, bloqueo, aislamiento |
+
+Fíjate en lo importante para el diseño pedagógico: **cada estación depende de la anterior.** No puedes consultar un grafo que no está persistido; no puedes transaccionar un grafo que no se consulta. Esto fija el orden del libro. La Parte I te dejó en la estación 1. A partir del cap. 7, pasamos a la 2.
+
+El viaje tiene, además, dos vagones laterales que cuelgan de él:
+
+- **El vagón de algoritmos** (Parte V, caps. 22-26) engancha en la estación 2: una vez que el grafo vive en disco, los recorridos del Vol.I — BFS, DFS, Dijkstra, PageRank — se vuelven preguntas caras (no cabe todo en RAM) y necesitan sus propias técnicas (proyección, streaming, frontiers).
+- **El vagón de producto** (Partes VII-VIII, caps. 31-40) engancha al final: cuando el motor ya guarda, consulta, calcula y se recupera, queda empaquetarlo como herramienta (CLI, importadores, benchmarks, observabilidad) y mirar el horizonte (producción, columnar, distribución).
+
+Estos dos vagones no son estaciones porque no añaden una *capacidad* nueva al motor — son aplicaciones o materializaciones del viaje. Un GDBMS sin ellos existe; sin las cuatro estaciones, no.
+
+### La idea que ordena todo el capítulo
+
+> **Las cuatro capabilidades que toda base de datos necesita — persistencia, consulta, transacciones e índices — son, exactamente, las respuestas a las cuatro preguntas que una estructura en memoria NO sabe responder.** Levantar un motor es subir las cuatro estaciones, una por una.
+
+### Un segundo diagrama: la historia de los modelos de datos
+
+El grafo no es una rareza: es la **cuarta generación** de un árbol de modelos. Codd lo criticó todo desde ahí dentro:
+
+```
+MODELOS DE DATOS (una historia en 4 generaciones)
+─────────────────────────────────────────────────
+ 1. JERÁRQUICO ............ árboles de ficheros predeterminados
+ 2. RED (CODASYL) ......... grafos de punteros entre registros
+ 3. RELACIONAL ............ tablas + claves exteriores  (Codd 1970; System R 1976)
+ 4. GRAFO (GDBMS) ......... nodos + aristas de 1ª clase con props  (Neo4j 2007/2010; GQL 2024)
+       ▲
+       └── LiraDB vive AQUÍ, heredando las tres generaciones anteriores
+```
+
+Codd, en 1970, dedicaba su sección 1 a explicar por qué los modelos de árbol y red eran insuficientes. El relacional quitó los punteros. Y el grafo, cuarenta años después, los trajo de vuelta — pero **tipados, con identidad y con propiedades**, no como flechas mudas. Ese es exactamente el hilo que el cap. 7 continuará con el property graph y el `Value`.
+
+Hay un detalle histórico que merece no perderse: la segunda generación, el **modelo de red CODASYL** (Conference on Data Systems Languages, 1969-71), ya era literalmente un *grafo*: registros conectados por punteros (`SET` y `OWNER`). Lo que le faltó fue justamente lo que el relacional ganó: **independencia de los datos** (Codd 1970, §1) — poder preguntar sin tener que saber cómo navegan los punteros. El modelo de grafos de 2007 (Neo4j) recogió esa idea y la vistió de propiedades: la arista dejó de ser un puntero mudo y pasó a ser un dato de primera clase con tipo, origen, destino y propiedades. La lección es importante para LiraDB: el grafo *no tira a la basura* las ideas del relacional, las hereda. Por eso el cap. 7 (modelo de datos) abrirá citando a Codd junto a Robinson/Webber/Eifrem — y por eso el cap. 28 (WAL) se parecerá, en su forma, al logging de System R.
+
+## 6.4 Primera solución (la que ya conoces y su espejo)
+
+La «primera solución» al problema de *guardar* es la que cualquier novato (nosotros incluidos) aplicaría al día uno, y es la solución con la que ya llevas cinco capítulos conviviendo: **mantener el grafo en memoria y, cuando toque terminar, volcarlo a un fichero a mano.**
+
+```
+// Primera solución (ingenua, y la tentación natural):
+//     1. construye el grafo en RAM (Parte I)
+//     2. al terminar: fs::write("graph.bin", serializa_grafo(&g))
+//     3. al abrir:     let g = deserializa_grafo(&fs::read("graph.bin"))
+```
+
+Suena razonable. ¿No basta? No. Porque ese volcado es a la vez la imagen deformada de lo que viene: un fichero plano al que nadie le pregunta nada. Para «guardar un grafo» en canalización, hemos de reconocer que la Parte I nos dio el *material* de la estación 1, pero aún no tenemos billete para la 2.
+
+Date cuenta de algo: si esa «primera solución» bastara, no habría existido System R. En 1976, con todo el conocimiento de Codd ya en la calle (el artículo de 1970 tenía seis años), el equipo de IBM se embarcó en un proyecto de años, no para «volcar tablas a fichero», sino para construir un sistema que **guardara, consultara y se recuperara**. La diferencia entre «serializar al final» y «persistir durante toda la vida del programa» es exactamente la diferencia entre un script y una base de datos. Si quieres convencerte, mira cuánto tardó System R en aparecer: seis años desde Codd hasta el primer DBMS relacional que funcionaba. Eso no se invierte en `fs::write`.
+
+## 6.5 Sus límites
+
+La solución del volcado plano se rompe en cuanto dejas de guardar y empiezas a *querer algo*:
+
+1. **Consulta imposible.** Para responder «dame los amigos de Ana y sus edades», tienes que leer TODO el fichero, deserializar todas las entradas, y filtrar en tu programa. No hay lenguaje, no hay optimizador, no hay índice: cada pregunta es un escaneo completo a mano.
+2. **Índices inexistentes.** Sin índices, encontrar el nodo con `city == "Oporto"` es recorrer el millón de nodos. El índice (cap. 15, hash + B+ tree) es lo que permite saltar a los datos; hoy estás condenado a la búsqueda lineal.
+3. **Sin transacciones, sin recuperación.** ¿Escribiste el fichero y el proceso se cayó al 60 %? El fichero queda a medias, y nadie sabe cómo volver a un estado coherente. Es el territorio de la Parte VI (caps. 27-30), que hoy no sabes ni nombrar.
+4. **Borrosidad del formato.** Cómo guardaste qué: los strings con longitud-prefijo, si es little-endian, cómo distinguir `Int` de `String`… Es el cap. 9 (encoding) y el modelo del cap. 7. Si lo improvisas, te perseguirá durante todo el libro.
+5. **El viaje en disco es distinto.** El disco no lee nodos; lee **páginas** (cap. 11). La estructura óptima en RAM (CSR) no es la óptima en disco. Estás a punto de descubrir (caps. 11-16) que persistir no es `serialize` del modelo en memoria, sino re-diseñar el modelo para un medio distinto.
+
+El límite de fondo: **el volcado guarda «cómo pensabas en RAM», no «una base de datos».** Una base de datos es aquello a lo que se le pueden hacer consultas, encontrar sin escanear, y confiar aunque algo falle. Nada de eso aparece en `fs::write`.
+
+## 6.6 Solución evolucionada: el esqueleto en cinco pilares
+
+La solución evolucionada es **LiraDB** — y este es el momento del capítulo donde la declaramos. No es una sola técnica; es un **esqueleto de motor** con cinco pilares, cada uno respondiendo a una pregunta que la solución ingenua dejó sin respuesta, y cada uno construyéndose en una parte concreta del libro. Apréndetelos bien: son el mapa de todo lo que viene.
+
+### Pilar 1 — Persistencia (guardar en disco) — Parte III, caps. 10-16
+
+> *Pregunta que responde:* ¿cómo sobrevive el grafo al cierre del programa y cómo lo encuentro sin escanearlo todo?
+
+Sin persistencia no hay base de datos, solo un grafo que se despide al cerrar. Ese pilar es la estación 2 del viaje y de él dependen todas las demás. Se construye en la Parte III, y una pieza ya la viste de lejos en el capítulo 11-piloto: la **página**. El capítulo 11 te enseñó *por qué el disco no lee bytes sino bloques*, y cómo una **slotted page** guarda registros de longitud variable sin corromperse. Alrededor de esa idea se levantan la persistencia append-only (cap. 10), el gestor de páginas (`Pager`, cap. 12), el buffer pool (cap. 13, LRU/Clock — clave en grafos power-law), el almacenamiento de adyacencias en disco (cap. 14, CSR persistente) y los índices (cap. 15). *Ejemplo que volverá:* la consulta «muestra los nodos con `city = Oporto`», imposible sin un índice que encuentre sin recorrer el millón de nodos (cap. 15).
+
+Una sutileza importante: la persistencia NO entra al programa como una «capa» aparte que se le añade al grafo de la Parte I. Obliga a **re-diseñar el modelo para un medio distinto**. La lista de adyacencia `Vec<Vec<NodeId>>` que era óptima en RAM (cap. 2) se aplastará en CSR para ser contigua en disco (cap. 14); las propiedades `HashMap<String, Value>` se serializarán con prefijo de longitud (cap. 9); los nodos y aristas dejarán de ser objetos Rust y se convertirán en bytes con una cabecera que detecta corrupción (cap. 11). Esa es la sensación de «el viaje en disco es distinto» del §6.5: persistir no es `serialize` del modelo en memoria, es un modelo nuevo que vive en páginas.
+
+### Pilar 2 — Consulta (un lenguaje para pedir datos) — Parte IV, LiraQL, caps. 17-21
+
+> *Pregunta que responde:* ¿cómo le pido datos al motor con un lenguaje, en vez de hacer yo el recorrido a mano?
+
+Guardar no basta si no puedes preguntar. La Parte IV construye **LiraQL**, tu mini-lenguaje de consulta de grafos, en la estirpe de MATCH-WHERE-RETURN (el subconjunto útil de Cypher que todos los GDBMS comparten — Francis et al. lo documentaron en SIGMOD 2018, y el estándar GQL lo formalizó en ISO/IEC 39075:2024). Levantar un lenguaje es un tour-de-force en miniatura: diseñas la gramática (cap. 17), construyes el lexer y el parser (cap. 18), pasas del árbol sintáctico al plan lógico (cap. 19), lo ejecutas con el modelo Volcano (cap. 20) y añades un optimizador pequeño pero real (cap. 21). *Ejemplo que volverá:* `MATCH (a:Person)-[r:KNOWS]->(b) WHERE a.name = "Ada" RETURN b.name` — la primera consulta que pide el grafo a LiraDB.
+
+Una sutileza: este pilar se construye sobre el anterior (no puedes consultar lo no persistido), pero también introduce una **bisagra de diseño** importantísima que conviene no perder: el trait `GraphStore` del cap. 8. La consulta no llama a disco; llama al trait, que decide si la respuesta sale de RAM, de páginas cacheadas o del disco. Esa indirección es lo que permitirá que el motor madure (cambiar el `Pager`, añadir un índice, mover una adyacencia a CSR) sin tocar ni una línea de LiraQL. Si el lector se salta el cap. 8, no entiende por qué la Parte IV no se derrumba cuando la Parte III cambia.
+
+### Pilar 3 — Algoritmos sobre datos persistentes — Parte V, caps. 22-26
+
+> *Pregunta que responde:* ¿qué pasa cuando el algoritmo de la Parte I se ejecuta sobre un grafo que ya no cabe en RAM?
+
+Este pilar es lo que distingue a un GDBMS de una biblioteca: no solo guarda y pregunta, **calcula**. Recorriste Dijkstra, Bellman-Ford, A*, PageRank y Louvain en el Vol.I sobre grafos de juguete en RAM. Ahora los ejecutas sobre el grafo persistente, leyendo pesos de las **propiedades de las aristas** (que el cap. 7 te dará el modelo para guardar). *Ejemplos que volverán:* `SHORTEST PATH FROM node:1 TO node:42 WEIGHT relationship.distance` (cap. 22, con la lección de que el camino con menos saltos no es el más barato); `PageRank` para encontrar «quién es central» en la red (cap. 24, con su lección de que importa *quién* te enlaza, no cuántos); `¿están conectados?` vía componentes (revisitando el cap. 5). Y, para rematar, **no agotar la RAM** al ejecutarlos sobre grafos enormes — proyección, streaming y frontiers (cap. 26).
+
+La sutileza algorítmica del pilar es la que ya anunció el cap. 4 al hablar de BFS por fronteras: si el grafo no cabe en RAM, un BFS «a lo bruto» que cargue todos los vecinos de cada nodo es inviable. La Parte V reusa la idea de ola/frontera (cap. 4) pero, además, añade técnicas de **proyección** (un `GrafoPonderado` derivado del `GraphStore`, cap. 26) y de **presupuestos** (parar el recorrido tras cierto número de saltos o aristas leídas) para que un algoritmo no se ahogue en disco. Es exactamente el patrón «calcular sin cargar todo», y se convierte en el contrato del pilar.
+
+### Pilar 4 — Fiabilidad (transacciones, WAL, recuperación, concurrencia) — Parte VI, caps. 27-30
+
+> *Pregunta que responde:* ¿qué pasa si el proceso se cae a mitad de escritura, o si dos hilos escriben a la vez?
+
+Este es el pilar que System R le mostró al mundo en 1976 (logging y recovery en un entorno de actualización compartida) y que separa a un motor «que funciona» de un motor «en el que confías». La Parte VI te pedirá que digas qué significa una transacción ACID de verdad (cap. 27), que construyas el write-ahead log (WAL, cap. 28), que recuperes el estado tras un fallo (cap. 29) y que manejes snaps, concurrencia y aislamiento con MVCC (cap. 30). Añade un guiño que ya tuviste: el borrow checker del trait `GraphStore` (cap. 8) es el germen del «único escritor» que aquí se vuelve transacción. *Ejemplo que volverá:* `BEGIN; ...; COMMIT;` (o la recuperación de un grafo que quedó a medias tras un `kill -9` a mitad del WAL).
+
+Y aquí se cierra el bucle con un detalle precioso: la Parte VI también **confirma la promesa del cap. 3**. Recordarás que el cap. 3 introdujo `(slot, generation)` para que un id no se reciclara nunca. La Parte VI (caps. 28-30) demuestra que esa promesa sigue siendo cierta después de un crash y bajo concurrencia: la generación no se reinicia, el WAL la registra junto al dato, y el recovery la respeta. Sin la Parte VI, la promesa del cap. 3 era un pacto sobre el papel; con ella, es un contrato verificable.
+
+### Pilar 5 — El motor real (CLI, importación, producto técnico) — Partes VII-VIII, caps. 31-40
+
+> *Pregunta que responde:* ¿cómo se convierte este código en algo que alguien usa de verdad?
+
+Un motor no vive en un `lib.rs` académico: vive en una **CLI** (`liradb`, cap. 31), en la importación/exportación de datos reales (CSV, JSONL, GraphML, cap. 32), en pruebas, benchmarks, perfilado y observabilidad (caps. 33-35), y en una arquitectura final documentada (cap. 36). Y una vez que LiraDB es sólido y manejable, el libro te empuja al horizonte: qué necesitaría una base de datos de producción (cap. 37), el almacenamiento columnar y la ejecución vectorizada (cap. 38), joins y consultas cíclicas (WCOJ, cap. 39) y la distribución de una base de datos de grafos (cap. 40). Es la estación final: del juguete al instrumento.
+
+Este pilar es el que la Parte I no podía ni soñar: por muy bueno que sea tu BFS en RAM, sin CLI nadie puede invocarlo desde su terminal, y sin importadores nadie carga datos del mundo real en él. Las Partes VII-VIII son las que convierten un programa que pasa tests en una herramienta que alguien usa. Son, además, la *prueba* de que los cuatro pilares anteriores funcionan integrados: si la CLI responde a una consulta en milisegundos, sabes que persistencia + consulta + algoritmo + fiabilidad están haciendo su trabajo al unísono.
+
+---
+
+Fíjate en cómo cierran los cinco pilares sobre los cuatro clásicos: **persistencia (1)** y **transacciones (4)** son puros en la lista clásica; **consulta (2)** une la «consulta» clásica con el lenguaje; **índices** quedan dentro de la persistencia (cap. 15); y **algoritmos (3)** y **motor real (5)** son los dos aditamentos que hacen de LiraDB un *graph* DBMS y un *producto*, no una relacional disfrazada. Por eso este capítulo los presenta como el esqueleto del motor: porque son exactamente las piezas que los próximos treinta y cuatro capítulos levantan.
+
+### Tabla resumen: pilar ↔ pregunta ↔ Parte ↔ ejemplo que volverá
+
+| Pilar | Pregunta que responde | Parte del libro | Caps. | Ejemplo que volverá |
+|---|---|---|---|---|
+| 1 · Persistencia | ¿sobrevive al cierre? ¿cómo encuentro sin escanear? | III | 10-16 | `MATCH (n) WHERE n.city = 'Oporto'` (índice, cap. 15) |
+| 2 · Consulta | ¿cómo le pregunto con un lenguaje? | IV | 17-21 | `MATCH (a:Person)-[:KNOWS]->(b) RETURN b.name` (cap. 17) |
+| 3 · Algoritmos | ¿qué pasa sobre datos persistentes? | V | 22-26 | `SHORTEST PATH FROM 1 TO 42 WEIGHT r.distance` (cap. 22) |
+| 4 · Fiabilidad | ¿qué pasa si fallo a mitad o escriben dos a la vez? | VI | 27-30 | `BEGIN; ...; COMMIT;` y recovery tras `kill -9` (cap. 28) |
+| 5 · Motor real | ¿cómo lo usa alguien? | VII-VIII | 31-40 | `liradb load data.csv; liradb query "MATCH ..."` (cap. 31) |
+
+## 6.7 Por qué así (los porqués de la arquitectura)
+
+Este capítulo no tiene código, pero sí un porqué de arquitectura detrás de cada elección. Grilla rápida:
+
+- **¿Por qué definir «base de datos» por cuatro capabilidades y no por «guardar en un fichero»?** Porque el criterio define el trabajo. Si «guardar a fichero» fuera suficiente, ya habrías terminado con `fs::write`. La consulta, la transacción y el índice son lo que separa un volcado de un motor. Es el mismo criterio con el que Codd separó «saber cómo se guardan los datos» de «poder preguntarles» (CACM 13(6), 1970), y con el que System R (Astrahan et al., TODS 1976) lo demostró en la práctica. Modo de fallo si no lo hacemos: el lector cierra este capítulo creyendo que «guardar en un fichero» ya es una base de datos, y cada capítulo futuro de las Partes III-VI le parecerá un sobreesfuerzo.
+- **¿Por qué presentar el grafo como 4.ª generación?** Porque la continuidad explica por qué LiraDB hereda del relacional: las lecciones de Codd (tipar, identidad, independencia de datos) y de System R (logging, recovery, concurrencia) no se reinventan; se re-aplican a un modelo nuevo. El cap. 7 lo confirmará al citar a Codd y a Neo4j en el mismo párrafo. Sin esta genealogía, el lector trata a LiraDB como «otro grafo más» y pierde la conexión con cincuenta años de ingeniería de datos.
+- **¿Por qué el orden del libro (persistir → consultar → algoritmos → fiabilidad → producto)?** Porque las dependencias lo exigen: no consultas lo que no está persistido, no transaccinas lo que no se consulta, no haces producto de algo inmaduro. Cada pilar es prerequisito del siguiente. Es el viaje de las cuatro estaciones, y no se pueden subir en otro orden. La forma de comprobarlo: si intentas escribir la consulta del cap. 17 sin la persistencia del cap. 11, no tienes dónde leer.
+- **¿Por qué LiraDB es *embedded* y monolítica, no un servidor de red?** Por enseñanza. La complejidad de la red y la distribución se pospone deliberadamente a los caps. 37 y 40; primero se construye a fondo el núcleo (almacenar + consultar). Es la ruta que el prólogo llamaba «embedded, didáctico», y es lo que hace factible el proyecto. Construir un servidor de red desde el día uno antepone la dificultad de red a la de almacenamiento — y eso es exactamente lo que un libro paso a paso NO puede permitirse.
+- **¿Por qué añadir «algoritmos» como pilar propio y no como aplicación externa?** Porque un GDBMS se justifica por las preguntas que una relacional no responde barato («¿a cuántos saltos?», «¿quién es central?», «¿qué comunidades hay?»). Si esos algoritmos viven en una herramienta externa, no tienes un motor; tienes una biblioteca de grafos con SQL pegado. Esa es la línea divisoria entre un GDBMS y Neo4j-solo-como-biblioteca: los algoritmos son parte del contrato del motor.
+
+## 6.7.1 Cómo lo hace una BBDD real (lo que este capítulo aprende de la industria)
+
+Es útil anclar cada pilar a un motor que ya lo resolvió, para que el lector vea que no estamos inventando sino re-aplicando lecciones probadas:
+
+- **Neo4j** (el GDBMS de referencia desde 2007): persiste con su formato propio (basado en nodos + relaciones + propiedades en archivos), consulta con Cypher, ejecuta algoritmos vía APOC y sus librerías internas, transacciona con su propio control de concurrencia, y expone una API de producto madura (Neo4j Browser, Neo4j Bloom, drivers para 8+ lenguajes). Es el caso canónico de los **5 pilares** que este capítulo describe: cada uno tiene su equivalente en Neo4j. (Fuente: Robinson, Webber & Eifrem, *Graph Databases*, 2.ª ed., cap. 8.)
+- **TigerGraph** (el GDBMS de producción con mejor rendimiento en grafos densos): usa **CSR en memoria** como formato canónico (lo que el cap. 14 de LiraDB replicará), un lenguaje propio (GSQL), y una arquitectura «single-node embebible o distribuida». Su elección de CSR confirma una de las decisiones del cap. 2 de LiraDB: para recorrer, CSR gana a `Vec<Vec>` en producción. (Fuente: *TigerGraph Documentation*, architecture overview.)
+- **Memgraph** (la apuesta por in-memory + streaming): mantiene el grafo en RAM pero con **persistencia transaccional** vía WAL (lo que la Parte VI de LiraDB enseñará a construir), expone Cypher, y se publicita como «base de datos en streaming» — exactamente el rol del vagón lateral de la Parte V en este libro.
+- **Amazon Neptune** y **JanusGraph** (los GDBMS serverless/distribuidos): añaden el vagón «distribución» del cap. 40 sobre un núcleo de GDBMS clásico. Neptune usa un backend de triples (más cercano a RDF) pero expone tanto GQL como SPARQL; JanusGraph es la opción open-source compatible con el ecosistema de Apache TinkerPop/Gremlin.
+- **PostgreSQL + Apache AGE** (la prueba de que un GDBMS puede nacer como extensión de un RDBMS): añade el modelo de grafos como una capa sobre tablas relacionales, aprovechando toda la fiabilidad transaccional que PostgreSQL ya tiene. Es la prueba industrial de que «la Parte VI (fiabilidad) ya estaba resuelta» — solo faltaba ponerle encima el property graph. (Fuente: documentación de Apache AGE.)
+- **SQLite** (la prueba inversa: una BBDD sin servidor que sí implementa los 4 pilares): un único fichero, transaccional (ACID), con índices hash y B+ tree, y con un lenguaje SQL. No es de grafos, pero demuestra que los pilares son ortogonales al modelo de datos: la misma ingeniería de páginas + WAL + buffer pool sirve para grafos que para tablas.
+
+Lo que LiraDB aprende de toda esa familia: **los cinco pilares son el patrón, no el detalle**. La elección de CSR vs Vec<Vec>, de Cypher vs LiraQL, de MVCC vs 2PL, de Java vs Rust — son decisiones de implementación que cambian, pero las cuatro capacidades clásicas son invariantes. Quien las entienda podrá leer el código de cualquier GDBMS sin sentirse perdido.
+
+## 6.8 Las trampas (ojo, cuidado con…)
+
+- **Creer que una biblioteca de grafos ya es una base de datos.** No. La biblioteca no persiste (tu grafo muere al cerrar), no cataloga, no consulta con lenguaje ni transacciona. La frontera son los pilares. Si no la ves, cada capítulo futuro te parecerá «por qué tanto lío». El test decisivo: si tu «biblioteca» sobrevive a un `kill -9` y responde consultas en milisegundos, ya no es una biblioteca — es un GDBMS con vocabulario humilde.
+- **Creer que «base de datos» = «volcado a fichero».** Un `fs::write` no da consulta, ni índices, ni recuperación. Es solo la primera semilla del pilar persistencia, y del cap. 10 (append-only) y el 11 (páginas) depende que sea algo más. El volcado es a la base de datos lo que el boceto a la novela: ambos tienen «lo mismo» por encima, pero el primero no aguanta una segunda lectura.
+- **Confundir los 4 pilares clásicos con los 5 del libro.** No contradice; el libro REORDENA «consulta» y añade «algoritmos» y «producto» porque es un GDBMS con una pedagogía. Entiende los 4 como el *qué es una BD* y los 5 como el *mapa de este libro*. Quien cuenta 4 pilares y ve «5 capítulos», está mezclando niveles.
+- **Confundir *persistencia* con *durabilidad/recuperación*.** Persistencia es «sobrevive al cierre del proceso» (Parte III); durabilidad y solidez frente a crash es otra cosa, más profunda (Parte VI). El WAL no es «otra forma de guardar»: es «no corromper lo guardado si todo se va al carajo a mitad». Esta distinción es la que pagarás si la confundes cuando en el cap. 28 hablemos de *write-ahead*: persistencia es lo que hiciste al escribir el fichero; durabilidad es lo que pasa cuando el sistema se cae antes de que el fichero se cierre.
+- **Pensar que el orden del libro es opinable.** El orden persistir → consultar → algoritmos → fiabilidad → producto NO es estético; es de dependencias técnicas. Saltar a algoritmos (Parte V) sin tener persistencia (Parte III) deja al lector ejecutando Dijkstra sobre `Vec<Vec<NodeId>>` y volviendo a empezar cuando llegue a disco. Es la misma razón por la que no aprendes a cocinar el soufflé antes de aprender a hervir agua.
+- **Creer que el modelo del cap. 7 ya es la «base de datos entera».** El cap. 7 define el modelo en RAM; lo que falta es *cómo se serializa* (cap. 9), *cómo se pagina* (cap. 11), *cómo se cataloga* (caps. 12-13). Quien cierre el cap. 7 pensando «ya tengo una BBDD» no ha entendido las Partes III-VI. El modelo sin persistencia es como un programa sin compilador: describe lo que quieres, pero no ejecuta nada.
+
+## 6.9 Una historia pequeña
+
+En la primera versión real de LiraDB, antes de que existiera este capítulo — es decir, antes de que existiera el *plan* — guardar un grafo significaba una función que recorría los nodos y escribía texto plano. Funcionó dos semanas. Al día quince, alguien quiso «la edad de Ana», y tuvimos que leer el fichero entero para encontrarla, porque no había manera de preguntarle al fichero, solo de escarbarlo. A la semana siguiente, un proceso se cayó a mitad de una escritura y el fichero quedó a medio nodo, y nadie pudo decirnos si esa entrada era válida o basura con forma de entrada válida.
+
+No reescribimos el código ese día. Reescribimos la PEDAGOGÍA: dibujamos el viaje de las cuatro estaciones, enumeramos los pilares y decidimos que el libro entero sería levantarlos en orden. Cuando, unos capítulos después, construyamos la página (cap. 11) y el índice (cap. 15) y el WAL (cap. 28), no estaremos improvisando: estaremos subiendo las estaciones 2, 3 y 4 del mapa que este capítulo te muestra. Ese es el valor de tener un plan.
+
+La moraleja, en una frase, es la que también le sacó el equipo de System R en 1976: **construir un motor no se improvisa; se levanta piedra a piedra, con un mapa que dice qué piedra va primero y por qué.** Y el mapa de este libro es este capítulo. Quien lo lea como «una introducción bonita» se perderá cada decisión de los caps. 9-30. Quien lo lea como «el plano de un motor» entenderá por qué cada página de disco, cada plan de consulta, cada línea de WAL, existe.
+
+## 6.10 Lo que te llevas
+
+- Una **base de datos** no es «un grafo que se guarda»: es una estructura que persiste, se consulta, transacciona y se indexa. Las cuatro capabilidades son la respuesta a las cuatro preguntas que la RAM no sabe responder.
+- Una **biblioteca de grafos** (lo que hiciste en la Parte I) y un **GDBMS** (lo que construimos del cap. 7 en adelante) se distinguen por esas capabilidades, no por el vocabulario. La pregunta crítica del CORPUS tiene aquí su respuesta: no es lo mismo, y la frontera son los pilares.
+- El grafo es la **4.ª generación** de modelos de datos (jerárquico → red → relacional → grafo), y LiraDB hereda las lecciones de Codd y de System R. El grafo no tira por la borda el relacional: lo re-orienta a redes, conservando la independencia de datos y añadiendo aristas con propiedades.
+- El esqueleto del motor son **5 pilares**: Persistencia (Parte III), Consulta/LiraQL (Parte IV), Algoritmos sobre disco (Parte V), Fiabilidad (Parte VI), Motor real/producto (Partes VII-VIII).
+- El **viaje de las 4 estaciones** (RAM → disco → consulta → transacción) fija el orden del libro: no se puede subir ninguna estación antes de la anterior. Los dos vagones laterales (algoritmos sobre persistido, motor como producto) cuelgan del viaje, pero no lo redefinen.
+- Cada pilar se ancla a un ejemplo que volverá: `SHORTEST PATH` (cap. 22), `PageRank` (cap. 24), `¿está conectado?` (cap. 5 → cap. 26), `MATCH…RETURN` (cap. 17), `BEGIN…COMMIT` (caps. 27-30). Cuando veas esos ejemplos implementados, reconocerás el pilar al que pertenecen.
+- El capítulo **cierra la Parte I y abre la Parte II**. Los caps. 1-5 construyeron un grafo en RAM; el cap. 6 muestra por qué eso no basta; del cap. 7 en adelante empezamos a levantar el motor de verdad.
+
+## 6.11 Qué hemos sacrificado
+
+Sería injusto no decirlo: este capítulo paga un precio por ser mapa y no construcción.
+
+- **No tiene código.** Toda la Parte I tiene Rust ejecutable; este capítulo se queda en prosa y diagramas. El lector que prefiera ver bytes no encuentra consuelo aquí — y debe esperar al cap. 7.
+- **No tiene tests propios.** Los pilares no se verifican todavía: solo se nombran. La verificación empieza con el primer test del cap. 7 (`cargo test -p vol2-liradb cap07_modelo`) y se consolida cuando la CLI del cap. 31 ejecuta una consulta real.
+- **Su «prueba de fuego» es de coherencia, no de ejecución.** El lector demuestra que entendió el mapa cuando puede decir, ante cualquier capítulo futuro, a qué pilar pertenece. No hay una corrida `cargo` que confirme esto — solo el siguiente capítulo del libro.
+- **Anuncia herramientas que aún no existen.** `LiraQL`, WAL, MVCC, PageRank, CSR persistente, CLI — todos se *mencionan* aquí con su capítulo, pero no se construyen. Si el lector abre este capítulo y espera ver `MATCH`, verá solo la promesa.
+
+Lo que ganamos a cambio: **coherencia**. El resto del libro se lee con un plano en la cabeza. Cada decisión técnica aparece con su porqué, su alternativa, su modo de fallo y su fuente — pero sobre todo, con su pilar. Eso convierte cada capítulo posterior en un paso del plano, no en una sorpresa.
+
+## 6.12 Pin de batalla
+
+> *«En RAM un grafo es lo que calculas; en una base de datos es lo que persiste, lo que consultas y lo que guardas aunque todo se apague. La diferencia no es el algoritmo: es la persistencia, y todo lo que cuelga de ella.»*
+
+Y el mapa de una sola mirada del capítulo:
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                      LiraDB en una sola imagen                            │
+├──────────────────────────────────────────────────────────────────────────┤
+│ Parte I (caps. 1-5)   →  Grafo en RAM .............................. ✓  │
+│ Parte III (caps. 10-16) → Persistencia (pilar 1) .................... → │
+│ Parte IV (caps. 17-21) → Consulta / LiraQL (pilar 2) ................ → │
+│ Parte V (caps. 22-26) → Algoritmos sobre disco (pilar 3) ............ → │
+│ Parte VI (caps. 27-30) → Fiabilidad / WAL / MVCC (pilar 4) .......... → │
+│ Partes VII-VIII (caps. 31-40) → Motor real / producto (pilar 5) ..... ✓  │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+Si solo te llevaras una tabla de este capítulo, debería parecerse a esta.
+
+## 6.13 Si solo lees 30 segundos
+
+La Parte I te dio el grafo-en-RAM (estación 1 del viaje). Una base de datos es lo que sube las otras tres estaciones: **persistir** el grafo en disco (Parte III), **consultarlo** con un lenguaje, LiraQL (Parte IV), **ejecutar algoritmos** sobre él sin cargarlo entero (Parte V) y **hacerlo fiable** bajo fallos y concurrencia (Parte VI), para convertirlo al final en un **producto real** (Partes VII-VIII). Esos son los 5 pilares del motor LiraDB — y el resto del libro es levantarlos, en orden, capítulo a capítulo. Empieza ahora: cap. 7, el modelo de datos.
+
+Si solo recuerdas una cosa de este capítulo, que sea esto: **una biblioteca de grafos te da un grafo; un GDBMS te da una base de datos que además es un grafo.** La diferencia es persistencia + consulta + transacciones + índices + (en nuestro caso) algoritmos y producto. Quien ve la frontera, ve el libro. Quien no la ve, lo lee como cinco capítulos de algoritmia con un motor de regalo al final.
+
+## 6.14 Ejercicios
+
+### Ejercicios resueltos
+
+**1. Lista los cuatro pilares clásicos de una base de datos y el problema que resuelve cada uno.**
+
+Persistencia (los datos sobreviven al cierre del proceso: resuelve «¿dónde queda el grafo cuando apago?»); consulta (un lenguaje para pedir datos: resuelve «¿cómo le pregunto al motor en vez de escarbar yo el fichero?»); transacciones (consistencia frente a fallos y concurrencia: resuelve «¿qué pasa si se cae a mitad o escriben dos a la vez?»); índices (encontrar sin escanear: resuelve «¿cómo encuentro el nodo de Oporto sin recorrer el millón?»). Ninguno lo puede responder la estructura en RAM de la Parte I.
+
+**2. ¿Por qué el viaje tiene que subir las estaciones en ese orden?**
+
+Porque cada estación depende de la anterior: no hay grafo consultable (estación 3) si no hay grafo persistido (estación 2); no hay grafo transaccional (estación 4) si no hay consultas a transaccionar (estación 3). Por eso el libro persiste (Parte III) antes de consultar (Parte IV), consulta antes de fiabilizar (Parte VI) y fiabiliza antes de empaquetar como producto (Partes VII-VIII).
+
+**3. ¿Qué distingue exactamente a una biblioteca de grafos de un GDBMS?**
+
+Una biblioteca de grafos te da un grafo en memoria con operaciones (añadir nodo, añadir arista, recorrer vecinos, ejecutar BFS/DFS); pero **muere al cerrar el proceso**, no responde a un lenguaje, no se recupera tras un crash, no escala más allá de la RAM, y no garantiza consistencia bajo concurrencia. Un GDBMS (LiraDB, Neo4j, TigerGraph) añade persistencia (los datos sobreviven), un lenguaje de consulta (Cypher/GQL/LiraQL), transacciones con recuperación (ACID + WAL), e índices para encontrar sin escanear. La frontera operativa son los pilares del §6.6: si tu sistema no cumple al menos las cuatro capabilidades clásicas, no es un GDBMS — es una biblioteca con vocabulario de base de datos.
+
+### Ejercicios propuestos
+
+**Esencial (recordar — RETRIEVAL).** Sin mirar el capítulo ni la tabla de contenidos, escribe de memoria: (1) los **5 pilares de LiraDB** con su Parte correspondiente y una pregunta de negocio por pilar; (2) la frase que responde «¿qué convierte un grafo en una base de datos?». Verifica contra §6.6 y §6.10. Pistas graduadas: (1) empieza por «¿sobrevive al apagado?»; (2) «¿se lo pido con un lenguaje?»; (3) «¿y si el proceso se cae a mitad?» y «¿lo encuentro sin recorrerlo todo?». Criterio: los cinco pilares y su porqué, escritos de memoria, sin reconocimiento. Es la primera vez que el libro exige retrieval de un mapa completo — y es el germen del hábito que cada capítulo posterior te pedirá cultivar.
+
+**Intermedio (analizar — SPACING a Vol.I caps. 2/4-5 y Vol.II caps. 1-5).** Toma el minigrafo social de la Parte I (Ada→Bo→Carla→Dani). Para CADA pilar, inventa una pregunta real que el grafo-en-RAM no puede responder de forma persistente, e indica la Parte del libro que la resolvería. P.ej. «¿está conectado Ada con Dani?» → persistencia+algoritmo (Parte V); «¿cuál es el tren más barato?» → algoritmos con pesos de arista (cap. 22); «¿quién es el contacto central?» → PageRank (cap. 24); «¿cómo le pregunto sin recorrerlo todo?» → consulta (Parte IV); «¿qué pasa si se cae el proceso a mitad de una inserción?» → fiabilidad (Parte VI). Pistas: (1) agarra los 5 pilares uno a uno; (2) añade el dato (peso, centralidad, ciudad) que el grafo de caps. 1-5 no guarda; (3) di la Parte. Criterio: 5 preguntas bien ancladas a pilar + Parte.
+
+**Experto (crear — INTERLEAVING a caps. 7-9).** Dibuja el diagrama de dependencias del motor recién anunciado: 5 nodos (un pilar cada uno) y una flecha «necesita de» por par. ¿Qué debe existir antes que qué? Sobre el grafo, señala el capítulo-bisagra que desacopla dos pilares (pista: el trait `GraphStore` del cap. 8 es la pieza que permite cambiar «disco» sin tocar «consulta»). Pistas: (1) un lenguaje de consulta, ¿sobre qué lee?; (2) un algoritmo, ¿sobre qué recorre?; (3) una transacción, ¿qué protege? Criterio: orden de dependencias correcto y bisagra identificada (prepara cap. 8).
+
+**Modelo de respuesta (rúbrica explícita del experto)**: el grafo de dependencias tiene 5 nodos (P1 Persistencia, P2 Consulta, P3 Algoritmos, P4 Fiabilidad, P5 Motor real) y las flechas mínimas: P1 → P2 (consulta lee de persistencia), P1 → P3 (algoritmos recorre persistencia), P2 → P3 (algoritmos usan resultados de consulta), P2 → P4 (transacciones protegen consultas), P1 → P4 (transacciones registran en persistencia), P1+P2+P3+P4 → P5 (el motor real integra todo). La **bisagra** que desacopla P1 de P2 es el trait `GraphStore` del cap. 8 — un contrato que dice «dame nodos y aristas», sin que el cliente sepa si la respuesta sale de RAM, del buffer pool, o del disco. Esa indirección es lo que permite que P1 madure (cambiar el `Pager`, añadir un índice, mover adyacencia a CSR) sin tocar ni una línea de P2.
+
+## 6.15 Para profundizar
+
+- **E. F. Codd**, *A Relational Model of Data for Large Shared Data Banks*, CACM 13(6), pp. 377-387, 1970 — la sección 1 critica los modelos de árbol y red: la semilla de «por qué hace falta un modelo mejor» que hoy re-cuenta el grafo. Re-leer solo la §1 es uno de los mejores ejercicios de un ingeniero de datos: once páginas que cambiaron cómo se piensa el almacenamiento.
+- **M. M. Astrahan, et al.** (incl. **J. Gray**), *System R: Relational Approach to Database Management*, ACM TODS 1(2), pp. 97-137, 1976 — el primer DBMS relacional de verdad: logging, recovery, actualización compartida. La demostración práctica de los pilares 2 y 4. Gray firmaba como autor principal del logging; esa es la genealogía directa del WAL del cap. 28.
+- **I. Robinson, J. Webber, E. Eifrem**, *Graph Databases*, 2.ª ed., O'Reilly/Neo4j, 2015 — GDBMS vs biblioteca de grafos (caps. 1 y 8), y la definición del property graph que el cap. 7 detallará. Lectura obligada para cualquiera que vaya a construir (o usar) una GDBMS.
+- **N. Francis et al.**, *Cypher: An Evolving Query Language for Property Graphs*, SIGMOD 2018 — el lenguaje de consulta de grafos del pilar 2; y **ISO/IEC 39075:2024 (GQL)**, el estándar que lo formaliza. Cypher es la fuente directa de LiraQL (cap. 17).
+- **A. Petrov**, *Database Internals*, O'Reilly, 2019, caps. 1-3 — la mirada actual al layout de páginas y al log estructurado; el puente hacia la Parte III de este libro. Si este capítulo despierta tu curiosidad sobre cómo se «baja» un modelo a disco, ese libro es el siguiente paso.
+- **CODASYL Data Base Task Group**, *April 1971 Report*, ACM SIGMOD Record (varias reimpresiones) — el documento fundacional del modelo de red: la 2.ª generación de la que habla este capítulo, ya literalmente un grafo, sin propiedades ni identidad estable. Leerlo es ver qué le faltó al grafo de 1971 para ser una base de datos moderna.
+- Dentro del libro: cap. 7 (el modelo de datos, siguiente), cap. 8 (el trait `GraphStore`), caps. 11-16 (la estación 2, con el cap. 11-piloto como primera página), caps. 22 y 24 (SHORTEST PATH y PageRank anclados aquí), `tabla-de-contenidos.md` (el mapa de Partes).
+
+## 6.16 Mini-diálogo: en guardia nocturna
+
+> — O sea, que llevo cinco capítulos construyendo… ¿un grafo en un `Vec`?
+>
+> — Sí. Y bien construido. Pero un `Vec` es una estructura de datos, y va a morir al cerrar el programa. Eso es la estación 1 del viaje.
+>
+> — ¿Y una base de datos es… la estación 2?
+>
+> — La 2, la 3 y la 4 juntas: guardarlo en disco sin corromperlo, poder preguntárselo con un lenguaje, y que aguante si todo se apaga a mitad. Por eso el resto del libro existe: son años de lecciones — Codd, System R, Neo4j — aplicadas a un solo edificio que tú vas a levantar piedra a piedra.
+>
+> — Entonces el cap. 7 es…
+>
+> — La primera pegada. Decide qué significa exactamente "tener un grafo" dentro de una base de datos: qué tipos guarda una propiedad, qué es un id, qué diferencia un label de una propiedad. Es el primer ladrillo del motor que acabamos de dibujar. Manos a la obra.
+>
+> — Un momento: si los pilares son cinco, ¿por qué el libro no empieza directamente con la persistencia, en vez de pasar por la Parte I de grafos-en-RAM?
+>
+> — Porque sin un grafo que valga la pena persistir, persistir no tiene sentido. La Parte I te enseñó a *pensar* en grafos: a vestirlos con identidad, etiquetas y propiedades, a recorrerlos bien. Sin ese modelo, persistirías bytes sin significado. El orden del libro es «primero piensa bien, luego guarda bien»: lo que Codd hizo en 1970 (pensar el modelo) antes de que System R lo guardara en 1976.
+>
+> — Y la consulta, ¿no podría ir antes de la persistencia? ¿Una API en RAM?
+>
+> — Esa es exactamente la diferencia entre una *biblioteca de grafos* y un *GDBMS*: la consulta sin persistencia es una API bonita que muere al cerrar. La consulta CON persistencia es lo que el cap. 17 empezará a construir. Y por eso la Parte III va antes que la IV: no lees del disco si todavía no tienes disco.
+>
+> — ¿Y si solo me interesa el grafo matemático? ¿Me sobra todo el Vol.II?
+>
+> — Te sobra la mitad, pero no la totalidad. El Vol.I te dio el analizador; el Vol.II te da el constructor. Si solo quieres leer grafos y aplicarles algoritmos en RAM, el Vol.I basta — y este capítulo lo habrás leído como «una nota al margen del Vol.I». Pero si quieres guardar grafos, consultarlos, recorrerlos por tipo, protegerlos ante un crash, o — sobre todo — **comprender por qué los GDBMS modernos son como son**, este capítulo es donde empieza la conversación. Y termina cuando el último `cargo test` del cap. 40 pase en verde.
+
+---
+
+*(Próximo capítulo: 7 — El modelo de datos de LiraDB (Property Graph + Value). Aquí dibujamos el esqueleto del motor; ahora daremos cuerpo a su primera pieza: el modelo de datos que todo lo demás persiste, indexa, consulta y recorre.)*
 # Capítulo 7 — El modelo de datos de LiraDB (Property Graph + Value)
 
 > *«Un grafo de bits te dice dónde hay un enlace. Un modelo de datos te dice qué significa ese enlace.»*

@@ -1,6 +1,12 @@
 portada.md
 prologo.md
 tabla-de-contenidos.md
+cap-01-que-es-realmente-un-grafo.md
+cap-02-como-representar-un-grafo-en-memoria.md
+cap-03-identidad-referencias-y-datos-estables.md
+cap-04-el-primer-recorrido-busqueda-en-anchura-bfs.md
+cap-05-profundidad-ciclos-y-componentes-dfs-componentes-topologica-scc.md
+cap-06-que-convierte-un-grafo-en-una-base-de-datos.md
 cap-07-el-modelo-de-datos-de-liradb-property-graph-y-value.md
 cap-08-disenar-una-api-antes-de-persistir-trait-graphstore.md
 cap-09-del-objeto-al-byte-encoding-endianness-versionado.md
