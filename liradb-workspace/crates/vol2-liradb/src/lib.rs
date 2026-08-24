@@ -242,6 +242,31 @@
 //!   actualización perdida pasan a estar prohibidas) aunque write skew
 //!   sigue pasando.
 //!
+//! `cap32_import_export` — Importación y exportación (CSV, JSONL, GraphML):
+//!   Tres formatos se exponen sobre el trait `GraphStore`: CSV estilo
+//!   neo4j-admin (`:ID`, `:LABEL`, `:START_ID`, `:END_ID`, `:TYPE`, sufijos
+//!   de tipo `:STRING`/`:INT`/`:FLOAT`/`:BOOL`), JSONL discriminador
+//!   (`"tipo":"nodo"|"arista"`, sin pérdida, soporta `Value::Bytes`),
+//!   y GraphML XML (con mapeo id externo→interno por orden de aparición).
+//!   CSV y JSONL son **streaming**: cada registro se procesa en autocommit
+//!   (`Operacion::PutNode`/`PutEdge`/`DeleteNode`/`DeleteEdge` fuera de
+//!   transacción), así datasets mayores que la RAM se importan sin buffering
+//!   completo. GraphML es la excepción documentada: procesa el bloque
+//!   `<key>`/`<graph>` en memoria por la estructura del formato (atributos
+//!   `<key id="…">` referenciables desde varios sitios). El exporter de
+//!   CSV une las props de TODOS los nodos/aristas en la cabecera (orden
+//!   BTreeMap, determinista) y deja el campo vacío en filas donde la prop
+//!   no exista (semántica "prop ausente", NO NULL). El parser CSV se hace a
+//!   mano (sin crate `csv`) y maneja comillas dobles, comillas internas
+//!   escapadas con `""`, y separador `,`. El parser JSON a mano soporta
+//!   objetos, arrays, strings, números, `true`/`false`/`null`. El parser
+//!   XML a mano emite una corriente de `EventoXml` (apertura/cierre/texto)
+//!   consumida por el importer de GraphML. [`ImportError`] distingue
+//!   `CabeceraInvalida` (línea 1), `FilaMalformada` (línea N), `Semantica`
+//!   (semántica OK sintácticamente), `Io` (lectura/escritura) y
+//!   `RegistroRechazado` (la autocommit rechazó el registro — p.ej.
+//!   `DuplicateNode`).
+//!
 //! Organización del crate: cada capítulo vive en su propio módulo de origen —
 //! `cap07_modelo`, `cap08_graph_store`, `cap09_encoding`, `cap10_append_only`,
 //! `cap11_slotted_pages`, `cap12_pager`, `cap13_buffer_pool`, `cap14_csr`,
@@ -249,7 +274,8 @@
 //! `cap18_lexer_parser`, `cap19_plan_logico`, `cap20_volcano`,
 //! `cap21_optimizador`, `cap22_caminos_minimos`, `cap23_a_estrella`,
 //! `cap24_centralidad`, `cap25_comunidades`, `cap26_proyeccion`,
-//! `cap27_transacciones`, `cap28_wal`, `cap29_recuperacion` y `cap30_mvcc` — y este
+//! `cap27_transacciones`, `cap28_wal`, `cap29_recuperacion`, `cap30_mvcc`
+//! y `cap32_import_export` — y este
 //! `lib.rs` es sólo el punto de entrada: declara los módulos y los re-exporta
 //! con `pub use capNN::*` para mantener una API pública plana
 //! (`vol2_liradb::Node`, `vol2_liradb::run`, ...). Cada módulo viaja con sus
@@ -279,6 +305,7 @@ mod cap27_transacciones;
 mod cap28_wal;
 mod cap29_recuperacion;
 mod cap30_mvcc;
+pub mod cap32_import_export;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -304,3 +331,4 @@ pub use cap27_transacciones::*;
 pub use cap28_wal::*;
 pub use cap29_recuperacion::*;
 pub use cap30_mvcc::*;
+pub use cap32_import_export::*;

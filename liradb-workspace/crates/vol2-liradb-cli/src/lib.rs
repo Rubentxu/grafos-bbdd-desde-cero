@@ -36,6 +36,22 @@
 //!
 //! NOTA de alcance: `import`/`export` (CSV, JSONL, GraphML) NO van aquí
 //! — son el cap. 32; esta CLI deja el intérprete listo para enchufarlos.
+//!
+//! ## Cap. 32 — `import` / `export`
+//!
+//! La CLI del cap. 31 gana DOS subcomandos nuevos que conectan con el módulo
+//! [`vol2_liradb::cap32_import_export`]:
+//!
+//! * `liradb import <FICHERO> --graph demo|empty --format csv|jsonl|graphml`
+//!   — lee el FICHERO y aplica autocommit por registro (streaming: el dataset
+//!   puede ser MAYOR que la RAM). `--graph` decide sobre qué grafo VACÍO se
+//!   aplica; por defecto `demo` (útil para sumar a `demo_graph`).
+//! * `liradb export <FICHERO> --format csv|jsonl|graphml`
+//!   — serializa el grafo (demo por defecto) al FICHERO en el formato
+//!   pedido. `-` escribe a stdout (pipe-friendly).
+//!
+//! El grafo destino del import es SIEMPRE vacío (no se mezclan fuentes
+//! automáticamente — la CLI es didáctica, el lector debe saber qué se trae).
 
 pub mod sesion;
 
@@ -43,7 +59,14 @@ use std::io::{BufRead, BufReader, Read, Write};
 
 use clap::{Arg, ArgAction, Command};
 use sesion::{Accion, PROMPT, Sesion, interpretar_linea};
-use vol2_liradb::{ExecError, Executor, GraphStore, demo_graph, explain, parse};
+use vol2_liradb::{
+    ExecError, Executor, GraphStore,
+    cap32_import_export::{
+        ImportError, exportar_csv, exportar_graphml, exportar_jsonl, importar_csv_unico,
+        importar_graphml, importar_jsonl,
+    },
+    demo_graph, explain, parse,
+};
 
 /// Salida correcta.
 pub const EXIT_OK: i32 = 0;
@@ -136,6 +159,46 @@ fn comando() -> Command {
                         .required(true)
                         .value_name("FICHERO")
                         .help("El guion; '-' lee stdin"),
+                )
+                .arg(arg_graph()),
+        )
+        .subcommand(
+            Command::new("import")
+                .about("Importa un FICHERO CSV/JSONL/GraphML sobre un grafo VACÍO")
+                .arg(
+                    Arg::new("fichero")
+                        .required(true)
+                        .value_name("FICHERO")
+                        .help("Ruta al fichero a importar; '-' lee stdin"),
+                )
+                .arg(
+                    Arg::new("format")
+                        .long("format")
+                        .short('f')
+                        .value_name("FMT")
+                        .value_parser(["csv", "jsonl", "graphml"])
+                        .default_value("csv")
+                        .help("Formato del fichero"),
+                )
+                .arg(arg_graph()),
+        )
+        .subcommand(
+            Command::new("export")
+                .about("Exporta el grafo (demo o vacío) a un FICHERO en el formato pedido")
+                .arg(
+                    Arg::new("fichero")
+                        .required(true)
+                        .value_name("FICHERO")
+                        .help("Ruta destino; '-' escribe a stdout"),
+                )
+                .arg(
+                    Arg::new("format")
+                        .long("format")
+                        .short('f')
+                        .value_name("FMT")
+                        .value_parser(["csv", "jsonl", "graphml"])
+                        .default_value("csv")
+                        .help("Formato destino"),
                 )
                 .arg(arg_graph()),
         )
@@ -233,6 +296,18 @@ fn despachar(
             let fichero = m.get_one::<String>("fichero").expect("required");
             let origen = m.get_one::<String>("graph").expect("con default");
             cmd_script(fichero, origen, entrada, out, err)
+        }
+        Some(("import", m)) => {
+            let fichero = m.get_one::<String>("fichero").expect("required");
+            let formato = m.get_one::<String>("format").expect("con default");
+            let origen = m.get_one::<String>("graph").expect("con default");
+            cmd_import(fichero, formato, origen, entrada, out, err)
+        }
+        Some(("export", m)) => {
+            let fichero = m.get_one::<String>("fichero").expect("required");
+            let formato = m.get_one::<String>("format").expect("con default");
+            let origen = m.get_one::<String>("graph").expect("con default");
+            cmd_export(fichero, formato, origen, out, err)
         }
         _ => {
             // `help` (y cualquier resto): la ayuda curada del libro.
@@ -463,6 +538,149 @@ fn cmd_script(
     }
 }
 
+// ─────────────────── Subcomandos `import` / `export` (cap. 32) ───────────────────
+
+/// `liradb import <FICHERO> --format FMT --graph ORIG`.
+///
+/// Carga el FICHERO (o stdin con `-`) y aplica autocommit POR REGISTRO sobre
+/// un grafo que arranca VACÍO si `--graph empty`, o sobre el `demo_graph`
+/// si `--graph demo` (los ids colisionarán con los del demo → usar `empty`
+/// para un import limpio). El formato dirige el parser:
+/// * `csv` — espera UN fichero con cabecera `id:ID,…`; usa el importer de
+///   nodos. Si el fichero tiene cabecera con `:START_ID/:END_ID/:TYPE`, se
+///   enruta automáticamente al importer de aristas.
+/// * `jsonl` — discriminador `"tipo":"nodo"|"arista"` por línea.
+/// * `graphml` — `<graph id="…">` con `<node>`/`<edge>` anidados.
+///
+/// Devuelve el exit code (1 si el parser falla — el nº de línea va a stderr).
+fn cmd_import(
+    fichero: &str,
+    formato: &str,
+    origen: &str,
+    stdin: &mut dyn Read,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    // El frente de lectura: fichero o stdin (con '-').
+    let contenido: Box<dyn Read> = if fichero == "-" {
+        Box::new(stdin)
+    } else {
+        match std::fs::File::open(fichero) {
+            Ok(f) => Box::new(f),
+            Err(e) => {
+                emitir(err, &format!("error: no se puede abrir '{fichero}': {e}\n"));
+                return EXIT_ERROR_CONSULTA;
+            }
+        }
+    };
+    let mut reader = BufReader::new(contenido);
+
+    // El grafo destino: el demo si --graph demo (los ids se SUMAN al
+    // existente — útil pedagógicamente, y como el importer falla con
+    // DuplicateNode el lector aprende enseguida a usar empty).
+    let mut store: vol2_liradb::MemoryStore = if origen == "demo" {
+        demo_graph()
+    } else {
+        vol2_liradb::MemoryStore::new()
+    };
+
+    let resultado: Result<vol2_liradb::cap32_import_export::EstadisticasImport, ImportError> =
+        match formato {
+            "csv" => importar_csv_unico(&mut reader, &mut store),
+            "jsonl" => importar_jsonl(&mut reader, &mut store),
+            "graphml" => importar_graphml(&mut reader, &mut store),
+            otro => {
+                emitir(err, &format!("error: formato desconocido '{otro}'\n"));
+                return EXIT_ERROR_CONSULTA;
+            }
+        };
+    match resultado {
+        Ok(stats) => {
+            emitir(
+                out,
+                &format!(
+                    "import OK: {} líneas, {} nodos, {} aristas\n",
+                    stats.lineas, stats.nodos, stats.aristas
+                ),
+            );
+            EXIT_OK
+        }
+        Err(e) => {
+            emitir(err, &format!("error: {e}\n"));
+            EXIT_ERROR_CONSULTA
+        }
+    }
+}
+
+/// Despacha CSV al importer correcto: si la cabecera tiene `:START_ID` se
+/// `liradb export <FICHERO> --format FMT --graph ORIG`.
+///
+/// Serializa el grafo al FICHERO (o stdout con `-`). `-` se modela con
+/// `Vec<u8>`: en memoria cabe el grafo demo, y es trivial de testear.
+fn cmd_export(
+    fichero: &str,
+    formato: &str,
+    origen: &str,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let store: vol2_liradb::MemoryStore = if origen == "demo" {
+        demo_graph()
+    } else {
+        vol2_liradb::MemoryStore::new()
+    };
+
+    // El frente de escritura: stdout (con '-') o fichero.
+    if fichero == "-" {
+        // `-` → serializamos a un buffer en memoria y lo volcamos al
+        // `out` inyectado (testable, no usa stdout real).
+        let mut buf: Vec<u8> = Vec::new();
+        let resultado: Result<(), ImportError> = match formato {
+            "csv" => exportar_csv(&store, &mut buf),
+            "jsonl" => exportar_jsonl(&store, &mut buf),
+            "graphml" => exportar_graphml(&store, &mut buf),
+            otro => {
+                emitir(err, &format!("error: formato desconocido '{otro}'\n"));
+                return EXIT_ERROR_CONSULTA;
+            }
+        };
+        match resultado {
+            Ok(()) => {
+                let _ = out.write_all(&buf);
+                EXIT_OK
+            }
+            Err(e) => {
+                emitir(err, &format!("error: {e}\n"));
+                EXIT_ERROR_CONSULTA
+            }
+        }
+    } else {
+        let mut sink = match std::fs::File::create(fichero) {
+            Ok(f) => f,
+            Err(e) => {
+                emitir(err, &format!("error: no se puede crear '{fichero}': {e}\n"));
+                return EXIT_ERROR_CONSULTA;
+            }
+        };
+        let resultado: Result<(), ImportError> = match formato {
+            "csv" => exportar_csv(&store, &mut sink),
+            "jsonl" => exportar_jsonl(&store, &mut sink),
+            "graphml" => exportar_graphml(&store, &mut sink),
+            otro => {
+                emitir(err, &format!("error: formato desconocido '{otro}'\n"));
+                return EXIT_ERROR_CONSULTA;
+            }
+        };
+        match resultado {
+            Ok(()) => EXIT_OK,
+            Err(e) => {
+                emitir(err, &format!("error: {e}\n"));
+                EXIT_ERROR_CONSULTA
+            }
+        }
+    }
+}
+
 // ─────────────────── Ayuda y utilidades ───────────────────
 
 /// La ayuda curada del libro (con EJEMPLOS y el GRAFO DEMO): la que
@@ -470,7 +688,7 @@ fn cmd_script(
 fn imprimir_ayuda(out: &mut dyn Write) {
     emitir(
         out,
-        r#"liradb — la CLI de LiraDB (Vol.II, cap. 31: REPL, script y clap)
+        r#"liradb — la CLI de LiraDB (Vol.II, cap. 31-32: REPL, script, import/export)
 
 USO:
   liradb demo                          4 consultas de muestra sobre el grafo demo
@@ -480,12 +698,24 @@ USO:
   liradb repl [--graph demo|empty]     REPL interactivo con sesión (:help dentro)
   liradb script <FICHERO|-> [--graph demo|empty]
                                        Ejecuta un guion de líneas; '-' lee stdin
+  liradb import <FICHERO|-> -f FMT [--graph demo|empty]
+                                       Importa CSV/JSONL/GraphML (cap. 32)
+  liradb export <FICHERO|-> -f FMT [--graph demo|empty]
+                                       Exporta CSV/JSONL/GraphML (cap. 32)
   liradb --version                     Versión
   liradb help                          Esta ayuda
 
 EJEMPLOS:
   liradb query "MATCH (p:Person) RETURN p.name, p.age"
   printf ':clear\n:node 0:Person name="Zoe" age=44\nMATCH (p) RETURN p.name\n' | liradb script -
+  liradb export - -f jsonl --graph demo | head -3
+  liradb export /tmp/grafo.csv -f csv --graph demo
+  liradb import /tmp/grafo.csv -f csv --graph empty
+
+FORMATOS de import/export (cap. 32):
+  csv      Cabecera neo4j: id:ID, … :LABEL, aristas con :START_ID/:END_ID/:TYPE
+  jsonl    Una línea = un registro, discriminador "tipo":"nodo"|"arista"
+  graphml  <graph>…<node/><edge/> con <data key="…">
 
 REPL — meta-comandos: :help :quit :demo :clear :graph
   :node <id>:<Etiqueta> [clave=valor…]      crear un nodo (autocommit)
@@ -498,7 +728,8 @@ GRAFO DEMO (vol2_liradb::demo_graph, el fixture del cap. 20):
   Person: Ana(36), Bo(41), Carla(29), Dani(36) · City: Madrid, Lisboa
   KNOWS: Ana→Bo, Bo→Carla, Carla→Ana, Dani→Dani · LIVES_IN: Ana→Madrid, Bo→Lisboa
 
-La importación/exportación (CSV, JSONL, GraphML) llega en el cap. 32.
+Importación y exportación se hacen autocommit por registro (streaming:
+datasets mayores que la RAM entran línea a línea).
 "#,
     );
 }
@@ -1031,5 +1262,78 @@ mod tests {
             assert!(out.contains("\"Dani\""));
             assert!(!out.contains("\"Bo\""));
         }
+    }
+
+    // ── import / export (cap. 32) ────────────────────────────────
+
+    #[test]
+    fn export_jsonl_a_stdout_tiene_cabecera_y_aristas() {
+        // `-` escribe a stdout (al writer inyectado): testeable sin
+        // procesos ni redirecciones.
+        let (codigo, out, err) = cli(&["export", "-", "-f", "jsonl", "--graph", "demo"]);
+        assert_eq!(codigo, EXIT_OK, "stderr: {err}");
+        assert!(err.is_empty(), "stderr: {err}");
+        // 6 nodos (4 Person + 2 City) + 6 aristas = 12 líneas JSONL.
+        assert_eq!(out.lines().count(), 12);
+        // Cada línea tiene el discriminador.
+        assert!(out.contains("\"tipo\":\"nodo\""));
+        assert!(out.contains("\"tipo\":\"arista\""));
+        // Cabecera: el primer nodo es Ana (id 0).
+        assert!(out.contains("\"id\":0"));
+        assert!(out.contains("\"name\":\"Ana\""));
+    }
+
+    #[test]
+    fn export_csv_a_fichero_y_reimport_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = dir.path().join("demo.csv");
+        let ruta_str = ruta.to_str().unwrap().to_string();
+
+        // Export.
+        let (codigo, _, err) = cli(&["export", &ruta_str, "-f", "csv", "--graph", "demo"]);
+        assert_eq!(codigo, EXIT_OK, "stderr: {err}");
+
+        // Re-import sobre grafo VACÍO.
+        let (codigo, out, err) = cli(&["import", &ruta_str, "-f", "csv", "--graph", "empty"]);
+        assert_eq!(codigo, EXIT_OK, "stderr: {err}");
+        assert!(out.contains("import OK"));
+        // nodos del demo: 6 (4 Person + 2 City). aristas: depende del orden
+        // de las filas del CSV, pero el importer reporta ambas cifras.
+        assert!(out.contains("6 nodos"), "out: {out}");
+        assert!(out.contains("6 aristas"), "out: {out}");
+    }
+
+    #[test]
+    fn export_graphml_a_fichero_y_reimport() {
+        let dir = tempfile::tempdir().unwrap();
+        let ruta = dir.path().join("demo.xml");
+        let ruta_str = ruta.to_str().unwrap().to_string();
+
+        let (codigo, _, err) = cli(&["export", &ruta_str, "-f", "graphml", "--graph", "demo"]);
+        assert_eq!(codigo, EXIT_OK, "stderr: {err}");
+
+        let (codigo, out, err) = cli(&["import", &ruta_str, "-f", "graphml", "--graph", "empty"]);
+        assert_eq!(codigo, EXIT_OK, "stderr: {err}");
+        assert!(out.contains("import OK"), "out: {out}");
+    }
+
+    #[test]
+    fn import_csv_fichero_inexistente_exit_1() {
+        let (codigo, _, err) = cli(&["import", "/no/existe.csv", "-f", "csv", "--graph", "empty"]);
+        assert_eq!(codigo, EXIT_ERROR_CONSULTA);
+        assert!(err.contains("no se puede abrir"), "stderr: {err}");
+    }
+
+    #[test]
+    fn import_sin_stdin_y_sin_args_muestra_ayuda() {
+        let (codigo, _, _) = cli(&["import"]);
+        assert_eq!(codigo, EXIT_ERROR_USO);
+    }
+
+    #[test]
+    fn export_invalido_es_error_de_uso_de_clap() {
+        let (codigo, _, err) = cli(&["export", "-", "-f", "xml", "--graph", "demo"]);
+        assert_eq!(codigo, EXIT_ERROR_USO);
+        assert!(err.contains("invalid value"), "stderr: {err}");
     }
 }
