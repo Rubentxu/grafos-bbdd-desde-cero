@@ -32,6 +32,7 @@ cap-28-write-ahead-log.md
 cap-29-recuperacion-despues-de-un-fallo.md
 cap-30-snapshots-y-concurrencia-mvcc.md
 cap-31-la-cli-de-liradb.md
+cap-32-importacion-y-exportacion-csv-jsonl-graphml.md
 apendice-0-manual-de-estilo-unificado.md
 epilogo.md
 colofon.md
