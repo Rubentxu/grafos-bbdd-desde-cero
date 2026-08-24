@@ -596,6 +596,81 @@ instante lógico y leen sólo las versiones visibles a esa foto.
 
 ---
 
+## 36. Vol.II — Cap 31 (La CLI de LiraDB: REPL, script mode y clap; ABRE la Parte VII)
+
+**Estado**: ALL_GREEN (728 → 751 tests workspace: la CLI pasa de 11 a 34 tests).
+**Crate**: `crates/vol2-liradb-cli` (~1.100 líneas: lib.rs + sesion.rs nueva; main.rs
+sólo cambia a `run_con_entrada` con stdin). Primera DEPENDENCIA EXTERNA de la CLI:
+`clap = "4.5"` (resuelto 4.6.6, pineado por el Cargo.lock commiteado) — el pago de la
+regla «primero a mano, luego con crates» que el hito dejó sembrado. tempfile pasa a
+dev-dependency (test de `script <fichero>`).
+
+**Contexto**: la pregunta crítica del CORPUS es «REPL vs script mode; clap
+ergonomics». El hito (§25) congeló deliberadamente REPL/import/flags «todo cap. 31».
+Delimitación CONTRA el cap. 32: el 31 es la SHELL (clap, REPL, script, flags); el 32
+son los FORMATOS de datos (CSV/JSONL/GraphML) y los subcomandos import/export que se
+enchufarán a este intérprete.
+
+**Decisiones**:
+1. **clap Builder API (no derive)**: el árbol de comandos a la vista, una línea por
+   subcomando/flag — didáctico; la prosa contrasta con `#[derive(Parser)]` (la
+   ergonomía declarativa de producción). Ayuda CURADA del libro (EJEMPLOS + GRAFO
+   DEMO): `disable_help_flag/subcommand` + atajo manual de `help/--help/-h` ANTES de
+   clap (conserva «sin args = ayuda exit 0» y los tests del hito); los ERRORES de
+   uso sí son de clap, con `Error::render()` al writer INYECTADO (nunca stderr real)
+   y `use_stderr()` para distinguir `--version` (stdout, exit 0) de usage (stderr,
+   exit 2 = EXIT_ERROR_USO del hito, sin tocar la constante).
+2. **`run_con_entrada(args, &mut dyn Read, out, err) -> i32`**: la lección de
+   testabilidad del hito extendida a la ENTRADA — el REPL y `script -` leen del
+   `dyn Read` inyectado (stdin en producción, `Cursor` en los tests): REPL y scripts
+   testeables sin TTY ni spawn. `run()` se conserva delegando con stdin.
+3. **REPL y script: DOS FRONTALES, un intérprete** (`sesion::interpretar_linea`):
+   el REPL imprime prompts (`liradb>`), continúa tras errores y EOF = exit 0; el
+   script no imprime prompts, salta comentarios (`#`/`--`) y vacías, y DETIENE en
+   el primer error con nº de línea (exit 1); `-` lee stdin. `:quit` significa salir
+   en ambos (en script: cortar el guión, exit 0). El `;` final de las consultas se
+   tolera (hábito SQL). Los guiones pueden CONSTRUIR su grafo con los mismos
+   meta-comandos: el test-tesis monta un mini-grafo Hugo/Irene por stdin y lo consulta.
+4. **La sesión (`Sesion { store: MemoryStore }`)** nace de `--graph demo|empty`
+   (value_parser de clap: el error lista las alternativas). Meta-comandos:
+   `:help :quit :demo :clear :graph :node :edge :del-node :del-edge` con
+   `parse_valor` hacia el `Value` del cap. 7 ("texto"/int/float/true/false/null).
+5. **Las escrituras usan el cap. 27, no un atajo**: `autocommit()` fuera de tx (cada
+   `:node` es su propia transacción — el modo por defecto del motor, hecho visible);
+   `:begin` abre una `Transaccion` REAL **por valor** en un sub-bucle con prompt
+   `tx>` — el PRÉSTAMO EXCLUSIVO hecho producto: mientras vive, consultas y `:demo`
+   se rechazan con «el store está prestado», el staging valida eager (op inválida se
+   expulsa y la tx SIGUE), `:quit`/EOF dentro = rollback implícito (el drop del cap.
+   27). El sub-bucle recibe la tx POR VALOR porque `commit/rollback` consumen `self`
+   (el ciclo de vida vive en los tipos): el bucle termina exactamente cuando la tx
+   se consume; commit con Err también descarta la tx (semántica cap. 27).
+6. **query con `--plan`/`--stats`**: `pipeline_con_detalle` parametrizado (el
+   desenrollado de `run` que el demo ya usaba), reutilizado por demo y query; sin
+   flags el comportamiento del hito queda INTACTO (test que lo verifica).
+
+**Bugs propios corregidos durante la calibración** (lecciones):
+| Síntoma | Causa | Fix |
+|---|---|---|
+| E0507 ×4: cannot move out of `*tx` | `commit/rollback` consumen `self` (cap. 27) y el sub-bucle tomaba `&mut Transaccion` | pasar la tx POR VALOR al sub-bucle: termina al consumirse |
+| commit con Err quería `continue` | `commit(self)` consume la tx aunque devuelva Err | aceptar la semántica: Err = tx descartada, sesión continúa |
+| 2 tests mal calibrados | ejemplo 2 de la ayuda ya no es `query` (es `script`); la cascada de borrar Bo arrastra 3 aristas, no 2 | recalibrar a 1 ejemplo query + `script -`; «5 nodos, 3 aristas» |
+| clippy ×3 | `format!` sin interpolación; `i32::from(exit_code())` (ya es i32); patrón `Some(("help",_))` + wildcard inútil | `to_string`, devolver directo, wildcard solo |
+| Binario «no se reconstruía» | `~/.cargo/config.toml` redirige el target-dir a `~/cargo-targets` GLOBAL; el `target/` local era un residuto del 15-ago con rmeta de 0 bytes de sesiones interrumpidas | probar el binario de `~/cargo-targets/debug/liradb`; el smoke test SIEMPRE contra el target-dir efectivo |
+
+**Lecciones**:
+1. REPL vs script no es «dos productos»: es UN intérprete con dos POLÍTICAS de
+   error (continuar vs detener) y dos políticas de prompt. Factorizar
+   `interpretar_linea` hizo que cada meta-comando funcionara gratis en ambos.
+2. El ciclo de vida de `Transaccion` (métodos que consumen `self`) encaja en un REPL
+   pasándola POR VALOR al sub-bucle: el tipo FUERZA que el bucle acabe cuando la tx
+   muere. Intentar guardarla en la sesión habría sido una guerra de lifetimes — la
+   API del cap. 27 ya había decidido cómo se usa.
+3. La configuración global de cargo (`target-dir` compartido entre 4 instancias)
+   explica candados y binarios «fantasma»: antes de culpar al código, comprobar
+   DÓNDE compila realmente (`ls` del binario con ruta absoluta del config).
+
+---
+
 ## 13. Métricas de la Fase M3c-batch-5 (parcial)
 
 | Métrica | Valor |
