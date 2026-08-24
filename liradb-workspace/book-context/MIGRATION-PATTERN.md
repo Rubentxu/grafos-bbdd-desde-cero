@@ -671,6 +671,102 @@ enchufarán a este intérprete.
 
 ---
 
+## 37. Vol.II — Cap 32 (Importación y exportación: CSV, JSONL, GraphML)
+
+**Estado**: ALL_GREEN (728 → 748 tests workspace: el módulo `cap32_import_export`
+añade 31 tests, y la CLI pasa de 34 a 40 con los 6 nuevos de import/export). 0
+dependencias externas nuevas (parsers a mano, regla del crate).
+
+**Crate**: `crates/vol2-liradb` (nuevo módulo `cap32_import_export`, ~2.700 líneas
+incluyendo tests); `crates/vol2-liradb-cli` (+280 líneas para los subcomandos
+`import`/`export`).
+
+**Contexto**: el cap 31 dejó la CLI con un intérprete (REPL/script) listo para
+enchufar formatos externos. La pregunta del CORPUS para cap 32 es «¿cómo entrar
+y sacar grafos sin atragantarse con la RAM?». La respuesta corta: STREAMING —
+CSV y JSONL se procesan línea a línea con autocommit del cap 27 (cada registro
+es su propia transacción implícita). GraphML es la excepción documentada: su
+estructura `<key>`/`<data key="…">` exige lectura completa del bloque `<graph>`
+en memoria. JSONL es el formato «sin pérdida» (admite `Value::Bytes` y todos los
+tipos del cap 7); CSV es el formato «interoperabilidad» (estilo neo4j-admin);
+GraphML es el formato «heredado» (Yago, Wikidata exportan en él).
+
+**Decisiones de diseño**:
+
+1. **Parsers a mano, sin `csv`/`serde_json`/`quick-xml`**: el crate se mantiene
+   dependency-free (la regla del Vol.II: aprender primero, depender después). Los
+   3 parsers caben en un módulo cada uno y los tests son legibles.
+
+2. **CSV estilo neo4j-admin**: cabecera con sufijos `:ID`/`:LABEL`/`:START_ID`/
+   `:END_ID`/`:TYPE`/`:STRING`/`:INT`/`:FLOAT`/`:BOOL`. El exporter une las props
+   de TODOS los nodos/aristas (BTreeMap, orden determinista) y deja el campo
+   VACÍO donde la prop no exista — semántica «prop ausente» (NO `Null`). Para que
+   el roundtrip funcione con grafos heterogéneos, `importar_csv_unico` distingue
+   DOS secciones separadas por la línea `# aristas`: nodos primero (cabecera con
+   `:LABEL`), aristas después (cabecera con `:START_ID`).
+
+3. **JSONL discriminador**: `"tipo":"nodo"|"arista"` por línea; cada registro es
+   autocontenido (sin dependencias cross-línea). El importer detecta `nodo` o
+   `arista` y rechaza cualquier otro con `Semantica { linea, causa }`. Admite
+   `Value::Bytes` (lo que CSV no puede).
+
+4. **GraphML con id-mapping externo→interno**: las claves `<key id="nombre">` se
+   registran en una pasada; luego los `<node id="externo">` se mapean a NodeId
+   interno POR ORDEN DE APARICIÓN (la lección del cap 3 sobre slotmap: la
+   asignación densa y predecible). El exporter escapa entidades XML (`&`, `<`,
+   `>`, `"`, `'`) en los valores de props.
+
+5. **Errores tipados con número de línea**: `ImportError { CabeceraInvalida |
+   FilaMalformada { linea, causa } | Semantica { linea, causa } | Io | RegistroRechazado }`
+   — el importer sabe en qué línea falló y el test lo verifica con
+   `assert_eq!(err.linea(), N)`. La línea 1 es SIEMPRE la cabecera (cualquier
+   error ahí es `CabeceraInvalida`).
+
+6. **Subcomandos CLI**: `liradb import FICHERO -f FMT --graph ORIG` y
+   `liradb export FICHERO -f FMT --graph ORIG`. `-f` ∈ {csv, jsonl, graphml}.
+   FICHERO = `-` lee stdin / escribe a stdout. --graph demo|empty decide sobre
+   qué grafo (los importers aplican autocommit del cap 27 — escribir sobre el
+   demo falla con DuplicateNode, lección pedagógica).
+
+**Lecciones aprendidas en cap 32**:
+
+1. **El exporter CSV con dos secciones separadas por `# aristas` es la única
+   manera limpia de hacer roundtrip**. Concatenar las filas de nodos y aristas
+   al MISMO fichero sin separador rompe el importer: la línea 8 (cabecera de
+   aristas con 4 campos) se parseaba como una fila de nodo de 5 campos y daba
+   `FilaMalformada`. La línea `# aristas` (que el importer salta como
+   separador) es la marca limpia.
+
+2. **`cargo fmt --check` exige quitar el `mut` de variables reasignadas tras
+   refactor**. Un `let mut cursor = Cursor::new(...)` que tras un chain() ya
+   no se muta más debe quedarse sin `mut` — clippy 1.96 (rust 1.96) lo
+   detecta y falla el lint con `-D warnings`.
+
+3. **Clippy 1.96 introduce lints nuevos**: `single_char_add_str` (preferir
+   `fila.push(',')` sobre `fila.push_str(",")`), `for_kv_map` (preferir
+   `for k in map.keys()` cuando no se usa el value), `collapsible_if` con
+   `let chains` (`if x && let Ok(y) = … { … }` en lugar de `if x { if let
+   Ok(y) = … { … } }`). Aparecen sin avisar; la cadena `-D warnings` los
+   trata como errores → hay que refactorizar al subir rustc.
+
+4. **`use std::io::Read` es necesario para `.chain()`** sobre `Cursor`. El trait
+   `Read` aporta `chain`, y si no está importado el compilador sugiere
+   `use std::io::Read` con el método `as_ref` (incorrecto). Documentado para
+   próximos capítulos con chains.
+
+5. **El campo `errores` NO existe en `EstadisticasImport`** (sólo `lineas`,
+   `nodos`, `aristas`). El importer aborta en el primer error (no hay
+   «errores tolerados»). El exit 1 de la CLI con el mensaje del importer es
+   la ÚNICA manera de reportar fallos al usuario.
+
+6. **Tests roundtrip con grafo demo son la prueba definitiva**: el test
+   `export_csv_a_fichero_y_reimport_roundtrip` falla si el exporter pierde
+   cualquier prop, o si el importer rechaza campos vacíos heterogéneos, o si
+   el contador de aristas se descalibra. Es el equivalente del test-tesis
+   del cap 31 (`repl_y_query_y_script_vuelven_el_mismo_dato`).
+
+---
+
 ## 13. Métricas de la Fase M3c-batch-5 (parcial)
 
 | Métrica | Valor |
