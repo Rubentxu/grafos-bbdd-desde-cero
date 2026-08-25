@@ -932,6 +932,45 @@ herencia cap 34) + árbol de spans indentado + recibo de contadores.
 
 ---
 
+## 41. Vol.II — Cap 36 (Arquitectura final; CIERRA la Parte VII)
+
+**Estado**: ALL_GREEN (843 → **848 tests**: `tests/arquitectura.rs` — PRIMER
+integration test del crate principal, 5 tests/509 líneas, corre en 0.00s).
+Capítulo de SÍNTESIS: cero features nuevas, cero cambios en módulos cap*,
+cero dependencias nuevas. El test construye LA PILA COMPLETA en una
+respiración: cada capítulo probó su piso; nadie había probado el edificio.
+
+**Hallazgos de componer el edificio entero (leer los agujeros del mapa)**:
+
+1. **Acoplamiento oculto entre adaptadores vecinos**: `HashIndex::create`
+   falla con `UnknownPage(2)` si `pool.capacity() < 3 + num_buckets`.
+   Causa raíz verificada empíricamente: `BufferPool::flush_page` exige
+   residencia y `create` hace flush de TODAS sus páginas; invisible en el
+   cap 15 porque sus tests usaban TmpPager con pool holgado. Lección: la
+   composición con configuraciones adversas es la ÚNICA que revela este
+   tipo de contratos implícitos.
+2. **Formato con pérdida silenciosa**: `Float(2.0)` se serializa como "2"
+   (`f64::to_string`) y reimporta como `Int(2)` — los floats de valor
+   entero no sobreviven el roundtrip JSONL (el test usa pesos 2.5 por esto).
+3. **Reloj MVCC pre-incremento arrancando en 1**: `reloj()` tras un commit
+   devuelve el ts del SIGUIENTE commit; el snapshot correcto del lector es
+   `ResumenCommitMvcc.ts_asignado`. Un lector descuidado ve su propio futuro.
+4. **La recuperación solo renace lo confirmado**: autocommits previos al WAL
+   no sobreviven a `reabrir` (redo falló con InvalidEdgeEndpoints) — la
+   regla de oro del cap 28 («sin log no hay durabilidad») con evidencia nueva.
+5. Nada del PIPELINE se rompió al componerlo: parse→optimize→execute contra
+   store con datos funcionó a la primera; derivar_contadores cuadró con
+   metricas_consulta — las tres decisiones estructurales (puerto cap 8,
+   encoding/framing caps 9-10, pipeline caps 17-21) aguantaron 29 capítulos
+   de crecimiento.
+
+**Deuda nombrada en el mapa** (no fingida): catálogo cuadrático (§39),
+HashIndex capacity ≥ 3+num_buckets (este §), sin DiskStore end-to-end,
+LiraQL sin LIMIT/agregación, write skew MVCC (cap 30), cola corrupta
+mitigada-no-eliminada (cap 33).
+
+---
+
 ## 13. Métricas de la Fase M3c-batch-5 (parcial)
 
 | Métrica | Valor |

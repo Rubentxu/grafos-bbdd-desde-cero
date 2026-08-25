@@ -242,6 +242,12 @@ vol-II-chapters:
     cycle: 0
     workspace_crate: vol2-liradb + liradb-cli
     module: cap35_observabilidad
+  - id: vol-II-cap-36  # Arquitectura final de LiraDB
+    state: DONE        # código(solo tests/arquitectura.rs)+prosa en sesión 2026-08-25 (Sesión 36) — CIERRA la Parte VII (31-36)
+    blocked_on: null
+    cycle: 0
+    workspace_crate: vol2-liradb
+    module: tests/arquitectura.rs
   # ... caps 33-40 por planificar
   - id: vol-II-apendice-0   # Manual de estilo unificado
     state: PLANNED
