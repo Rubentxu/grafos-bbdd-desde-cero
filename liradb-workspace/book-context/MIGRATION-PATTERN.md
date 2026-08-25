@@ -836,6 +836,55 @@ WAL, goldens de la salida de usuario y contrato de compatibilidad de formato.
 
 ---
 
+## 39. Vol.II — Cap 34 (Benchmarks y perfilado; Parte VII)
+
+**Estado**: ALL_GREEN (809 → **822 tests workspace**: `cap34_benchmarks.rs` añade
+13 tests). Primer directorio `benches/` del workspace: `bench_micro.rs` +
+`bench_consultas.rs` con criterion **0.7.0** pineada (`harness = false`);
+`[profile.bench] debug = true` en la raíz. verify.sh los COMPILA (--all-targets)
+pero NO los ejecuta en test — ALL_GREEN sigue rápida.
+
+**Crate**: `crates/vol2-liradb` (módulo `cap34_benchmarks`, ~1.036 líneas:
+Xorshift64Star a mano, `dataset_referencia()` determinista 100k/500k/10
+etiquetas/20 claves con email único, percentiles p50/p90/p99/p999 en std);
+`benches/{bench_micro,bench_consultas}.rs`.
+
+**Contexto**: pregunta del CORPUS «Dataset de referencia (100k personas / 500k
+relaciones)». El capítulo mide LiraDB CONTRA SÍ MISMA (brief 1461: prohibida la
+comparativa sensacionalista con Neo4j): dataset reproducible por seed,
+microbenchmarks de componentes, consultas end-to-end con contadores internos
+(ExecMetrics impresos junto a tiempos), buffer pool frío/caliente a nivel
+COMPONENTE (no hay store-en-disco end-to-end: frontera declarada, no fingida),
+percentiles propios (criterion no expone colas), flamegraphs documentados fuera
+de verify.sh (perf/cargo-flamegraph, igual patrón que cargo-fuzz en cap 33).
+
+**Hallazgos reales (material de prosa)**:
+
+1. **EL CATÁLOGO DEL OPTIMIZADOR ES CUADRÁTICO — cazado por nuestro propio
+   benchmark**: `Catalog::collect` (cap21_optimizador.rs) hace búsqueda lineal
+   en `eq_push` ⇒ O(valores_distintos²); construirlo sobre los 100k emails
+   únicos tarda **~224 s frente a los 281 ms** de construir TODO el grafo.
+   Por eso Q1/Q2 miden ejecución sobre el plan semi-ligado exacto (sin paso
+   optimize) + test `optimizador_real_produce_index_seek_en_mini` demuestra
+   equivalencia donde el catálogo es barato. DEUDA DOCUMENTADA, no parcheada:
+   el capítulo mide, no repara. Candidata natural a reparación futura.
+2. **Hub vs grado bajo ×794** (expand 1-hop: 8,25 ms/2078 filas vs 10,4 µs/
+   2 filas) — el fanout manda; justifica la heavy-tail ligera del dataset
+   (uniforme ocultaría el coste de hubs).
+3. **CSR vs puerto ×16** (1,33 ms vs 21,11 ms iterando 500k aristas): el
+   `out_edges()` del puerto clona un Vec por llamada y cada arista exige
+   `get_edge` — LA JUSTIFICACIÓN MEDIDA de las proyecciones materializadas
+   del cap 26.
+4. **Buffer pool frío/caliente ×142** (423,4 µs hit_ratio 0.000/evictions 240
+   vs 2,98 µs hit_ratio 1.000) — medición honesta a nivel componente.
+5. **El bench trampa mide ×3,5 de más** (63,11 µs vs 17,9 µs): setup dentro
+   del loop sin black_box — material didáctico verificable contra el grupo
+   honesto.
+6. **Q4 sin LIMIT**: la gramática LiraQL aún no tiene LIMIT ni agregación
+   (LogicalPlan no puede expresarlo) — se mide la proyección amplia completa.
+
+---
+
 ## 13. Métricas de la Fase M3c-batch-5 (parcial)
 
 | Métrica | Valor |
