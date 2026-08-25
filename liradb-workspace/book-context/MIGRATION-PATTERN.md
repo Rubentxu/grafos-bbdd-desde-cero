@@ -767,6 +767,75 @@ GraphML es el formato «heredado» (Yago, Wikidata exportan en él).
 
 ---
 
+## 38. Vol.II — Cap 33 (Pruebas de una base de datos; Parte VII)
+
+**Estado**: ALL_GREEN (788 → **809 tests workspace**: el módulo `cap33_pruebas`
+añade 17 tests + 1 doctest; la CLI estrena su PRIMER directorio `tests/` con
+`golden_cli.rs` — 3 tests). Primera dev-dependency nueva del crate principal
+desde `tempfile`: **`proptest` 1.11.0**, pineada en `Cargo.lock`.
+
+**Crate**: `crates/vol2-liradb` (nuevo módulo `cap33_pruebas`, ~1.424 líneas);
+`crates/vol2-liradb-cli/tests/golden_cli.rs` + `tests/golden/{demo,explain}.txt`.
+
+**Contexto**: pregunta del CORPUS «Unit, contract, integration, property-based
+(proptest), fuzz, golden, crash». El capítulo NO añade features del motor:
+construye el aparato de PRUEBA sobre todo lo anterior — verificador de
+invariantes como oráculo común, batería de contrato del puerto hexagonal,
+estrategias proptest de grafos válidos, suite de crash sobre bytes reales del
+WAL, goldens de la salida de usuario y contrato de compatibilidad de formato.
+
+**Decisiones de diseño**:
+
+1. **`verificar_invariantes(&dyn GraphStore)` SOLO con la API del puerto**: las
+   dos primeras invariantes del brief son observables desde fuera; «ningún slot
+   apunta fuera de una página» e «índices con IDs válidos» son INTERNOS y ya
+   tienen guardián (`check()` cap 16, `Csr::verify()` cap 14). Honestidad
+   hexagonal: el store no expone slots/páginas y eso es una feature.
+2. **Batería de contrato como FUNCIÓN genérica sobre factory**
+   (`bateria_de_contrato(impl Fn() -> Box<dyn GraphStore>)`) + segunda
+   implementación didáctica `StoreAlternativo` (HashMap, escrita en los tests):
+   una batería sin ≥2 implementaciones no distingue «prueba el puerto» de
+   «prueba mi store». **MvccStore QUEDA FUERA** — NO implementa `GraphStore`
+   (sus lecturas llevan `ts`); documentado, no falseado. Reto experto.
+3. **Estrategias proplist SIEMPRE válidas** (extremos de arista muestreados de
+   nodos ya generados): preserva el shrinking; descartado `prop_filter` masivo
+   (counterexamples gigantes).
+4. **`cargar_wal_estricta` vive EN CAP33** con error propio
+   `ErrorCargaEstricta { Io, Wal }`: `WalError` no tiene variante de E/S y NO
+   se toca cap28. Implementada reutilizando `decodificar_wal` (la estricta que
+   sí existe).
+5. **Goldens A MANO** (std: leer fichero + assert_eq + env var
+   `ACTUALIZAR_GOLDEN=1`); `insta` descartada (regla «primero a mano»). Los
+   dorados capturan `["demo"]` y `["explain", Q]` SIN `--graph`: clap lo
+   rechaza en esos subcomandos («unexpected argument», verificado).
+6. **cargo-fuzz DOCUMENTADO y FUERA de verify.sh** (exige nightly; el pineo
+   estable 1.96.0 gana); **criterion ausente deliberadamente** (cap 34).
+
+**Hallazgos reales (material de prosa)**:
+
+1. **LA COLA CORRUPTA SE TRAGA EN SILENCIO — ahora medido byte a byte**:
+   `WalIterator` corta en `Err(_) => None` (cap28_wal.rs:**856**) y
+   `cargar_wal`/`reabrir` heredan el silencio. Con un WAL REAL de 548 bytes /
+   13 registros, cortando el último Commit: la carga INDULGENTE devuelve
+   `Ok(12 registros)` con `transacciones_confirmadas = 2 de 3` SIN avisar;
+   `cargar_wal_estricta` grita `RegistroTruncado { disponibles: N }`.
+   Recuperar el prefijo es legítimo (ARIES); PERDERLO SIN AVISAR, no.
+2. **Bit-flip bajo CRC siempre ruidoso**: volteado UN bit en CADA byte del
+   cuerpo del último registro → SIEMPRE `CrcInvalido`; el modo indulgente
+   pierde exactamente `total−1` registros callándose.
+3. **Float integral normaliza a Int**: `Float(3.0)` → `"3"` → `Int(3)` en los
+   roundtrips JSONL/CSV.
+4. **JSONL es BMP-only**: el escapador emite `\uXXXX` de 4 hex; un char fuera
+   del BMP produciría escape malformado que REIMPORTARÍA corrupto sin error
+   (frontera honesta del parser a mano del cap 32; anzuelo al fuzzing futuro).
+5. **La doc del trait dice put_node «reemplaza» pero la impl RECHAZA
+   duplicados**: la batería de contrato fija el comportamiento REAL como
+   contrato testeable.
+6. **Roundtrip CSV exacto exige tipo fijo por clave y sin Null** (campo vacío =
+   prop ausente, semántica schemaless del cap 7).
+
+---
+
 ## 13. Métricas de la Fase M3c-batch-5 (parcial)
 
 | Métrica | Valor |
