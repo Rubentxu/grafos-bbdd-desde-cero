@@ -37,3 +37,11 @@ harness = false
 [[bench]]
 name = "bench_consultas"
 harness = false
+
+# TERCER target de bench (cap 38): columnar y ejecución vectorizada.
+# ADITIVO como los anteriores: `verify.sh` lo COMPILA (check/clippy
+# --all-targets) pero no lo ejecuta — correrlo es un acto explícito del
+# lector (`cargo bench -p vol2-liradb --bench bench_columnar`).
+[[bench]]
+name = "bench_columnar"
+harness = false
