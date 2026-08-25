@@ -8,7 +8,7 @@
 
 **Licencia** — CC BY-NC-SA 4.0.
 
-**Atribuciones** — A Semih Salihoğlu y al equipo de Kùzu/Ladybug por los papers seminales sobre GDBMS modernos. La arquitectura conceptual de los caps. 37-40 del Vol.II se inspira en el Kùzu VLDB 2023 paper y en las publicaciones del grupo de Salihoğloo en la Universidad de Waterloo. La reimplementación es clean-room: ningún código de Kùzu/Ladybug ha sido copiado. Texto y código de este libro están bajo CC BY-NC-SA 4.0; los papers referenciados mantienen sus licencias originales.
+**Atribuciones** — A Semih Salihoğlu y al equipo de Kùzu —Guodong Jin, Xiyang Feng, Ziyi Chen, Chang Liu y el resto del grupo de la Universidad de Waterloo— por los papers seminales sobre GDBMS modernos, en particular «KÙZU Graph Database Management System» (CIDR 2023). La arquitectura conceptual de los caps. 37-40 del Vol.II se inspira en ese paper y en las publicaciones del grupo; la reimplementación es clean-room: ningún código de Kùzu ha sido copiado. Kùzu Inc., la empresa que comercializó la base de datos con licencia MIT, fue adquirida por Apple en octubre de 2025 y su repositorio quedó archivado; el proyecto continúa hoy en forks comunitarios como LadybugDB y bighorn. Los papers permanecen públicamente accesibles bajo sus licencias originales (CC-BY 4.0 / MIT según el caso). Texto y código de este libro están bajo CC BY-NC-SA 4.0.
 
 **Contacto** — *pendiente*.
 

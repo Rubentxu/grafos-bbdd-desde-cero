@@ -263,7 +263,7 @@ vol-II-chapters:
 
 | ID | Decisión | Estado |
 |---|---|---|
-| ADR-001 | Atribución a Ladybug/Kùzu (clean-room conceptual, MIT/CC-BY 4.0) | pendiente — reescribir como relato histórico (Kùzu→Apple oct. 2025→archivado→forks) antes del cap. 37 |
+| ADR-001 | Atribución a Kùzu como relato histórico verificado: Waterloo→CIDR 2023→MIT→Apple compra oct.2025→repo archivado 10-oct→forks comunitarios LadybugDB/bighorn. Corrige 2 errores («renombrado a Ladybug» = falso; paper es CIDR 2023, no VLDB 2023). Clean-room conceptual se mantiene | **RESUELTA 2026-08-25** — ver `adr/001-atribuicion-kuzu-ladybug.md`; prólogo/colofón/caps 15+18 corregidos |
 | ADR-002 | `rust-toolchain.toml` + `Cargo.lock` pinneado por capítulo | pendiente |
 | ADR-003 | Numeración Vol.II reinicia en 1 (autoportante) | aprobada 2026-07-30 |
 | ADR-004 | Plantilla híbrida fija para TODO capítulo del Vol.II | aprobada 2026-07-30 |

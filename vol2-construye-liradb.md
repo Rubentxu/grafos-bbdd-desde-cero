@@ -85,9 +85,11 @@ Lee el Apéndice 0 antes de empezar — es breve (~15 pp) y te ahorrará sorpres
 
 La política de crates está en `book-context/CONVENTIONS.md` §3. Resumen: usamos `petgraph`, `slotmap`, `serde`, `thiserror`, `clap`, `tracing`, `proptest`, `criterion`, `logos`, `pest` (comparativo), `zerocopy`, `memmap2`, `crc32fast`, `lru`, y opcionalmente `redb`. La regla es **"primero a mano, luego con crate"**: cada componente se construye sin dependencias, luego con la herramienta madura, luego se comparan y se decide.
 
-## Sobre Ladybug / Kùzu
+## Sobre Kùzu y sus forks
 
-Este libro aprende de la arquitectura de Kùzu (renombrado a Ladybug tras la adquisición por Apple en 2025) como referencia de GDBMS moderno, pero **no copia su código**. La reimplementación es *clean-room conceptual*: leemos los papers, especialmente el Kùzu VLDB 2023, y los artículos de Semih Salihoğlu, y luego escribimos nuestro propio código desde cero. La atribución completa está en el Colofón.
+Este libro aprende de la arquitectura de **Kùzu** como referencia de GDBMS moderno, pero **no copia su código**. La reimplementación es *clean-room conceptual*: leemos los papers —el paper del sistema es «KÙZU Graph Database Management System» (Jin, Feng, Chen, Liu y Salihoğlu, CIDR 2023)— y escribimos nuestro propio código desde cero.
+
+La historia de Kùzu merece un párrafo, porque es una lección de arquitectura *y* de industria: nació como investigación en la Universidad de Waterloo (grupo de Semih Salihoğlu), se convirtió en empresa en 2023 con licencia MIT, y el 9 de octubre de 2025 Apple acordó adquirirla. Al día siguiente el repositorio quedó archivado; la última versión publicada (0.11.3) sigue siendo usable, y la comunidad continuó el proyecto mediante forks como **LadybugDB** y bighorn. Los papers, eso sí, nadie puede comprarlos: siguen ahí, bajo CC-BY 4.0, que es justo donde este libro va a buscar. La atribución completa está en el Colofón.
 
 ## ¿Qué te llevarás?
 
@@ -95,7 +97,7 @@ Después de leer este libro:
 
 - Habrás implementado **a mano** los componentes de un GDBMS moderno.
 - Sabrás por qué cada decisión (slotted pages, CSR, WAL, MVCC, Volcano, factorización) existe y qué trade-off resuelve.
-- Podrás leer el código de Neo4j, Kùzu/Ladybug, Cozo o Oxigraph sin que te suene a magia.
+- Podrás leer el código de Neo4j, Kùzu (o su fork comunitario LadybugDB), Cozo o Oxigraph sin que te suene a magia.
 - Tendrás un proyecto real —LiraDB— en tu GitHub que demuestra todo lo anterior.
 - Y lo más importante: entenderás que las bases de datos no son cajas negras; son software, escrito por personas, con decisiones, compromisos e historia.
 
@@ -176,7 +178,7 @@ Empezamos. Bienvenido al motor.
 **Apéndice B — Glosario específico de BBDD de grafos**
 **Apéndice C — Bibliografía y referencias (DBMS + Ladybug/Kùzu papers)**
 **Apéndice D — ADRs (dependency policy, página, WAL, format versioning)**
-**Apéndice E — Mapa de "cómo lo resuelve una BBDD real" (Neo4j / Kùzu→Ladybug y forks post-adquisición / Cozo / Oxigraph; paisaje 2026 con GQL ISO y Neo4j vector)**
+**Apéndice E — Mapa de "cómo lo resuelve una BBDD real" (Neo4j / Kùzu archivada tras la adquisición por Apple + forks LadybugDB/bighorn / Cozo / Oxigraph; paisaje 2026 con GQL ISO y Neo4j vector)**
 
 ---
 
@@ -5143,7 +5145,7 @@ Una curiosidad honesta sobre los nombres: `hash_insert_many_triggers_overflow_ch
 - **PostgreSQL** es la lección completa de «cuándo cada uno». Su índice por defecto es un **B-tree** (variante B-link de Lehman-Yao, con páginas de 8 KB): responde igualdad *y* rangos *y* orden, y desde la v13 comprime claves duplicadas (deduplicación con *posting lists*), exprimiendo que las hojas están ordenadas. ¿Tiene hash indexes? Sí — pero durante años **no se logueaban en WAL**: no sobrevivían a un crash ni se replicaban, y la documentación los trataba como ciudadanos de segunda. Desde la v10 sí son crash-safe… y siguen sin ser el default, porque un índice que solo hace igualdad compite contra uno que hace igualdad + rangos en el mismo espacio. Ese es el veredicto del mercado que este capítulo ha construido a mano.
 - **InnoDB (MySQL)** apuesta todo al B+ con páginas de 16 KB: la tabla entera ES un índice clustered por clave primaria (las filas viven en las hojas), y los índices secundarios guardan la PK como valor — dos índices, dos B+ trees, un solo orden físico. Fan-outs de cientos de punteros por nodo: árboles de 3-4 niveles para millones de filas.
 - **Neo4j** indexa propiedades con **B+ trees nativos** (los *schema indexes* de etiqueta/propiedad), recorre etiquetas con *label scan stores*, y delega el texto completo a Lucene. La igualdad exacta sobre propiedades — nuestra `equality query` — cae en esos B+ o en los *native token lookup*; el hash puro es menos protagonista en grafos porque las consultas de propiedades quieren también rangos (`age > 30`) y orden.
-- **Kùzu/Ladybug**, nuestra referencia de la Parte III: los hash *joins* materializan tablas hash exactamente con la estructura de buckets + overflow que acabas de escribir — la diferencia es que la suya vive en memoria de trabajo y la tuya sobrevive al proceso.
+- **Kùzu** (el proyecto archivado tras la adquisición por Apple en 2025; hoy continúa en el fork comunitario LadybugDB), nuestra referencia de la Parte III: los hash *joins* materializan tablas hash exactamente con la estructura de buckets + overflow que acabas de escribir — la diferencia es que la suya vive en memoria de trabajo y la tuya sobrevive al proceso.
 - **SQLite**: un B+ tree por tabla y por índice, páginas de 4 KB, interiores y hojas — la versión completa de lo que el apéndice esboza.
 
 **Retos para el lector (esencial / intermedio / experto):**
@@ -6215,7 +6217,7 @@ En el ecosistema Rust hay tres caminos industriales, y conocerlos es responder l
 - **`pest`** — gramática declarativa PEG en un fichero `.pest`, con posiciones y mensajes de serie. Es **scannerless**: gramática y escaneo en una sola especificación. Es exactamente la alternativa que descartamos en la decisión nº 1: elegante, compacta… y el escaneo deja de ser visible. Su recuperación multi-error, sin embargo, es superior a la nuestra.
 - **`LALRPOP`** — el pariente moderno de la lanza del dragón: generador LR(1)/LALR que compila la gramática a tablas Rust. Impresionante para gramáticas grandes y estables; deprimente de depurar cuando la tabla rechaza algo que creías válido.
 
-¿Y las bases de datos de grafos? **Neo4j** generó durante años el parser de Cypher con JavaCC — una gramática `.jj` compilada a parser. **Kùzu** (ahora Ladybug) escribió el suyo a mano: su parser de Cypher es un descendente recursivo en `src/parser/` — la misma técnica que acabas de construir, sosteniendo un lenguaje real. Y la nueva **GQL** (estándar ISO/IEC 39075:2024) se implementa sobre la misma maquinaria de siempre: lexer, parser descendente, AST. El estándar cambia el idioma; la oficina de registro, no. Hasta **rustc** — el argumento de autoridad definitivo — usa un parser descendente recursivo escrito a mano, y sus errores con span exacto son el modelo de nuestra factura de errores.
+¿Y las bases de datos de grafos? **Neo4j** generó durante años el parser de Cypher con JavaCC — una gramática `.jj` compilada a parser. **Kùzu** escribió el suyo a mano: su parser de Cypher es un descendente recursivo en `src/parser/` — la misma técnica que acabas de construir, sosteniendo un lenguaje real (su repositorio quedó archivado tras la adquisición por Apple, pero el código sigue vivo y estudiable en el fork comunitario LadybugDB). Y la nueva **GQL** (estándar ISO/IEC 39075:2024) se implementa sobre la misma maquinaria de siempre: lexer, parser descendente, AST. El estándar cambia el idioma; la oficina de registro, no. Hasta **rustc** — el argumento de autoridad definitivo — usa un parser descendente recursivo escrito a mano, y sus errores con span exacto son el modelo de nuestra factura de errores.
 
 **Retos para el lector (esencial / intermedio / experto):**
 
@@ -12709,7 +12711,7 @@ Ambas voces son válidas y complementarias. El Vol.I te enseña *qué es* un gra
 
 **Licencia** — CC BY-NC-SA 4.0.
 
-**Atribuciones** — A Semih Salihoğlu y al equipo de Kùzu/Ladybug por los papers seminales sobre GDBMS modernos. La arquitectura conceptual de los caps. 37-40 del Vol.II se inspira en el Kùzu VLDB 2023 paper y en las publicaciones del grupo de Salihoğloo en la Universidad de Waterloo. La reimplementación es clean-room: ningún código de Kùzu/Ladybug ha sido copiado. Texto y código de este libro están bajo CC BY-NC-SA 4.0; los papers referenciados mantienen sus licencias originales.
+**Atribuciones** — A Semih Salihoğlu y al equipo de Kùzu —Guodong Jin, Xiyang Feng, Ziyi Chen, Chang Liu y el resto del grupo de la Universidad de Waterloo— por los papers seminales sobre GDBMS modernos, en particular «KÙZU Graph Database Management System» (CIDR 2023). La arquitectura conceptual de los caps. 37-40 del Vol.II se inspira en ese paper y en las publicaciones del grupo; la reimplementación es clean-room: ningún código de Kùzu ha sido copiado. Kùzu Inc., la empresa que comercializó la base de datos con licencia MIT, fue adquirida por Apple en octubre de 2025 y su repositorio quedó archivado; el proyecto continúa hoy en forks comunitarios como LadybugDB y bighorn. Los papers permanecen públicamente accesibles bajo sus licencias originales (CC-BY 4.0 / MIT según el caso). Texto y código de este libro están bajo CC BY-NC-SA 4.0.
 
 **Contacto** — *pendiente*.
 

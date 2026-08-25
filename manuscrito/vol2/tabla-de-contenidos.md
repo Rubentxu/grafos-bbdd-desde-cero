@@ -67,7 +67,7 @@
 **Apéndice B — Glosario específico de BBDD de grafos**
 **Apéndice C — Bibliografía y referencias (DBMS + Ladybug/Kùzu papers)**
 **Apéndice D — ADRs (dependency policy, página, WAL, format versioning)**
-**Apéndice E — Mapa de "cómo lo resuelve una BBDD real" (Neo4j / Kùzu→Ladybug y forks post-adquisición / Cozo / Oxigraph; paisaje 2026 con GQL ISO y Neo4j vector)**
+**Apéndice E — Mapa de "cómo lo resuelve una BBDD real" (Neo4j / Kùzu archivada tras la adquisición por Apple + forks LadybugDB/bighorn / Cozo / Oxigraph; paisaje 2026 con GQL ISO y Neo4j vector)**
 
 ---
 

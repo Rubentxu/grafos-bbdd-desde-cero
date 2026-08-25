@@ -50,9 +50,11 @@ Lee el Apéndice 0 antes de empezar — es breve (~15 pp) y te ahorrará sorpres
 
 La política de crates está en `book-context/CONVENTIONS.md` §3. Resumen: usamos `petgraph`, `slotmap`, `serde`, `thiserror`, `clap`, `tracing`, `proptest`, `criterion`, `logos`, `pest` (comparativo), `zerocopy`, `memmap2`, `crc32fast`, `lru`, y opcionalmente `redb`. La regla es **"primero a mano, luego con crate"**: cada componente se construye sin dependencias, luego con la herramienta madura, luego se comparan y se decide.
 
-## Sobre Ladybug / Kùzu
+## Sobre Kùzu y sus forks
 
-Este libro aprende de la arquitectura de Kùzu (renombrado a Ladybug tras la adquisición por Apple en 2025) como referencia de GDBMS moderno, pero **no copia su código**. La reimplementación es *clean-room conceptual*: leemos los papers, especialmente el Kùzu VLDB 2023, y los artículos de Semih Salihoğlu, y luego escribimos nuestro propio código desde cero. La atribución completa está en el Colofón.
+Este libro aprende de la arquitectura de **Kùzu** como referencia de GDBMS moderno, pero **no copia su código**. La reimplementación es *clean-room conceptual*: leemos los papers —el paper del sistema es «KÙZU Graph Database Management System» (Jin, Feng, Chen, Liu y Salihoğlu, CIDR 2023)— y escribimos nuestro propio código desde cero.
+
+La historia de Kùzu merece un párrafo, porque es una lección de arquitectura *y* de industria: nació como investigación en la Universidad de Waterloo (grupo de Semih Salihoğlu), se convirtió en empresa en 2023 con licencia MIT, y el 9 de octubre de 2025 Apple acordó adquirirla. Al día siguiente el repositorio quedó archivado; la última versión publicada (0.11.3) sigue siendo usable, y la comunidad continuó el proyecto mediante forks como **LadybugDB** y bighorn. Los papers, eso sí, nadie puede comprarlos: siguen ahí, bajo CC-BY 4.0, que es justo donde este libro va a buscar. La atribución completa está en el Colofón.
 
 ## ¿Qué te llevarás?
 
@@ -60,7 +62,7 @@ Después de leer este libro:
 
 - Habrás implementado **a mano** los componentes de un GDBMS moderno.
 - Sabrás por qué cada decisión (slotted pages, CSR, WAL, MVCC, Volcano, factorización) existe y qué trade-off resuelve.
-- Podrás leer el código de Neo4j, Kùzu/Ladybug, Cozo o Oxigraph sin que te suene a magia.
+- Podrás leer el código de Neo4j, Kùzu (o su fork comunitario LadybugDB), Cozo o Oxigraph sin que te suene a magia.
 - Tendrás un proyecto real —LiraDB— en tu GitHub que demuestra todo lo anterior.
 - Y lo más importante: entenderás que las bases de datos no son cajas negras; son software, escrito por personas, con decisiones, compromisos e historia.
 
