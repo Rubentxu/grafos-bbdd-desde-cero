@@ -25,13 +25,13 @@ volumes:
   - id: vol-II
     title: "Construye LiraDB — De los algoritmos fundamentales a un motor persistente de consultas en Rust"
     file: vol2-construye-liradb.md
-    state: SKELETON                          # sólo front-matter + Prólogo + Apéndice 0 + Epílogo
+    state: WRITING                          # 38/40 caps con prosa al estándar; Partes I-VII cerradas
     chapters_total: 40
-    chapters_done: 0
-    appendices: ["0", A, B, C, D, E]         # Apéndice 0 = Manual de estilo unificado
+    chapters_done: 38                        # caps 1-38 (quedan 39 WCOJ y 40 distribución + apéndices/epílogo)
+    appendices: ["0", A, B, C, D, E]         # Apéndice 0 = Manual de estilo unificado (verificar si al estándar)
     style: "Híbrido (10 pasos LiraDB + baterías narrativas Vol.I)"
-    current_macro_phase: A-bis              # reorganización física en curso
-    notes: "refuerzos quirúrgicos aplicados al guion 2026-08-14 (ADR-005): caps 15/16/21/30/38/40 + Apéndice E; numeración congelada"
+    current_macro_phase: B/C                 # bucle capítulo: planner→generator→writer→verify
+    notes: "refuerzos quirúrgicos ADR-005 aplicados; numeración congelada; workspace ALL_GREEN 864 tests; Parte VIII abierta (37-38 hechos)"
   - id: vol-III
     title: "Grafos en la era de la IA: modelar, razonar y recuperar"
     file: vol3-grafos-era-ia.md
@@ -43,9 +43,9 @@ volumes:
     current_macro_phase: A                   # currículo + outline hechos → chapter-planner
     progressive_example: "KB-Lira (dataset hilo conductor, generador en workspace pendiente)"
 
-current_macro_phase: A-bis                  # re-alineamiento + reorganización
-next_macro_phase: R                         # deep research para Vol.II/III
-last_updated: 2026-08-14
+current_macro_phase: B/C                     # Vol.II en bucle de capítulos (39-40 restantes)
+next_macro_phase: D                          # tras cerrar Vol.II: preflight + render
+last_updated: 2026-08-25
 ```
 
 ## Capítulos Vol.II — máquina de estados
