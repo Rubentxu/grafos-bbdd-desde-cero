@@ -19,3 +19,6 @@ all = { level = "warn", priority = -1 }
 # Para tests de FilePager (cap 12): directorios temporales.
 # Pinned sin ^ ni ~ por la política de reproducibilidad del workspace.
 tempfile = "3.10"
+# Cap 33: property-based testing (estrategias con shrinking). ÚNICA
+# dev-dependency nueva del capítulo; el pineo EXACTO lo hace Cargo.lock.
+proptest = "1"

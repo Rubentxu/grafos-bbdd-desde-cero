@@ -1,0 +1,70 @@
+LiraDB — demo del motor (caps. 17-21: parse → lower → optimizador → Volcano)
+Grafo demo: 6 nodos (Person/City) y 6 aristas (KNOWS/LIVES_IN)
+
+── [1/4] MATCH simple (NodeScan + Project) ──
+LiraQL: MATCH (p:Person) RETURN p.name, p.age
+Plan lógico:
+Project(p.name, p.age)
+  NodeScan(Person AS p)
+Resultado:
+p.name  | p.age
+"Ana"   | 36   
+"Bo"    | 41   
+"Carla" | 29   
+"Dani"  | 36   
+Métricas: Project: 4 filas
+NodeScan: 4 filas
+filas devueltas: 4
+
+── [2/4] WHERE con comparación (Filter trivalente) ──
+LiraQL: MATCH (p:Person) WHERE p.age < 40 RETURN p.name, p.age
+Plan lógico:
+Project(p.name, p.age)
+  Filter(p.age < 40)
+    NodeScan(Person AS p)
+Resultado:
+p.name  | p.age
+"Ana"   | 36   
+"Carla" | 29   
+"Dani"  | 36   
+Métricas: Project: 3 filas
+Filter: 3 filas
+NodeScan: 4 filas
+filas devueltas: 3
+
+── [3/4] Patrón relacional (Expand) ──
+LiraQL: MATCH (p:Person)-[:KNOWS]->(f:Person) RETURN p.name, f.name
+Plan lógico:
+Project(p.name, f.name)
+  Filter(f:Person)
+    Expand(p, KNOWS, OUTGOING, f)
+      NodeScan(Person AS p)
+Resultado:
+p.name  | f.name 
+"Ana"   | "Bo"   
+"Bo"    | "Carla"
+"Carla" | "Ana"  
+"Dani"  | "Dani" 
+Métricas: Project: 4 filas
+Filter: 4 filas
+Expand: 4 filas
+NodeScan: 4 filas
+filas devueltas: 4
+
+── [4/4] Consulta canónica del brief + propiedad de arista ──
+LiraQL: MATCH (p:Person)-[r:KNOWS]->(f:Person) WHERE p.name = "Ana" RETURN f.name, r.since
+Plan lógico:
+Project(f.name, r.since)
+  Filter(f:Person AND p.name = "Ana")
+    Expand(p, r:KNOWS, OUTGOING, f)
+      NodeScan(Person AS p)
+Resultado:
+f.name | r.since
+"Bo"   | 2020   
+Métricas: Project: 1 filas
+Filter: 1 filas
+Expand: 4 filas
+NodeScan: 4 filas
+filas devueltas: 1
+
+Sigue explorando: liradb repl (sesión interactiva) · liradb query "..."

@@ -306,6 +306,7 @@ mod cap28_wal;
 mod cap29_recuperacion;
 mod cap30_mvcc;
 pub mod cap32_import_export;
+pub mod cap33_pruebas;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -332,3 +333,4 @@ pub use cap28_wal::*;
 pub use cap29_recuperacion::*;
 pub use cap30_mvcc::*;
 pub use cap32_import_export::*;
+pub use cap33_pruebas::*;

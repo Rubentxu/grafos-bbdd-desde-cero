@@ -1,0 +1,21 @@
+liradb explain — optimizador (cap. 21)
+Consulta: MATCH (p:Person)-[r:KNOWS]->(f:Person) WHERE p.name = "Ana" RETURN f.name, r.since
+
+Catálogo (estadísticas del store): 6 nodos · 6 aristas
+  Person: 4 nodos · grado medio out 1.50 / in 1.00
+  City: 2 nodos · grado medio out 0.00 / in 1.00
+  aristas por tipo: KNOWS 4, LIVES_IN 2
+
+Plan ANTES (lower, cap. 19):
+Project(f.name, r.since)               est. 1 filas
+  Filter(f:Person AND p.name = "Ana")  est. 1 filas
+    Expand(p, r:KNOWS, OUTGOING, f)    est. 4 filas
+      NodeScan(Person AS p)            est. 4 filas
+
+Plan DESPUÉS (optimize, cap. 21):
+Project(f.name, r.since)              est. 1 filas
+  Filter(f:Person)                    est. 1 filas
+    Expand(p, r:KNOWS, OUTGOING, f)   est. 1 filas
+      IndexSeek(Person.name = "Ana")  est. 1 filas
+
+Filas reales al ejecutar el plan optimizado: 1 (raíz estimada: 1)
