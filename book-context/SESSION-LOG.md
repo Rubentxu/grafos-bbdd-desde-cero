@@ -97,3 +97,15 @@
 **Estado al cierre**: ALL_GREEN **848 tests**. Vol.II **36/40 caps con prosa** (~12.718 líneas ensambladas); Partes I-VII cerradas. Commits df7ae95 / 1febf51 pushed. build --check ALL_ASSEMBLED.
 
 **Próxima sesión**: Parte VIII (caps 37-40). ANTES del cap-38 resolver ADR-001 con el autor (reescribir atribución Ladybug/Kùzu como relato histórico post-Apple oct. 2025). Deudas documentadas candidatas a reparar algún día: Catalog::collect cuadrático (§39), HashIndex capacity (§41), Float-entero en JSONL (§41).
+
+## 2026-08-25 — Sesión 37
+
+**Asistentes**: book-orchestrator + chapter-planner + code-example-generator + chapter-writer (prosa completada tras interrupción, verificada estructuralmente por el orquestador).
+
+**Trabajo realizado**: ADR-001 RESUELTA + Cap. 37 DONE — ABRE la Parte VIII.
+- ADR-001: investigación web con fuentes independientes; 2 errores factuales corregidos (LadybugDB = fork comunitario; paper CIDR 2023); línea temporal fuenteada en adr/001; prólogo/colofón/ToC/caps 15+18 corregidos. Cap-38 desbloqueado.
+- Cap-37 «Qué necesitaría una BBDD de producción»: contrato (292 líneas) + cap37_produccion.rs (623 líneas std puro: informe_produccion() hermano de informe_acid(), 11 dimensiones 0·6·5, test-pinzón bidireccional) + prosa verificada (20 secciones, ransomware MongoDB ene-2017 con cifras fijadas, B-17 gust lock como historia pequeña).
+
+**Estado al cierre**: ALL_GREEN **853 tests**. Vol.II **37/40 caps con prosa** (~13.005 líneas). Parte VIII abierta. build --check ALL_ASSEMBLED.
+
+**Próxima sesión**: cap-38 «Almacenamiento columnar y ejecución vectorizada» (row vs column, dictionary encoding, bit-packing, SIMD, batch, factorización; citar Kùzu CIDR 2023 con relato histórico correcto; semilla CSR×16 del cap 34). Después: cap-39 WCOJ y cap-40 distribución/Raft cierran el Vol.II.
