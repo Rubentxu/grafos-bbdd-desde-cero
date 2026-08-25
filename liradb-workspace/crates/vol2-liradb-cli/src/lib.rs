@@ -53,6 +53,7 @@
 //! El grafo destino del import es SIEMPRE vacío (no se mezclan fuentes
 //! automáticamente — la CLI es didáctica, el lector debe saber qué se trae).
 
+pub mod observabilidad;
 pub mod sesion;
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -134,6 +135,15 @@ fn comando() -> Command {
                         .long("stats")
                         .action(ArgAction::SetTrue)
                         .help("Imprime también las métricas por operador"),
+                )
+                .arg(
+                    // Cap. 35: ADITIVO por diseño (off por defecto) — los
+                    // goldens de demo/explain quedan intactos porque sin
+                    // este flag la salida es EXACTAMENTE la de siempre.
+                    Arg::new("profile")
+                        .long("profile")
+                        .action(ArgAction::SetTrue)
+                        .help("Itinerario (árbol de spans) + recibo de contadores (cap. 35)"),
                 ),
         )
         .subcommand(
@@ -282,7 +292,8 @@ fn despachar(
             let consulta = m.get_one::<String>("consulta").expect("required");
             let plan = m.get_flag("plan");
             let stats = m.get_flag("stats");
-            cmd_query(consulta, plan, stats, out, err)
+            let perfil = m.get_flag("profile");
+            cmd_query(consulta, plan, stats, perfil, out, err)
         }
         Some(("explain", m)) => {
             let consulta = m.get_one::<String>("consulta").expect("required");
@@ -323,15 +334,19 @@ fn despachar(
 ///
 /// Sin flags es el comportamiento del hito (sólo la tabla). `--plan`
 /// añade el plan lógico y `--stats` las métricas por operador — las dos
-/// vistas que `demo` ya enseñaba, ahora a la carta.
+/// vistas que `demo` ya enseñaba, ahora a la carta. `--profile` (cap. 35)
+/// ejecuta la pipeline PERFILADA: spans de fase/operador capturados con
+/// [`observabilidad::SuscriptorArbol`], fases cronometradas con `Instant`
+/// y recibo de contadores; compone con `--plan`/`--stats`.
 fn cmd_query(
     consulta: &str,
     plan: bool,
     stats: bool,
+    perfil: bool,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
-    if !plan && !stats {
+    if !plan && !stats && !perfil {
         let store = demo_graph();
         return match vol2_liradb::run(consulta, &store) {
             Ok(rs) => {
@@ -346,6 +361,17 @@ fn cmd_query(
     }
     // Con flags: el pipeline del demo (parse → lower → ejecutar) a la carta.
     let store = demo_graph();
+    if perfil {
+        // Cap. 35: la variante perfilada (spans + contadores) imprime
+        // TAMBIÉN resultado/métricas, y respeta --plan/--stats.
+        return match observabilidad::pipeline_perfilada(consulta, &store, out, plan, stats) {
+            Ok(()) => EXIT_OK,
+            Err(e) => {
+                emitir(err, &format!("error: {e}\n"));
+                EXIT_ERROR_CONSULTA
+            }
+        };
+    }
     match pipeline_con_detalle(consulta, &store, out, plan, stats) {
         Ok(()) => EXIT_OK,
         Err(e) => {
@@ -692,8 +718,9 @@ fn imprimir_ayuda(out: &mut dyn Write) {
 
 USO:
   liradb demo                          4 consultas de muestra sobre el grafo demo
-  liradb query "<LiraQL>" [--plan] [--stats]
+  liradb query "<LiraQL>" [--plan] [--stats] [--profile]
                                        Ejecuta una consulta sobre el grafo demo
+                                       (--profile: árbol de spans + contadores, cap. 35)
   liradb explain "<LiraQL>"            Plan ANTES/DESPUÉS del optimizador (cap. 21)
   liradb repl [--graph demo|empty]     REPL interactivo con sesión (:help dentro)
   liradb script <FICHERO|-> [--graph demo|empty]

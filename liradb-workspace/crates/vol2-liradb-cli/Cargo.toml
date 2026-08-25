@@ -21,6 +21,12 @@ all = { level = "warn", priority = -1 }
 # #[derive(Parser)]). Versión mínima declarada; el pineo EXACTO lo hace
 # el Cargo.lock commiteado (política §5 de MIGRATION-PATTERN).
 clap = "4.5"
+# Cap 35: spans de observabilidad (trazas). ÚNICA dependency nueva del
+# capítulo y SOLO en la CLI: `vol2-liradb` permanece dependency-free (los
+# medidores std viven allí; los SPANS se emiten en el pipeline de producción
+# de la CLI — hito `--profile`). Emitir sin subscriber instalado cuesta ≈ 0.
+# Versión mínima declarada; el pineo EXACTO lo hace el Cargo.lock commiteado.
+tracing = "0.1"
 # Dependencia interna por path (política §5 de MIGRATION-PATTERN: sólo lo
 # necesario, pineado; aquí una crate del propio workspace, sin versión).
 vol2-liradb = { path = "../vol2-liradb" }
