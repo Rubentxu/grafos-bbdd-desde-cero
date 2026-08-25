@@ -109,3 +109,20 @@
 **Estado al cierre**: ALL_GREEN **853 tests**. Vol.II **37/40 caps con prosa** (~13.005 líneas). Parte VIII abierta. build --check ALL_ASSEMBLED.
 
 **Próxima sesión**: cap-38 «Almacenamiento columnar y ejecución vectorizada» (row vs column, dictionary encoding, bit-packing, SIMD, batch, factorización; citar Kùzu CIDR 2023 con relato histórico correcto; semilla CSR×16 del cap 34). Después: cap-39 WCOJ y cap-40 distribución/Raft cierran el Vol.II.
+
+## 2026-08-25 — Sesión 38
+
+**Asistentes**: book-orchestrator + chapter-planner + code-example-generator + chapter-writer.
+
+**Trabajo realizado**: Cap. 38 «Almacenamiento columnar y ejecución vectorizada» DONE (código Y prosa), Parte VIII cap 2.
+- Contrato por planner-agente (`book-context/contratos/vol2/cap-38.md`, 299 líneas): columnar como CAPA DE LECTURA sobre MemoryStore; SIMD honesto = auto-vectorización medida sin nightly; factorización mínima viable; ADR-001 aplicada (Kùzu CIDR 2023).
+- Código por generator-agente: cap38_columnar.rs (~1.458 líneas) + bench_columnar.rs (tercer [[bench]]). Hallazgo estrella medido y verificado con asm: filtro row 34,574 ms vs columna-lotes 548 µs = ×63 LAYOUT-no-SIMD. Diccionario bidireccional (idioma pierde ×0,50 con cardinalidad 6: regla len-vs-código). Packing ×6,40. Factorización 64,5% ahorro de celdas.
+- Prosa por writer-agente (396 líneas): MonetDB/X100 CWI como N.0, Grace Hopper nanosegundo como historia pequeña, tablas con cifras reales hardware declarado.
+
+**Estado al cierre (checkpoint de fin de jornada)**: ALL_GREEN **864 tests**. Vol.II **38/40 caps con prosa** (~13.401 líneas ensambladas); Partes I-VII cerradas; Parte VIII 2/4. Todo pushed hasta 240e295. build --check ALL_ASSEMBLED.
+
+**Próxima sesión (mañana)**:
+1. **Cap-39 «Joins, patrones y consultas cíclicas»** — expand como join, WCOJ, LeapFrog Triejoin simplificado, triángulos, consultas recursivas (penúltimo capítulo; el motor factorizado del cap-38 queda como semilla).
+2. **Cap-40 «Distribuir una BBDD de grafos»** (Raft, sharding hash vs comunidad, cut edges) — CIERRA el Vol.II.
+3. Tras cap-40: Apéndice 0 (verificar si al estándar o placeholder), epílogo, cierre del volumen.
+4. Deudas documentadas candidatas (MIGRATION §39/§41/§43): Catalog::collect cuadrático, HashIndex capacity ≥ 3+num_buckets, Float-entero JSONL.
