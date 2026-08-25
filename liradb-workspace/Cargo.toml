@@ -63,3 +63,10 @@ repository = "https://github.com/rubentxu/liradb-workspace"
 # Las crates individuales las referencian con `dep.workspace = true`.
 # Mantener este bloque vacío hasta que se identifiquen dependencias
 # compartidas reales (no poblarlo preventivamente).
+
+# Cap 34: símbolos de debug en los binarios de benchmark para que los
+# flamegraphs (cargo-flamegraph + perf, herramienta externa documentada en la
+# prosa — NUNCA en el pipeline de verificación) sean legibles. Coste honesto:
+# binarios bench mayores; el resto de perfiles no cambia.
+[profile.bench]
+debug = true

@@ -22,3 +22,18 @@ tempfile = "3.10"
 # Cap 33: property-based testing (estrategias con shrinking). ÚNICA
 # dev-dependency nueva del capítulo; el pineo EXACTO lo hace Cargo.lock.
 proptest = "1"
+# Cap 34: benchmarks con estadística (warm-up, repeticiones, baselines).
+# ÚNICA dev-dependency nueva del capítulo; el pineo EXACTO lo hace Cargo.lock.
+# Los benches compilan gratis en la puerta (check/clippy --all-targets) y
+# `cargo test` los construye SIN ejecutarlos: se corren cuando TÚ decides.
+criterion = "0.7"
+
+# PRIMER directorio benches/ del workspace (cap 34): dos ficheros, dos targets,
+# harness = false porque criterion trae su propio main con estadística.
+[[bench]]
+name = "bench_micro"
+harness = false
+
+[[bench]]
+name = "bench_consultas"
+harness = false
