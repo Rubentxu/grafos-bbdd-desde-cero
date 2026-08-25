@@ -1011,6 +1011,37 @@ Autorización / Cifrado / Protección ante consultas costosas.
 
 ---
 
+## 43. Vol.II — Cap 38 (Almacenamiento columnar y ejecución vectorizada; Parte VIII)
+
+**Estado**: ALL_GREEN (853 → **864 tests**: `cap38_columnar.rs` — 1.458 líneas
+std puro, 11 tests incluidas DOS tesis de equivalencia lote-vs-fila y
+factorizado-vs-plano). Tercer `[[bench]]` `bench_columnar.rs`. Cero deps,
+cero cambios en caps previos salvo wiring.
+
+**Hallazgos reales (material de prosa)**:
+
+1. **EL ×63 NO ES SIMD — ES LAYOUT**: filtro edad>50 sobre 100k nodos:
+   row escalar (HashMap+dispatch por celda) 34,574 ms vs columna por lotes
+   de 1024 (dos pasadas: máscara sin ramas → compactar) **548,52 µs = ×63**.
+   El asm muestra `cmpq $51` escalar desenrollado; el MISMO bucle con
+   `-C target-cpu=x86-64-v3` emite `vpcmpgtq %ymm`. La ganancia viene de
+   eliminar lookups + dispatch: «el coste está en CÓMO están puestos los
+   bytes», demostrado dos veces.
+2. **Diccionario BIDIRECCIONAL medido**: gana ciudad ×1,66 / país ×1,69 /
+   categoría ×2,14; pierde email ×0,86 Y **idioma ×0,50 CON cardinalidad 6**
+   — cadenas de ~2 bytes < código de 4 B: la regla real es len(string) vs
+   tamaño de código, no solo cardinalidad.
+3. **Bit-packing**: 79.996 códigos a ⌈log₂32⌉=5 bits → **×6,40**
+   (50.000 B vs 319.984 B).
+4. **Factorización 2-hop mínima viable** (subgrafo acotado 256 nodos, tope
+   grado 16): 65.536 filas lógicas → 69.888 células físicas vs 196.608
+   planas = **ahorro 64,5%**; un pivote sin tuplas no ocupa ni una celda.
+5. **Divergencias documentadas**: enum `TipoDatoColumna` (colisión con
+   TipoColumna del cap32 en glob re-export); `Diccionario::codigo_de()`
+   añadido (operar comprimido, mitad SIGMOD-2006); tiempos SOLO en criterion.
+
+---
+
 ## 13. Métricas de la Fase M3c-batch-5 (parcial)
 
 | Métrica | Valor |

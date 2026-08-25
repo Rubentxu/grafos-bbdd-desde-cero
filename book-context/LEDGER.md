@@ -254,6 +254,12 @@ vol-II-chapters:
     cycle: 0
     workspace_crate: vol2-liradb
     module: cap37_produccion
+  - id: vol-II-cap-38  # Almacenamiento columnar y ejecución vectorizada
+    state: DONE        # código+prosa en sesión 2026-08-25 (Sesión 38) — Parte VIII, cap 2 — columnar+diccionario+packing+lotes+factorización; hallazgo ×63 layout-no-SIMD
+    blocked_on: null
+    cycle: 0
+    workspace_crate: vol2-liradb
+    module: cap38_columnar
   # ... caps 33-40 por planificar
   - id: vol-II-apendice-0   # Manual de estilo unificado
     state: PLANNED
