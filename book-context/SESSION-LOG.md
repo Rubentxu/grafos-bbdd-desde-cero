@@ -85,3 +85,15 @@
 **Estado al cierre**: ALL_GREEN 822 tests. Vol.II 34/40 caps con prosa; Parte VII 4/6 (quedan 35 observabilidad, 36 arquitectura final). Commits a7945d5 / 5cce872 pushed. build --check ALL_ASSEMBLED.
 
 **Próxima sesión**: cap-35 «Observabilidad interna» (metrics+tracing, span hierarchy query→plan→operator→page fetch, hito `liradb query --profile`; ExecMetrics cap 20 + Metrics pool cap 13 ya existen — aquí se INSTRUMENTA). Después: cap-36 arquitectura final cierra Parte VII. Antes del cap-38: resolver ADR-001. Candidata de deuda técnica: reparar Catalog::collect cuadrático (MIGRATION §39).
+
+## 2026-08-25 — Sesión 36
+
+**Asistentes**: book-orchestrator + chapter-planner + code-example-generator + chapter-writer (×2 capítulos en secuencia).
+
+**Trabajo realizado**: Caps. 35 Y 36 DONE — **PARTE VII CERRADA (31-36)**.
+- **Cap-35 Observabilidad interna**: contrato (299 líneas), código (cap35_observabilidad.rs ~1.045 líneas std-only + observabilidad.rs CLI ~842 con SuscriptorArbol propio sobre tracing-core + hito `liradb query --profile` aditivo; tracing 0.1.44 SOLO en la CLI), prosa (356 líneas, Dapper TR 2010, Apolo 13 historia pequeña). Hallazgos: bug dos-fuentes-que-se-suman (v1 contaba nodes_scanned doble), try_close default no notifica, coste ≈0 spans sin subscriber demostrado con goldens intactos. 822→843 tests.
+- **Cap-36 Arquitectura final**: contrato (294 líneas, decisión: síntesis con UN smoke `tests/arquitectura.rs`), código (5 tests/509 líneas: la pila completa en una respiración — nadie había probado el edificio entero), prosa (372 líneas, Wren/epitafio San Pablo). Hallazgos de componer el edificio: HashIndex capacity ≥ 3+num_buckets (acoplamiento oculto entre adaptadores), Float(2.0) no sobrevive roundtrip JSONL, reloj MVCC pre-incremento ts=1, recuperación solo renace lo confirmado por WAL. 843→848 tests.
+
+**Estado al cierre**: ALL_GREEN **848 tests**. Vol.II **36/40 caps con prosa** (~12.718 líneas ensambladas); Partes I-VII cerradas. Commits df7ae95 / 1febf51 pushed. build --check ALL_ASSEMBLED.
+
+**Próxima sesión**: Parte VIII (caps 37-40). ANTES del cap-38 resolver ADR-001 con el autor (reescribir atribución Ladybug/Kùzu como relato histórico post-Apple oct. 2025). Deudas documentadas candidatas a reparar algún día: Catalog::collect cuadrático (§39), HashIndex capacity (§41), Float-entero en JSONL (§41).
