@@ -885,6 +885,53 @@ de verify.sh (perf/cargo-flamegraph, igual patrón que cargo-fuzz en cap 33).
 
 ---
 
+## 40. Vol.II — Cap 35 (Observabilidad interna; Parte VII)
+
+**Estado**: ALL_GREEN (822 → **843 tests workspace**: `cap35_observabilidad.rs`
+11 tests lib + 5 unitarios CLI + 5 integración `tests/observabilidad_cli.rs`).
+Goldens demo/explain byte-exactos INTACTOS con el código instrumentado siempre
+activo ⇒ coste ≈0 de emitir spans sin subscriber (callsite interest check).
+
+**Crate**: `crates/vol2-liradb` (`cap35_observabilidad.rs`, ~1.045 líneas:
+Contadores std Cell<u64> campos fijos + Display Prometheus text format,
+MedidorOperador/MedidorPaginas decoradores, derivación por nombre canónico);
+`crates/vol2-liradb-cli` (`src/observabilidad.rs` ~842 líneas: SuscriptorArbol
+propio sobre tracing-core con try_close sobrescrito; OperadorTrazado/
+PagerTrazado apilables; flag `--profile`; tests/observabilidad_cli.rs).
+**tracing 0.1.44 SOLO como dependency de liradb-cli** — el crate principal
+sigue dependency-free.
+
+**Contexto**: pregunta del CORPUS «Span hierarchy: query → plan → operator →
+page fetch». El capítulo generaliza el patrón decorador del ContandoStore
+(cap 26) y añade trazas jerárquicas SIN tocar caps previos. Hito:
+`liradb query --profile '<LiraQL>'` imprime fases cronometradas (Instant,
+herencia cap 34) + árbol de spans indentado + recibo de contadores.
+
+**Decisiones/hallazgos reales**:
+
+1. **El bug «dos fuentes que se suman»**: la v1 del recibo contaba medidores
+   EN VIVO + derivación desde ExecMetrics ⇒ nodes_scanned=8 con 4 reales.
+   Solución: UNA sola fuente (derivación por nombre canónico de
+   ExecMetrics.per_operator) + test de vigilancia contra renombrado
+   silencioso de name(). Material N.9 del capítulo.
+2. **SuscriptorArbol exige Send+Sync** (Dispatch::new de tracing-core): Mutex+
+   AtomicU64 en vez de RefCell; semántica monohilo idéntica vía with_default.
+3. **try_close por defecto NO notifica cierre**: sin override, cero duraciones
+   en el árbol. Sobrescrito.
+4. **Sin fase optimise en el hito**: pipeline_con_detalle nunca tuvo paso de
+   optimización (los goldens lo prueban); el span optimise existe y está
+   verificado en el test de jerarquía. «--profile ≠ explain» documentado.
+5. **Page fetch a nivel componente** (no hay DiskStore — frontera honesta
+   igual que cold-cache en cap 34): HashIndex sobre
+   BufferPool<PagerTrazado<MedidorPaginas<FilePager>>>; delta page_reads ==
+   nº spans storage_read == delta del pool. Gotcha: HashIndex::create exige
+   capacidad ≥ 3+num_buckets (flush final sobre páginas desalojadas daría
+   UnknownPage); truco didáctico: 1 bucket + muchas claves vs pool pequeño.
+6. **Transacciones contadas en capa conductora** (caps 27/28 no exponen
+   contadores y no se tocan); wal_bytes_written = delta de Wal::as_bytes().len().
+
+---
+
 ## 13. Métricas de la Fase M3c-batch-5 (parcial)
 
 | Métrica | Valor |

@@ -236,6 +236,12 @@ vol-II-chapters:
     cycle: 0
     workspace_crate: vol2-liradb
     module: cap34_benchmarks
+  - id: vol-II-cap-35  # Observabilidad interna (metrics + tracing)
+    state: DONE        # código+prosa en sesión 2026-08-25 (Sesión 36) — Parte VII, cap 5 — hito liradb query --profile
+    blocked_on: null
+    cycle: 0
+    workspace_crate: vol2-liradb + liradb-cli
+    module: cap35_observabilidad
   # ... caps 33-40 por planificar
   - id: vol-II-apendice-0   # Manual de estilo unificado
     state: PLANNED
