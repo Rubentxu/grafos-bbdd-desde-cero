@@ -58,3 +58,30 @@
 **Estado al cierre**: monorepo público estructurado por capítulos. Vol.II: código 14/40 caps (7-20) + CLI mínima; prosa 0/40. Vol.III: outline aprobado. Parte IV 4/5 (falta cap. 21 optimizador).
 
 **Próxima sesión**: (a) cap. 21 (optimizador + explain + estadísticas) sobre la nueva estructura de módulos — añadirá `cap21_optimizador.rs` y fichero `manuscrito/vol2/cap-21-*.md`; (b) prosa Parte III Vol.II (ficheros `manuscrito/vol2/cap-1[1-6]-*.md` ya creados por el split); (c) chapter-planner vol-III-cap-41.
+## 2026-08-25 — Sesión 34
+
+**Asistentes**: book-orchestrator + chapter-planner + code-example-generator + chapter-writer (agentes secuenciales).
+
+**Trabajo realizado**: Cap. 33 «Pruebas de una base de datos» DONE (código Y prosa), Parte VII cap 3.
+- Contrato por planner-agente (`book-context/contratos/vol2/cap-33.md`, 277 líneas): torre de riesgos (cada piso ataca un riesgo que el inferior no ve); hallazgo al planear: `WalIterator` traga cola corrupta en silencio (cap28_wal.rs:856).
+- Código por generator-agente: `cap33_pruebas.rs` (~1.424 líneas; invariantes sobre el puerto hexagonal, batería de contrato con StoreAlternativo didáctica, proptest 1.11.0 con 5 propiedades, crash suite sobre bytes reales + `cargar_wal_estricta`, compat magic+versión) y primer `tests/` del workspace (`golden_cli.rs` + dorados, `ACTUALIZAR_GOLDEN=1`). Cero toques caps 7-32.
+- Prosa por writer-agente (313 líneas, 20 secciones): anécdota Gray TR 85.7, salidas reales ejecutadas (WAL 548 B/13 registros: indulgente Ok(12)/txs 2de3 vs estricta RegistroTruncado).
+- Docs: code-map, MIGRATION-PATTERN §38, SUMARIO, LEDGER (incl. registro retroactivo Sesión 33-bis = prosa cap-32, commit 0e27c4e).
+
+**Estado al cierre**: ALL_GREEN 809 tests. Vol.II 33/40 caps con prosa; Parte VII 3/6 (quedan 34 benchmarks, 35 observabilidad, 36 arquitectura final). Commits 940403c / fa846c2 / f20fab7 en main (pushed). build_book.sh --check: ALL_ASSEMBLED.
+
+**Próxima sesión**: cap-34 «Benchmarks y perfilado» (dataset de referencia 100k/500k, warm/cold cache, percentiles, flamegraphs; criterion entra aquí tras la regla «primero a mano»; LiraDB contra sí misma, no contra Neo4j). Antes del cap-38: resolver ADR-001.
+
+## 2026-08-25 — Sesión 35
+
+**Asistentes**: book-orchestrator + chapter-planner + code-example-generator + chapter-writer.
+
+**Trabajo realizado**: Cap. 34 «Benchmarks y perfilado» DONE (código Y prosa), Parte VII cap 4.
+- Contrato por planner-agente (`book-context/contratos/vol2/cap-34.md`, 288 líneas): torre de instrumentos; realidad verificada: sin store-en-disco end-to-end ⇒ cold-cache honesto a nivel componente; criterion entra aquí (gancho del cap-33).
+- Código por generator-agente: `cap34_benchmarks.rs` (~1.036 líneas; Xorshift64Star a mano, dataset_referencia() determinista 100k/500k/10 etiquetas/20 claves, percentiles std) + primer `benches/` del workspace (bench_micro + bench_consultas, criterion 0.7) + [profile.bench] debug=true. 809 → 822 ALL_GREEN.
+- cargo bench ejecutado con cifras reales (Xeon E5-2682 v4): point-lookup 2,19 µs; hub vs grado bajo ×794; CSR vs puerto ×16; pool frío/caliente ×142; trampa ×3,5. HALLAZGO ESTRELLA: Catalog::collect O(valores_distintos²) — ~224 s vs 281 ms del grafo completo; deuda documentada, no parcheada.
+- Prosa por writer-agente (320 líneas): Weicker/Dhrystone→SPEC, tablas reales, Pentium FDIV, mini-diálogo p99, gancho cap-35.
+
+**Estado al cierre**: ALL_GREEN 822 tests. Vol.II 34/40 caps con prosa; Parte VII 4/6 (quedan 35 observabilidad, 36 arquitectura final). Commits a7945d5 / 5cce872 pushed. build --check ALL_ASSEMBLED.
+
+**Próxima sesión**: cap-35 «Observabilidad interna» (metrics+tracing, span hierarchy query→plan→operator→page fetch, hito `liradb query --profile`; ExecMetrics cap 20 + Metrics pool cap 13 ya existen — aquí se INSTRUMENTA). Después: cap-36 arquitectura final cierra Parte VII. Antes del cap-38: resolver ADR-001. Candidata de deuda técnica: reparar Catalog::collect cuadrático (MIGRATION §39).
