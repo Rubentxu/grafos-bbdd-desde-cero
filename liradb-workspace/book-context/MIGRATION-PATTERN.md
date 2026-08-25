@@ -971,6 +971,46 @@ mitigada-no-eliminada (cap 33).
 
 ---
 
+## 42. Vol.II — Cap 37 (Qué necesitaría una BBDD de producción; ABRE la Parte VIII)
+
+**Estado**: ALL_GREEN (848 → **853 tests**: `cap37_produccion.rs` — 623 líneas
+std puro, 5 tests). Cero dependencias, goldens intactos, cero cambios en caps
+previos salvo wiring.
+
+**Artefacto**: `informe_produccion()` — hermano del `informe_acid()` del cap
+27 (el patrón «informe ejecutable honesto»). Las 11 dimensiones del brief EN
+ORDEN clasificadas con `EstadoProduccion {Existe, Parcial, Ausente}` +
+`quien_lo_resuelve` (referencia industrial dentro del artefacto) +
+`donde_vive_o_enchufaria`. Recuento honesto **0·6·5** pineado por el
+test-pinzón `produccion_es_honesto_sobre_el_estado_actual` con sondas
+ejecutables (`decode_header`, roundtrip WAL+Checkpoint::tomar, Presupuesto,
+Contadores) y evidencia negativa documentada para los Ausentes.
+
+**Clasificación final** (verificada contra código): Parcial = Compatibilidad
+de formatos / Copias de seguridad / Migraciones / Control de recursos /
+Telemetría / Herramientas operativas. Ausente = Seguridad / Autenticación /
+Autorización / Cifrado / Protección ante consultas costosas.
+
+**Decisiones/hallazgos**:
+
+1. **Control de recursos = Parcial, no Ausente**: `Presupuesto`
+   (cap26_proyeccion.rs) existe y acota algoritmos con MotivoParada — su
+   frontera es ser opt-in para recorridos, no un límite global del Executor.
+   El brief inline sugería Ausente; la realidad verificable manda.
+2. **El matiz fsync**: `guardar_wal` NO hace fsync (doc-comment
+   cap29_recuperacion.rs ~615) aunque `FilePager::sync` SÍ llama sync_all —
+   de ahí Copias de seguridad = Parcial («la mitad de un PITR»).
+3. **El pinzón bidireccional**: actualizar una clasificación sin tocar el
+   test = rojo inmediato. Diseño anti-autocomplacencia.
+4. **Frases citables**: «Prometheus queda IMITADO, no conectado»;
+   «estimate estima pero nada corta»; catálogo ~224 s como consulta costosa
+   que nadie cortó.
+5. ADR-001 aplicado: Kùzu archivada tras Apple oct-2025, forks
+   LadybugDB/bighorn, paper CIDR 2023 — relato histórico correcto en todo el
+   capítulo.
+
+---
+
 ## 13. Métricas de la Fase M3c-batch-5 (parcial)
 
 | Métrica | Valor |

@@ -37,6 +37,7 @@ cap-33-pruebas-de-una-base-de-datos.md
 cap-34-benchmarks-y-perfilado.md
 cap-35-observabilidad-interna.md
 cap-36-arquitectura-final-de-liradb.md
+cap-37-que-necesitaria-una-base-de-datos-de-produccion.md
 apendice-0-manual-de-estilo-unificado.md
 epilogo.md
 colofon.md
