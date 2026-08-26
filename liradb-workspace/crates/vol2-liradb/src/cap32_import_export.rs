@@ -1182,13 +1182,22 @@ pub fn exportar_jsonl(store: &dyn GraphStore, salida: &mut dyn Write) -> Result<
 }
 
 /// Serializa un `Value` a JSON (los props de una línea JSONL).
+///
+/// Los `Float` SIEMPRE llevan punto decimal (`{:?}` produce `"2.0"`, no
+/// `"2"`): el formato JSONL es el SIN PÉRDIDA, y `f64::to_string()` sobre un
+/// float de valor entero reimportaría como `Int` — la pérdida silenciosa de
+/// tipo que el smoke del cap. 36 documentó. La lectura distingue por
+/// sintaxis (punto/exponente ⇒ Float), así que el roundtrip preserva el
+/// tipo; ficheros viejos con `"2"` siguen importando como `Int`.
 fn serializar_json_valor(v: &Value) -> String {
     match v {
         Value::String(s) => serializar_json_texto(s),
         Value::Int(i) => i.to_string(),
         Value::Float(f) => {
             if f.is_finite() {
-                f.to_string()
+                // `{:?}` es el formato más corto que hace roundtrip y, a
+                // diferencia de Display, NUNCA omite el `.0` en enteros.
+                format!("{f:?}")
             } else {
                 "null".to_string() // JSON no tiene NaN/∞: sin pérdida es para Bytes, no floats
             }
@@ -2477,6 +2486,70 @@ mod tests_import_export {
         assert_eq!(
             renacido.get_node(0).unwrap().props.get("crudo"),
             Some(&Value::Bytes(vec![1, 2, 0xFF]))
+        );
+    }
+
+    #[test]
+    fn float_entero_sobrevive_roundtrip_jsonl() {
+        // REPARACIÓN de la deuda del cap. 36 (§41): Float(2.0) se
+        // serializaba como "2" y reimportaba como Int(2) — pérdida de tipo
+        // silenciosa en el formato que es "el sin pérdida". Ahora el float
+        // SIEMPRE lleva punto decimal.
+        let mut store = MemoryStore::new();
+        store
+            .put_node(Node::new(0, "X").with_prop("peso", Value::Float(2.0)))
+            .unwrap();
+        let mut salida = Vec::new();
+        exportar_jsonl(&store, &mut salida).unwrap();
+        let texto = String::from_utf8(salida).unwrap();
+        assert!(
+            texto.contains("\"peso\":2.0"),
+            "el float entero debe serializarse con punto decimal: {texto}"
+        );
+        // Y el roundtrip devuelve Float, no Int.
+        let mut renacido = MemoryStore::new();
+        importar_jsonl(&mut lector(&texto), &mut renacido).unwrap();
+        assert_eq!(
+            renacido.get_node(0).unwrap().props.get("peso"),
+            Some(&Value::Float(2.0))
+        );
+    }
+
+    #[test]
+    fn float_no_entero_se_mantiene_igual() {
+        // Los floats con parte fraccional no cambian de formato (y siguen
+        // reimportando como Float): la reparación sólo afecta a enteros.
+        for valor in [2.5f64, -0.75, 1e300] {
+            let mut store = MemoryStore::new();
+            store
+                .put_node(Node::new(0, "X").with_prop("v", Value::Float(valor)))
+                .unwrap();
+            let mut salida = Vec::new();
+            exportar_jsonl(&store, &mut salida).unwrap();
+            let texto = String::from_utf8(salida).unwrap();
+            let mut renacido = MemoryStore::new();
+            importar_jsonl(&mut lector(&texto), &mut renacido).unwrap();
+            assert_eq!(
+                renacido.get_node(0).unwrap().props.get("v"),
+                Some(&Value::Float(valor)),
+                "roundtrip de {valor}"
+            );
+        }
+    }
+
+    #[test]
+    fn entero_sigue_importando_como_int_compatibilidad() {
+        // Compatibilidad hacia atrás: un JSONL viejo con "2" (sin punto)
+        // sigue importando como Int. La reparación es SÓLO del exportador.
+        let mut store = MemoryStore::new();
+        importar_jsonl(
+            &mut lector("{\"tipo\":\"nodo\",\"id\":0,\"labels\":[\"X\"],\"props\":{\"v\":2}}"),
+            &mut store,
+        )
+        .unwrap();
+        assert_eq!(
+            store.get_node(0).unwrap().props.get("v"),
+            Some(&Value::Int(2))
         );
     }
 

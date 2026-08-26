@@ -96,6 +96,23 @@ pub enum IndexError {
     PageNotAllocated(PageId),
     /// Overflow de dimensión (e.g. `num_buckets == 0`).
     InvalidParam(&'static str),
+    /// El buffer pool no tiene frames suficientes para CREAR el índice.
+    ///
+    /// POR QUÉ existe: `HashIndex::create` escribe el catálogo y todos los
+    /// cubos primarios y al final los flushea UNO A UNO con
+    /// `BufferPool::flush_page`, que exige que la página siga RESIDENTE en
+    /// el pool. Si la capacidad es menor que el número de páginas distintas
+    /// que `create` toca (catálogo + cubos), alguna página ya fue desalojada
+    /// cuando llega su flush y el fallo era el críptico `UnknownPage(2)`
+    /// (lección del smoke del cap. 36: composición con configuraciones
+    /// adversas revela contratos implícitos). La validación EAGER convierte
+    /// ese fallo tardío e ilegible en un error inmediato y descriptivo.
+    CapacidadInsuficiente {
+        /// Frames mínimos necesarios: página de catálogo + cubos primarios.
+        requerida: usize,
+        /// Capacidad real del pool recibido.
+        disponible: usize,
+    },
 }
 
 impl std::fmt::Display for IndexError {
@@ -108,6 +125,14 @@ impl std::fmt::Display for IndexError {
             IndexError::Inconsistent(what) => write!(f, "index: inconsistent state ({what})"),
             IndexError::PageNotAllocated(id) => write!(f, "index: page {id} not allocated"),
             IndexError::InvalidParam(what) => write!(f, "index: invalid param ({what})"),
+            IndexError::CapacidadInsuficiente {
+                requerida,
+                disponible,
+            } => write!(
+                f,
+                "index: buffer pool capacity insufficient for create \
+                 (needs {requerida} resident frames [catalog + primary buckets], got {disponible})"
+            ),
         }
     }
 }
@@ -348,9 +373,31 @@ pub struct HashIndex<P: Pager> {
 impl<P: Pager> HashIndex<P> {
     /// Crea un nuevo `HashIndex` con `num_buckets` cubos. Si el pager tiene
     /// menos páginas que `3 + num_buckets`, las extiende.
+    ///
+    /// # Errores
+    ///
+    /// - [`IndexError::InvalidParam`] si `num_buckets == 0`.
+    /// - [`IndexError::CapacidadInsuficiente`] si el pool no puede mantener
+    ///   residentes a la vez la página de catálogo y todos los cubos
+    ///   primarios: `create` los flushea al final con `flush_page`, que
+    ///   exige residencia (ver doc de la variante). El mínimo EXACTO es
+    ///   `1 + num_buckets`: las páginas 0 y 1 del pager se asignan pero
+    ///   NUNCA pasan por el pool durante `create`.
     pub fn create(mut pool: BufferPool<P>, num_buckets: u32) -> Result<Self, IndexError> {
         if num_buckets == 0 {
             return Err(IndexError::InvalidParam("num_buckets must be > 0"));
+        }
+        // Validación EAGER del contrato implícito que el cap. 36 cazó:
+        // sin ella, un pool pequeño fallaría MÁS TARDE con el críptico
+        // `UnknownPage(2)` cuando flush_page encuentre el catálogo ya
+        // desalojado.
+        let requerida = 1 + num_buckets as usize;
+        let disponible = pool.capacity();
+        if disponible < requerida {
+            return Err(IndexError::CapacidadInsuficiente {
+                requerida,
+                disponible,
+            });
         }
         // Reservar páginas para catálogo + buckets primarios.
         // Política: las páginas 0 (meta), 1 (reservada), 2 (catálogo),
@@ -1162,6 +1209,52 @@ mod tests_index {
         let pool = BufferPool::new(pager, 64);
         let r = HashIndex::create(pool, 0);
         assert!(matches!(r, Err(IndexError::InvalidParam(_))));
+    }
+
+    #[test]
+    fn hashindex_create_con_pool_insuficiente_da_error_descriptivo() {
+        // REPARACIÓN de la deuda del cap. 36 (§41): con un pool pequeño,
+        // create fallaba AL FINAL con el críptico UnknownPage(2) (flush del
+        // catálogo ya desalojado). Ahora la validación eager devuelve
+        // CapacidadInsuficiente con el mínimo EXACTO: catálogo + cubos.
+        let buckets = 8u32;
+        let requerida = 1 + buckets as usize; // página 2 + 8 cubos; páginas 0/1 no pasan por el pool
+        let pager = TmpPager::new_with_meta();
+        let pool = BufferPool::new(pager, requerida - 1); // uno menos de lo justo
+        // match en vez de unwrap_err: HashIndex no implementa Debug.
+        let err = match HashIndex::create(pool, buckets) {
+            Err(e) => e,
+            Ok(_) => panic!("create con pool insuficiente debía fallar"),
+        };
+        match &err {
+            IndexError::CapacidadInsuficiente {
+                requerida: req,
+                disponible: disp,
+            } => {
+                assert_eq!(*req, 9);
+                assert_eq!(*disp, 8);
+            }
+            otro => panic!("error esperado CapacidadInsuficiente, fue {otro:?}"),
+        }
+        // Descriptivo también para humanos (Display), no sólo para matches!.
+        let mensaje = err.to_string();
+        assert!(mensaje.contains("capacity insufficient"), "{mensaje}");
+        assert!(mensaje.contains('9') && mensaje.contains('8'), "{mensaje}");
+        // Y el error es descriptivo desde el PRIMER momento: ni una sola
+        // página llegó a escribirse (create valida antes de tocar el pool).
+    }
+
+    #[test]
+    fn hashindex_create_con_capacidad_exacta_minima_tiene_exito() {
+        // El mínimo calculado es EXACTO, no conservador: capacidad
+        // 1 + num_buckets basta (todas las páginas que create toca caben a
+        // la vez; ninguna se desaloja antes de su flush).
+        let buckets = 8u32;
+        let pager = TmpPager::new_with_meta();
+        let pool = BufferPool::new(pager, 1 + buckets as usize);
+        let mut h = HashIndex::create(pool, buckets).expect("capacidad justa debe bastar");
+        h.insert(1, 10).unwrap();
+        assert_eq!(h.get(1).unwrap(), Some(10));
     }
 
     #[test]

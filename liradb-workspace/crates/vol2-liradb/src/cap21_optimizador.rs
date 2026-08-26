@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::cap07_modelo::{NodeId, Value};
 use crate::cap08_graph_store::GraphStore;
 use crate::cap17_liraql_ast::{CompareOp, RelDirection};
@@ -141,6 +143,14 @@ impl Catalog {
     /// igualdad) y las aristas una vez (tipos + grados por etiqueta de los
     /// extremos). `&dyn GraphStore` (cap 8): funciona con `MemoryStore` y
     /// con cualquier store futuro sin cambios.
+    ///
+    /// El índice de igualdad se construye en O(valores distintos) amortizado:
+    /// cada push resuelve su entrada en un `HashMap` (O(1) medio) y un Vec
+    /// paralelo preserva el orden de primera aparición. REPARACIÓN de la
+    /// deuda del cap. 34: la versión anterior buscaba la entrada linealmente
+    /// en el Vec ⇒ O(valores_distintos²); sobre los 100k emails únicos del
+    /// dataset de referencia eran ~224 s frente a los 281 ms del grafo
+    /// completo.
     pub fn collect(store: &dyn GraphStore) -> Self {
         let mut catalog = Catalog {
             total_nodes: 0,
@@ -149,6 +159,13 @@ impl Catalog {
             edges_per_type: Vec::new(),
             eq_index: Vec::new(),
         };
+        // Índice de igualdad EN CONSTRUCCIÓN: claves en orden de primera
+        // aparición (`eq_orden`, que es el determinismo que el Vec antiguo
+        // daba gratis), posición de cada clave y ids acumulados.
+        let mut eq_orden: Vec<(Option<String>, String, ClaveValor)> = Vec::new();
+        let mut eq_posiciones: HashMap<(Option<String>, String, ClaveValor), usize> =
+            HashMap::new();
+        let mut eq_ids: Vec<Vec<NodeId>> = Vec::new();
         for node in store.iter_nodes() {
             catalog.total_nodes += 1;
             for label in &node.labels {
@@ -156,11 +173,39 @@ impl Catalog {
             }
             // Índice de igualdad: bajo cada etiqueta del nodo y bajo el
             // comodín (sin etiqueta). Valor por valor (Value: PartialEq).
-            for (property, value) in &node.props {
-                for label in &node.labels {
-                    eq_push(&mut catalog.eq_index, Some(label), property, value, node.id);
+            //
+            // Etiquetas SIN duplicados y en orden de aparición: un nodo
+            // ["A", "A"] debe indexar sus ids UNA vez bajo "A". El
+            // `contains` del eq_push antiguo lo garantizaba; aquí la dedup
+            // lo garantiza por construcción (cada nodo se visita una sola
+            // vez y las props de un nodo son únicas).
+            let mut etiquetas: Vec<&str> = Vec::with_capacity(node.labels.len());
+            for label in &node.labels {
+                if !etiquetas.contains(&label.as_str()) {
+                    etiquetas.push(label);
                 }
-                eq_push(&mut catalog.eq_index, None, property, value, node.id);
+            }
+            for (property, value) in &node.props {
+                for label in &etiquetas {
+                    eq_push(
+                        &mut eq_orden,
+                        &mut eq_posiciones,
+                        &mut eq_ids,
+                        Some(label),
+                        property,
+                        value,
+                        node.id,
+                    );
+                }
+                eq_push(
+                    &mut eq_orden,
+                    &mut eq_posiciones,
+                    &mut eq_ids,
+                    None,
+                    property,
+                    value,
+                    node.id,
+                );
             }
         }
         for edge in store.iter_edges() {
@@ -181,6 +226,18 @@ impl Catalog {
                 }
             }
         }
+        // El Vec final recupera el shape público, en el MISMO orden de
+        // primera aparición que producía el escaneo lineal antiguo.
+        catalog.eq_index = eq_orden
+            .into_iter()
+            .zip(eq_ids)
+            .map(|((label, property, clave), ids)| EqIndexEntry {
+                label,
+                property,
+                value: Value::from(clave),
+                ids,
+            })
+            .collect();
         catalog
     }
 
@@ -301,28 +358,92 @@ fn edges_per_type_entry<'a>(
     Some(&mut edges_per_type[last].1)
 }
 
-/// Añade un id a la entrada del índice de igualdad (creándola si no existe).
+/// Añade un id a la entrada del índice de igualdad (creándola si no existe)
+/// con coste O(1) amortizado: el mapa resuelve la posición de la clave y los
+/// dos Vecs paralelos (`orden` + `ids`) conservan el orden de primera
+/// aparición y el determinismo del escaneo.
+///
+/// No puede duplicar ids: cada nodo se visita una sola vez, sus props son
+/// únicas y `collect` le pasa las etiquetas ya deduplicadas.
 fn eq_push(
-    eq_index: &mut Vec<EqIndexEntry>,
+    orden: &mut Vec<(Option<String>, String, ClaveValor)>,
+    posiciones: &mut HashMap<(Option<String>, String, ClaveValor), usize>,
+    ids_por_clave: &mut Vec<Vec<NodeId>>,
     label: Option<&str>,
     property: &str,
     value: &Value,
     id: NodeId,
 ) {
-    if let Some(entry) = eq_index.iter_mut().find(|entry| {
-        entry.label.as_deref() == label && entry.property == property && &entry.value == value
-    }) {
-        if !entry.ids.contains(&id) {
-            entry.ids.push(id);
+    let clave = (
+        label.map(str::to_string),
+        property.to_string(),
+        ClaveValor::from(value),
+    );
+    match posiciones.entry(clave) {
+        std::collections::hash_map::Entry::Occupied(entrada) => {
+            ids_por_clave[*entrada.get()].push(id);
         }
-        return;
+        std::collections::hash_map::Entry::Vacant(entrada) => {
+            let posicion = ids_por_clave.len();
+            orden.push(entrada.key().clone());
+            entrada.insert(posicion);
+            ids_por_clave.push(vec![id]);
+        }
     }
-    eq_index.push(EqIndexEntry {
-        label: label.map(str::to_string),
-        property: property.to_string(),
-        value: value.clone(),
-        ids: vec![id],
-    });
+}
+
+/// Clave canónica y hashable de un `Value` para el índice de igualdad.
+///
+/// `Value` no implementa `Eq`/`Hash` (el `f64` de [`Value::Float`] no es
+/// hashable), pero agrupar valores en un mapa los exige. La clave traduce
+/// cada valor a una representación con IGUALDAD EXACTA idéntica a la de
+/// `Value` (`PartialEq`):
+///
+/// - `Float(f)` se reduce a sus bits, normalizando `-0.0` a `+0.0` (que
+///   `PartialEq` ya considera iguales; por eso ambos comparten entrada).
+///   Dos NaN con el mismo patrón de bits compartirían entrada: es
+///   inobservable porque `equality_lookup` compara con `PartialEq` y NaN
+///   nunca es igual a NaN.
+/// - Las demás variantes se copian tal cual.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ClaveValor {
+    Nulo,
+    Bool(bool),
+    Entero(i64),
+    Flotante(u64),
+    Texto(String),
+    Bytes(Vec<u8>),
+}
+
+impl From<&Value> for ClaveValor {
+    fn from(v: &Value) -> Self {
+        match v {
+            Value::Null => ClaveValor::Nulo,
+            Value::Bool(b) => ClaveValor::Bool(*b),
+            Value::Int(i) => ClaveValor::Entero(*i),
+            // La normalización de ±0.0 a los mismos bits replica que
+            // `-0.0 == 0.0` según `PartialEq`.
+            Value::Float(f) => {
+                let bits = if *f == 0.0 { 0 } else { f.to_bits() };
+                ClaveValor::Flotante(bits)
+            }
+            Value::String(s) => ClaveValor::Texto(s.clone()),
+            Value::Bytes(b) => ClaveValor::Bytes(b.clone()),
+        }
+    }
+}
+
+impl From<ClaveValor> for Value {
+    fn from(clave: ClaveValor) -> Self {
+        match clave {
+            ClaveValor::Nulo => Value::Null,
+            ClaveValor::Bool(b) => Value::Bool(b),
+            ClaveValor::Entero(i) => Value::Int(i),
+            ClaveValor::Flotante(bits) => Value::Float(f64::from_bits(bits)),
+            ClaveValor::Texto(s) => Value::String(s),
+            ClaveValor::Bytes(b) => Value::Bytes(b),
+        }
+    }
 }
 
 // ─── Selectividad: heurísticas por tipo de predicado ───
@@ -1423,6 +1544,184 @@ mod tests_optimizer {
                 c2.equality_lookup(label, prop, &value)
             );
         }
+    }
+
+    #[test]
+    fn catalogo_collect_miles_de_valores_unicos_es_viable() {
+        // REPARACIÓN de la deuda del cap. 34 (§39): el eq_push antiguo
+        // buscaba la entrada linealmente ⇒ O(valores_distintos²). Con
+        // 20k emails únicos el coste antiguo ronda los ~9 s (escala
+        // cuadrática del ~224 s medido sobre 100k); el nuevo debe terminar
+        // en tiempo de test Y producir un catálogo correcto.
+        const N: usize = 20_000;
+        let mut store = MemoryStore::new();
+        for i in 0..N {
+            store
+                .put_node(
+                    Node::new(i, "Persona")
+                        .with_prop("email", Value::String(format!("p{i}@liradb.dev"))),
+                )
+                .unwrap();
+        }
+        let inicio = std::time::Instant::now();
+        let catalogo = Catalog::collect(&store);
+        let duracion = inicio.elapsed();
+        assert_eq!(catalogo.total_nodes, N as u64);
+        // Corrección puntual: primera, intermedia y última.
+        for i in [0usize, N / 2, N - 1] {
+            let email = Value::String(format!("p{i}@liradb.dev"));
+            assert_eq!(
+                catalogo.equality_lookup(Some("Persona"), "email", &email),
+                vec![i],
+                "lookup del email {i}"
+            );
+            assert_eq!(
+                catalogo.equality_lookup(None, "email", &email),
+                vec![i],
+                "lookup comodín del email {i}"
+            );
+        }
+        // Valor ausente ⇒ vacío (la cardinalidad correcta).
+        assert!(
+            catalogo
+                .equality_lookup(None, "email", &Value::String("nadie@liradb.dev".into()))
+                .is_empty()
+        );
+        println!("Catalog::collect con {N} valores únicos: {duracion:?}");
+        // El antiguo tardaría ~9 s aquí; margen holgado para CI lento.
+        assert!(
+            duracion.as_secs() < 5,
+            "collect parece cuadrático otra vez: {duracion:?}"
+        );
+    }
+
+    #[test]
+    fn catalogo_no_duplica_ids_con_etiquetas_repetidas() {
+        // White-box: el nodo ["A", "A"] debe indexar su id UNA sola vez bajo
+        // cada clave (el contains del eq_push antiguo lo garantizaba; ahora
+        // lo garantiza la dedup de etiquetas de collect).
+        let mut store = MemoryStore::new();
+        let nodo = Node::new(7, "A").with_prop("k", Value::Int(1));
+        let mut nodo = nodo;
+        nodo.labels.push("A".to_string());
+        store.put_node(nodo).unwrap();
+        let catalogo = Catalog::collect(&store);
+        for entrada in &catalogo.eq_index {
+            assert_eq!(
+                entrada.ids,
+                vec![7],
+                "ids duplicados en {:?}",
+                entrada.label
+            );
+        }
+        // Dos entradas por la prop (etiqueta + comodín), ninguna duplicada.
+        assert_eq!(catalogo.eq_index.len(), 2);
+        assert_eq!(
+            catalogo.equality_lookup(Some("A"), "k", &Value::Int(1)),
+            vec![7]
+        );
+    }
+
+    #[test]
+    fn catalogo_eq_index_preserva_orden_de_primera_aparicion() {
+        // White-box: las entradas del índice aparecen en orden de primera
+        // aparición durante el escaneo — etiquetas antes que comodín por
+        // prop, nodos en orden del store — y los ids van ascendentes. Es el
+        // determinismo que el Vec antiguo daba gratis y que la reparación
+        // preserva explícitamente.
+        let mut store = MemoryStore::new();
+        store
+            .put_node(Node::new(0, "P").with_prop("a", Value::Int(1)))
+            .unwrap();
+        store
+            .put_node(Node::new(1, "Q").with_prop("b", Value::Int(1)))
+            .unwrap();
+        store
+            .put_node(Node::new(2, "P").with_prop("a", Value::Int(1)))
+            .unwrap();
+        let catalogo = Catalog::collect(&store);
+        let forma: Vec<(Option<&str>, &str, i64, Vec<usize>)> = catalogo
+            .eq_index
+            .iter()
+            .map(|e| {
+                (
+                    e.label.as_deref(),
+                    e.property.as_str(),
+                    match e.value {
+                        Value::Int(i) => i,
+                        ref otro => panic!("valor inesperado {otro:?}"),
+                    },
+                    e.ids.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            forma,
+            vec![
+                // Nodo 0: (P,a,1) primero, comodín después.
+                (Some("P"), "a", 1, vec![0, 2]),
+                (None, "a", 1, vec![0, 2]),
+                // Nodo 1.
+                (Some("Q"), "b", 1, vec![1]),
+                (None, "b", 1, vec![1]),
+            ]
+        );
+        // El segundo nodo P con a=1 se acumuló en la primera entrada.
+        assert_eq!(
+            catalogo.equality_lookup(Some("P"), "a", &Value::Int(1)),
+            vec![0, 2]
+        );
+    }
+
+    #[test]
+    fn catalogo_distingue_int_de_float_y_normaliza_cero_negativo() {
+        // La clave canónica replica la igualdad EXACTA de Value: Int ≠ Float,
+        // pero -0.0 == 0.0 según PartialEq (misma entrada).
+        let mut store = MemoryStore::new();
+        store
+            .put_node(Node::new(0, "M").with_prop("v", Value::Int(1)))
+            .unwrap();
+        store
+            .put_node(Node::new(1, "M").with_prop("v", Value::Float(1.0)))
+            .unwrap();
+        store
+            .put_node(Node::new(2, "M").with_prop("w", Value::Float(-0.0)))
+            .unwrap();
+        store
+            .put_node(Node::new(3, "M").with_prop("w", Value::Float(0.0)))
+            .unwrap();
+        let catalogo = Catalog::collect(&store);
+        // Int y Float son entradas DISTINTAS: cada lookup encuentra sólo
+        // su nodo (si se hubieran fusionado, ambos devolverían [0, 1]).
+        assert_eq!(catalogo.equality_lookup(None, "v", &Value::Int(1)), vec![0]);
+        assert_eq!(
+            catalogo.equality_lookup(None, "v", &Value::Float(1.0)),
+            vec![1]
+        );
+        assert_eq!(
+            catalogo.equality_lookup(None, "w", &Value::Float(0.0)),
+            vec![2, 3],
+            "-0.0 y 0.0 comparten entrada (PartialEq los iguala)"
+        );
+        // White-box: 6 entradas — v como Int y como Float por separado
+        // (etiqueta + comodín) y w FUSIONADA en una sola por el ±0.0.
+        assert_eq!(catalogo.eq_index.len(), 6);
+    }
+
+    #[test]
+    #[ignore = "medición para la prosa del cap. 34/36: cargo test -p vol2-liradb --lib medir_catalogo_collect_dataset_referencia -- --ignored --nocapture"]
+    fn medir_catalogo_collect_dataset_referencia() {
+        // La cifra que sustituye a los ~224 s documentados en §39:
+        // Catalog::collect sobre el dataset de referencia completo
+        // (100k nodos con email único) tras la reparación O(n).
+        let ds = crate::cap34_benchmarks::dataset_referencia(
+            crate::cap34_benchmarks::SEMILLA_REFERENCIA,
+        );
+        let inicio = std::time::Instant::now();
+        let catalogo = Catalog::collect(&ds.store);
+        let duracion = inicio.elapsed();
+        assert_eq!(catalogo.total_nodes, 100_000);
+        println!("Catalog::collect sobre dataset_referencia (100k emails únicos): {duracion:?}");
     }
 
     // ════════════════════════════════════════════════════════════════

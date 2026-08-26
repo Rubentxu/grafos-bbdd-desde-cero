@@ -308,10 +308,12 @@ fn la_pila_fisica_encadena_pager_pool_csr_e_indices() {
     //
     //    HALLAZGO del smoke (la prosa lo cita): `HashIndex::create` hace
     //    flush de TODAS sus páginas y `BufferPool::flush_page` exige
-    //    residencia — si el working set (3 + num_buckets) supera la
-    //    capacidad del pool, la creación falla con `UnknownPage`. El
-    //    adaptador de índice depende, sin decirlo, del tamaño del pool
-    //    que lo aloja: capacidad 16 para 8 cubos.
+    //    residencia — si la capacidad del pool es menor que el working set,
+    //    la creación fallaba con el críptico `UnknownPage`. REPARADO: ahora
+    //    `create` valida EAGER y devuelve `CapacidadInsuficiente { requerida,
+    //    disponible }` con el mínimo exacto (catálogo + cubos). El adaptador
+    //    de índice declara su dependencia del tamaño del pool en lugar de
+    //    fallar tarde e ilegible. Capacidad holgada 16 para 8 cubos.
     let pool_hash = BufferPool::with_policy(
         FilePager::create(dir.path().join("hash.bin")).expect("pager hash"),
         16,
