@@ -1,0 +1,31 @@
+id:ID, anio:INT, nombre:STRING, titulo:STRING, :LABEL
+0,,Ana,,Persona
+1,,Beto,,Persona
+2,,Carla,,Persona
+3,,Dani,,Persona
+4,,Elena,,Persona
+5,,Fabio,,Persona
+6,,Universidad de Lira,,Organizacion
+7,,Instituto Neurónica,,Organizacion
+8,,Laboratorio GrafosYA,,Organizacion
+9,,Proyecto Kira,,Proyecto
+10,,Proyecto Oráculo,,Proyecto
+11,,Proyecto Brújula,,Proyecto
+12,2021,Grafos de conocimiento para agentes,Grafos de conocimiento para agentes,Documento:Paper
+13,2022,Consultas declarativas sobre property graphs,Consultas declarativas sobre property graphs,Documento:Paper
+14,2024,Memoria episódica en LLMs,Memoria episódica en LLMs,Documento:Paper
+15,2023,Índices adaptativos para grafos,Índices adaptativos para grafos,Documento:Paper
+16,2025,Recuperación aumentada con grafos,Recuperación aumentada con grafos,Documento:Paper
+17,2024,Supernodos: anatomía de un cuello de botella,Supernodos: anatomía de un cuello de botella,Documento:Paper
+18,2023,Notas de la reunión de arranque,Notas de la reunión de arranque,Documento:Nota
+19,2024,Bitácora del experimento K-7,Bitácora del experimento K-7,Documento:Nota
+20,2024,Informe anual del Proyecto Kira,Informe anual del Proyecto Kira,Documento:Informe
+21,2025,Informe de revisión por pares 2025,Informe de revisión por pares 2025,Documento:Informe
+22,2023,Informe técnico del Proyecto Oráculo,Informe técnico del Proyecto Oráculo,Documento:Informe
+23,2025,Resumen del taller de GQL,Resumen del taller de GQL,Documento:Nota
+24,,grafos de conocimiento,,Tema
+25,,lenguajes de consulta,,Tema
+26,,memoria de agentes,,Tema
+27,,índices y almacenamiento,,Tema
+28,,RAG,,Tema
+29,,rendimiento,,Tema

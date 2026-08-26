@@ -313,6 +313,7 @@ pub mod cap37_produccion;
 pub mod cap38_columnar;
 mod cap39_joins;
 mod cap40_distribucion;
+mod cap41_modelado;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -346,3 +347,4 @@ pub use cap37_produccion::*;
 pub use cap38_columnar::*;
 pub use cap39_joins::*;
 pub use cap40_distribucion::*;
+pub use cap41_modelado::*;
