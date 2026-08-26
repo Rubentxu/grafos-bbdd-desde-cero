@@ -35,16 +35,16 @@ volumes:
   - id: vol-III
     title: "Grafos en la era de la IA: modelar, razonar y recuperar"
     file: vol3-grafos-era-ia.md
-    state: SKELETON                          # outline aprobado (ADR-005); 0 caps redactados
+    state: DRAFTING                          # cap-41 DONE (primer capítulo, 2026-08-26); 12 restantes en bucle B/C
     chapters_total: 13
-    chapters_done: 0
+    chapters_done: 1                         # cap-41 (KB-Lira paso-1: builder+validador+10 preguntas testeadas)
     appendices: [A, B, C, D, E]
     style: "Híbrido (plantilla Apéndice 0) + metodología teaching (CONVENTIONS §2)"
-    current_macro_phase: A                   # currículo + outline hechos → chapter-planner
-    progressive_example: "KB-Lira (dataset hilo conductor, generador en workspace pendiente)"
+    current_macro_phase: B/C                  # bucle capítulo: planner→generator→writer
+    progressive_example: "KB-Lira (dataset hilo conductor; paso-1 generado en liradb-workspace/datasets/kb-lira/paso-1/)"
 
-current_macro_phase: D                        # D1 ejecutado (render BUILT 2026-08-26); queda D2 mantenimiento recurrente
-next_macro_phase: —                          # Vol.II publicado; siguientes: cierre Vol.III (A/B) y D2 drift periódico
+current_macro_phase: B/C                     # Vol.III en bucle de capítulos (cap-41 DONE; 42-53 por hacer)
+next_macro_phase: —                          # Vol.I y Vol.II DONE y renderizados; D2 periódico pendiente
 last_updated: 2026-08-26
 ```
 
@@ -282,6 +282,19 @@ vol-II-chapters:
     state: DONE        # redactado en sesión 2026-08-26 (Sesión 41): viaje de las 8 Partes + honestidad LiraDB + carta al lector (Feynman) + puente Vol.III; colofón completado
     blocked_on: null
     cycle: 0
+```
+
+## Capítulos Vol.III — máquina de estados
+
+```yaml
+vol-III-chapters:
+  - id: vol-III-cap-41  # Modelar entidades, propiedades y relaciones — ABRE EL VOL.III (Parte I)
+    state: DONE        # código+prosa en sesión 2026-08-26 (Sesión 43) — KB-Lira paso-1: builder determinista + validador + 10 preguntas testeadas (7 LiraQL/3 API) + CSV datasets/kb-lira/paso-1/; P6 naive 12 vs LPG 5
+    blocked_on: null
+    cycle: 0
+    workspace_crate: vol2-liradb
+    module: cap41_modelado
+  # caps 42-53: PLANNED (outline aprobado ADR-005; planificar en orden)
 ```
 
 ## Decisiones arquitectónicas (ADRs, mini-resumen)

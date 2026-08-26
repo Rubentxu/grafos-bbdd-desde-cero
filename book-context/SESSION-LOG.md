@@ -199,3 +199,18 @@
 **Estado al cierre**: Vol.II DONE con deudas técnicas saldadas. Obra: Vol.I DONE, Vol.II DONE (901 tests), Vol.III SKELETON.
 
 **Próximas opciones**: (a) re-render + publicación; (b) Vol.III cap-41 (chapter-planner); (c) D2 mantenimiento periódico.
+
+## 2026-08-26 — Sesión 43
+
+**Asistentes**: book-orchestrator + chapter-planner + code-example-generator + chapter-writer.
+
+**Trabajo realizado**: Cap. 41 «Modelar entidades, propiedades y relaciones» DONE — **ABRE EL VOL.III «Grafos en la era de la IA»** (1/13 caps).
+- Contrato por planner-agente (`book-context/contratos/vol3/cap-41.md`, 358 líneas — primera carpeta vol3/): escalera R1-R7 formalizada (prueba de la identidad propia), query-first con las 10 preguntas vinculantes ANTES del modelo, 13 decisiones. Citas verificadas: Robinson-Webber-Eifrem O'Reilly 2013/2ª ed. jun-2015; Angles-Gutierrez CSUR 40(1) 2008 + LNCS 10000 2018; Francis et al. SIGMOD '18 pp.1433-1445; W3C RDF 1.1 2014; GQL ISO 39075:2024; openCypher CIF marcado [VERIFICAR]. Frontera dura con cap-42 (antipatrones): solo regla + mini-hub sembrado como gancho.
+- Código por generator-agente (tras reintento — el primero falló por error de infraestructura «Endpoint is unavailable»): `cap41_modelado.rs` (1.668 líneas std puro, 19 tests): kb_lira_paso1() determinista (30 nodos/64 aristas: 6 Personas, 3 Org, 3 Proyectos, 12 Documentos con labels múltiples, 6 Temas; AUTHORED con order; hub Tema con 6 ABOUT), validar_modelo_kb_lira (Violacion con ids), ModeloDocsTodopropiedades con contador de lecturas, CSV roundtrip byte-a-byte, informe reproducible. Artefactos commiteados: `datasets/kb-lira/paso-1/{nodes.csv,edges.csv}`. Wiring lib.rs +2. 901→920 tests ALL_GREEN.
+- HALLAZGOS del código: (1) frontera LiraQL VERIFICADA en cap18 — `scan_string` corrompe UTF-8 multi-byte («é»→«Ã©») así que filtros con títulos acentuados nunca matchean ⇒ P2/P3/P6 usan API directa (frontera declarada en prosa con honestidad); (2) P6 naive 12 lecturas (escaneo total) vs LPG 5 (solo MENTIONS entrantes); (3) P9 responde 3 temas (el camino admite d1==d2: el paper compartido trata 2 temas); (4) `clave_orden` natural (diacríticos→ASCII) porque el sort bytewise pondría «Índices» tras «Z».
+- Prosa por writer-agente (368 líneas, 20 secciones + blockquote inicial de apertura del Vol.III): anécdota Graph Databases O'Reilly 2013/2015 → Cypher SIGMOD '18 → GQL ISO 2024; historia pequeña GOOD (Gyssens-Paredaens-Van Gucht, PODS 1990, pp.417-424) como primera ola de modelos de grafos, verificada en vivo (Exa; DOI 10.1145/1322432.1322433); cifras reales pegadas (tabla P1-P10).
+- SUMARIO vol3 actualizado (cap-41 tras tabla-de-contenidos); rebuild vol3 137 → **505 líneas**.
+
+**Estado al cierre**: ALL_GREEN **920 tests**. Vol.III **1/13 caps DONE** (~505 líneas ensambladas). Obra: Vol.I DONE, Vol.II DONE (renderizado), Vol.III DRAFTING. Commits 774fe13 / 477dcfc pushed.
+
+**Próxima sesión**: cap-42 «Antipatrones: supernodos, reificación y otras trampas» (Parte I, cap 2) — refactor del hub sembrado en cap-41 con Louvain/estadísticas ya existentes; después caps 43 (temporalidad), 44 (constraints/índices). Recordatorio: regenerar build/ antes de publicar (deudas reparadas post-render).
