@@ -3,5 +3,6 @@ prologo.md
 tabla-de-contenidos.md
 cap-41-modelar-entidades-propiedades-y-relaciones.md
 cap-42-antipatrones-supernodos-reificacion-y-otras-trampas.md
+cap-43-el-tiempo-en-el-grafo-versionado-y-bitemporalidad.md
 epilogo.md
 colofon.md
