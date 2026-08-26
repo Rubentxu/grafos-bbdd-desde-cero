@@ -214,3 +214,12 @@
 **Estado al cierre**: ALL_GREEN **920 tests**. Vol.III **1/13 caps DONE** (~505 líneas ensambladas). Obra: Vol.I DONE, Vol.II DONE (renderizado), Vol.III DRAFTING. Commits 774fe13 / 477dcfc pushed.
 
 **Próxima sesión**: cap-42 «Antipatrones: supernodos, reificación y otras trampas» (Parte I, cap 2) — refactor del hub sembrado en cap-41 con Louvain/estadísticas ya existentes; después caps 43 (temporalidad), 44 (constraints/índices). Recordatorio: regenerar build/ antes de publicar (deudas reparadas post-render).
+
+## 2026-08-26 — Sesión 44 (parcial, bloqueada por infraestructura)
+
+**Trabajo realizado**:
+- Contrato cap-42 ESCRITO y validado por planner-agente (407 líneas, commit 4b8d4c8 pushed): kb_lira_paso2_degrado() (59 nodos/134 aristas, lote 24 papers), detector de supernodos con umbral doble (ratio ≥5× mediana del label Y share ≥25% del tipo), 3 refactors puros con InformeRefactor (A descomponer subtemas, B reificar Resena, C conferencias/temas-año), validador paso-2 por composición, REGRESIÓN OBLIGATORIA de las 10 preguntas del cap-41, ~20 tests nuevos (~940 ALL_GREEN previsto), SIN bench. Citas verificadas: Allen (Neo4j blog 19-oct-2020), GraphAcademy gdm-40, Aerospike AGS 3.0, Boylan-Toomey (26-feb-2024), Robinson et al. 2015 cap.2 p.63, Kimball 1996 (precisión star schema); Neo4j KB join hints [VERIFICAR fecha].
+
+**BLOQUEO**: el generator-agente (`general`) devolvió RESPUESTA VACÍA 4 veces (3 fresh + 1 resume) sin tocar el árbol. El pipeline de subagentes funciona (diagnóstico con `explore` OK) — es el provider del agente `general` el que está degradado (mismo patrón que el cap-41, que se resolvió tras compactación). Trabajo NO perdido: contrato commiteado; workspace intacto 920 tests ALL_GREEN.
+
+**Estado al cierre**: LEDGER cap-42 = PLANNED con `blocked_on: generator-infraestructura`. Próximo paso: REINTENTAR el generator del cap-42 (contrato ya listo) cuando el provider se estabilice.

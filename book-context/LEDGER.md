@@ -295,6 +295,11 @@ vol-III-chapters:
     workspace_crate: vol2-liradb
     module: cap41_modelado
   # caps 42-53: PLANNED (outline aprobado ADR-005; planificar en orden)
+  - id: vol-III-cap-42  # Antipatrones: supernodos, reificación y otras trampas
+    state: PLANNED      # contrato LISTO (2026-08-26, commit 4b8d4c8); código PENDIENTE — 4 reintentos de generator fallaron por infraestructura del provider (respuestas vacías); reintentar
+    blocked_on: generator-infraestructura
+    remediation_target: code-example-generator
+    cycle: 0
 ```
 
 ## Decisiones arquitectónicas (ADRs, mini-resumen)
