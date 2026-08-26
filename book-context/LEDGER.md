@@ -25,13 +25,13 @@ volumes:
   - id: vol-II
     title: "Construye LiraDB — De los algoritmos fundamentales a un motor persistente de consultas en Rust"
     file: vol2-construye-liradb.md
-    state: WRITING                          # 39/40 caps con prosa al estándar; Partes I-VII cerradas
+    state: CAPS_DONE                         # 40/40 caps con prosa al estándar; quedan Apéndice 0 + epílogo/colofón antes del preflight D1
     chapters_total: 40
-    chapters_done: 39                        # caps 1-39 (queda 40 distribución + apéndices/epílogo)
+    chapters_done: 40                        # caps 1-40 COMPLETOS (2026-08-26)
     appendices: ["0", A, B, C, D, E]         # Apéndice 0 = Manual de estilo unificado (verificar si al estándar)
     style: "Híbrido (10 pasos LiraDB + baterías narrativas Vol.I)"
     current_macro_phase: B/C                 # bucle capítulo: planner→generator→writer→verify
-    notes: "refuerzos quirúrgicos ADR-005 aplicados; numeración congelada; workspace ALL_GREEN 878 tests; Parte VIII 3/4 (37-39 hechos, queda 40)"
+    notes: "refuerzos quirúrgicos ADR-005 aplicados; numeración congelada; workspace ALL_GREEN 892 tests; TODOS los caps (1-40) DONE — quedan Apéndice 0 + epílogo + preflight D1"
   - id: vol-III
     title: "Grafos en la era de la IA: modelar, razonar y recuperar"
     file: vol3-grafos-era-ia.md
@@ -267,6 +267,12 @@ vol-II-chapters:
     workspace_crate: vol2-liradb
     module: cap39_joins
     benches: bench_joins
+  - id: vol-II-cap-40  # Distribuir una base de datos de grafos (Raft, partitioning) — CIERRA EL VOLUMEN
+    state: DONE        # código+prosa en sesión 2026-08-26 (Sesión 40) — Parte VIII, cap 4 — hash vs comunidad (-40,7% cortes) + vertex-cut hub + Raft tics lógicos + GrafoEspera global
+    blocked_on: null
+    cycle: 0
+    workspace_crate: vol2-liradb
+    module: cap40_distribucion
   # ... caps 33-40 por planificar
   - id: vol-II-apendice-0   # Manual de estilo unificado
     state: PLANNED

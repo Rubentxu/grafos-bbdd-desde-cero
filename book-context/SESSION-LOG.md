@@ -141,3 +141,22 @@
 **Estado al cierre**: ALL_GREEN **878 tests**. Vol.II **39/40 caps con prosa** (~13.789 líneas ensambladas); Parte VIII 3/4 (queda cap-40). Commits e248c0c / 0a4f170 en main (pushed). build_book.sh --check ALL_ASSEMBLED.
 
 **Próxima sesión**: cap-40 «Distribuir una BBDD de grafos» (particionado por nodos, edge/vertex cuts, replicación de fronteras, consultas entre particiones, consistencia, Raft, rebalanceo, hotspots) — **CIERRA EL VOL.II**. Después: Apéndice 0 (decidir si al estándar o placeholder), epílogo/colofón, preflight D1 (book-builder). Deuda menor: corregir cita Olteanu-Závodný en contrato cap-38 (ICDT 2015 → ICDT 2012/TODS 40(1) 2015). Deudas mayores documentadas (MIGRATION §39/§41/§43): Catalog::collect cuadrático, HashIndex capacity, Float-entero JSONL.
+
+## 2026-08-26 — Sesión 40
+
+**Asistentes**: book-orchestrator + chapter-planner + code-example-generator + chapter-writer.
+
+**Trabajo realizado**: Cap. 40 «Distribuir una base de datos de grafos» DONE (código Y prosa) — **CIERRA EL VOL.II: 40/40 caps con prosa al estándar**.
+- Contrato por planner-agente (`book-context/contratos/vol2/cap-40.md`, 342 líneas): cobra CUATRO deudas (cap-36 pregunta abierta multi-máquina, cap-37 informe_produccion, cap-39 gancho saliente, cap-30 `GrafoEspera` enchufada por fin). Citas verificadas: Raft USENIX ATC '14 pp.305-319; Pregel SIGMOD '10; PowerGraph OSDI '12 pp.17-30; Petrov O'Reilly 2019; Kùzu CIDR 2023/ADR-001. DECISIÓN #11: SIN bench nuevo — la moneda aquí son enteros exactos, no µs.
+- Código por generator-agente: `cap40_distribucion.rs` (1.835 líneas std puro, 14 tests): 3 estrategias de particionado (hash FNV-1a mód k reutilizado del cap-15, comunidad vía louvain() del cap-25, codicioso), MetricasCorte (definiciones PowerGraph), replicar_hub vertex-cut, bfs_entre_particiones con contador de mensajes, carga+rebalanceo, EnjambreRaft DETERMINISTA (tics lógicos, timeouts escalonados fijos 10/15/20, bus FIFO, sin RNG/sleeps/hilos), deadlock entre particiones con GrafoEspera global. Wiring aditivo lib.rs +2; Cargo.toml intacto.
+- Cifras reales medidas: comunidad 630 cortes vs hash 1062 (**−40,7%**) PERO desbalancea (tam máx 115 / mín 23); hash balancea 50×8 exacto con hotspot 14,5% en la partición del hub; codicioso literal corta el 100% (lección greedy sin lookahead, reportada tal cual); vertex-cut estrella 4→0 pagando 3 réplicas; Raft elección estable en tic 10, logs idénticos, mayoría caída congela compromiso, rezagado <200 tics.
+- Prosa por writer-agente (378 líneas, 20 secciones): anécdota Pregel→PowerGraph («invertir el cuchillo»); historia pequeña Raft «In Search of an UNDERSTANDABLE Consensus Algorithm»; tabla trade-off real pegada; gancho de cierre de VOLUMEN hacia el epílogo (hexágono del cap-36 respondido).
+- SUMARIO.txt actualizado; rebuild vol2 13.789 → **14.167 líneas** (+378 exactas).
+
+**Estado al cierre**: ALL_GREEN **892 tests**. Vol.II **40/40 caps DONE** (~14.167 líneas ensambladas); las 8 Partes cerradas en código Y prosa. Commits f1bf9b5 / 56dd171 pushed.
+
+**Próxima sesión (cierre del volumen antes de D1)**:
+1. **Apéndice 0 «Manual de estilo unificado»**: decidir si está al estándar o es placeholder (LEDGER lo marca PLANNED).
+2. Epílogo + colofón: revisar que cierren el viaje (pueden ser borradores breves); corregir deuda menor cita Olteanu-Závodný cap-38 (ICDT 2015 → ICDT 2012/TODS 40(1) 2015) en contrato Y prosa si la heredó.
+3. **Preflight D1**: todos los caps DONE ✓, verify-report ALL_GREEN ✓ → `book-builder` (HTML/PDF/EPUB) + citation-manager.
+4. Deudas mayores documentadas (MIGRATION §39/§41/§43): Catalog::collect cuadrático, HashIndex capacity ≥ 3+num_buckets, Float-entero JSONL — candidatas a reparar antes o después del render (decisión del autor).
