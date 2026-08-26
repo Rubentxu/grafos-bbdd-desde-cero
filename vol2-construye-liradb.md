@@ -11760,7 +11760,7 @@ Dos contrastes con nombre propio. El CSR itera las 500k aristas **×16 más ráp
 
 ### El hallazgo estrella: nuestro aparato nos cazó a nosotros
 
-Al preparar Q1 pasó lo que este capítulo vino a buscar. El plan correcto exige resolver ids contra el catálogo del optimizador… y `Catalog::collect` (cap. 21) resultó ser **O(valores_distintos²)**: `eq_push` inserta con búsqueda LINEAL (`find` sobre el vector de entradas) por cada propiedad de cada nodo. Con los 100.000 emails únicos —que generan dos entradas cada uno, por etiqueta y por comodín— construir el catálogo tarda **~224 segundos**, mientras construir TODO el grafo de 100k nodos y 500k aristas tarda **281 milisegundos**. Ochocientas veces más caro que el dato que cataloga. La decisión fue no parchear: Q1/Q2 miden EJECUCIÓN sobre el plan semi-ligado exacto (ids resueltos UNA vez, fuera de la región medida), y `optimizador_real_produce_index_seek_en_mini` demuestra en el dataset MINI —donde el catálogo sí es barato— que el optimizador REAL produce estructuralmente ese mismo plan con los mismos resultados. El capítulo MIDE; reparar es deuda documentada del optimizador (§34.9).
+Al preparar Q1 pasó lo que este capítulo vino a buscar. El plan correcto exige resolver ids contra el catálogo del optimizador… y `Catalog::collect` (cap. 21) resultó ser **O(valores_distintos²)**: `eq_push` inserta con búsqueda LINEAL (`find` sobre el vector de entradas) por cada propiedad de cada nodo. Con los 100.000 emails únicos —que generan dos entradas cada uno, por etiqueta y por comodín— construir el catálogo tarda **~224 segundos**, mientras construir TODO el grafo de 100k nodos y 500k aristas tarda **281 milisegundos**. Ochocientas veces más caro que el dato que cataloga. La decisión fue no parchear: Q1/Q2 miden EJECUCIÓN sobre el plan semi-ligado exacto (ids resueltos UNA vez, fuera de la región medida), y `optimizador_real_produce_index_seek_en_mini` demuestra en el dataset MINI —donde el catálogo sí es barato— que el optimizador REAL produce estructuralmente ese mismo plan con los mismos resultados. El capítulo MIDE; reparar es deuda documentada del optimizador (§34.9). *(Estado posterior: esa deuda se PAGÓ tras el cierre del volumen, 2026-08-26 — O(V²)→O(V), ~224 s → ~3-4 s, ×68. No son milisegundos, y hay motivo medido: el dataset genera 4.860.024 pushes legítimos con claves que llevan `String`, y el hashing SipHash a ~1 µs por inserción pone el suelo.)*
 
 Cierra el círculo con las **baselines**, la comparación que sí está permitida:
 
@@ -11779,7 +11779,7 @@ Criterion compara cada grupo contra su referencia e imprime el veredicto — `Pe
 3. **Nada de cross-motor.** Ni Neo4j ni Kùzu en tablas «de regalo»: sin metodología completa, sería el sensacionalismo que Weicker documentó. Baselines internos solamente.
 4. **Sin profiling de memoria.** heaptrack y compañía quedan fuera; aquí se mide TIEMPO, TRABAJO y tasas de acierto.
 5. **Percentiles limitados al harness propio.** Criterion no expone muestras crudas arbitrarias; nuestro nearest-rank cubre el hueco con enteros auditablemente, a cambio de gestionar tú el muestreo.
-6. **El catálogo cuadrático queda SIN arreglar.** ~224 s medidos, deuda viva del cap. 21. Este capítulo la destapó, la cifró y la dejó señalizada — medir no es reparar, pero sin medir nadie habría sabido.
+6. **El catálogo cuadrático quedó señalizado aquí y PAGADO tras el cierre del volumen (2026-08-26): O(V²)→O(V), ~224 s → ~3-4 s, ×68.** Este capítulo lo destapó y lo cifró — sin medir, nadie habría sabido ni habría podido verificar el arreglo. La lección queda intacta: medir no es reparar.
 
 ## 34.10 Cómo lo hace una BBDD real
 
@@ -11817,7 +11817,7 @@ Nada de lo que hiciste es exótico: es la versión artesanal de industria madura
 
 ## 34.14 Si solo lees 30 segundos
 
-Dataset determinista de referencia: 100k nodos / 500k aristas, semilla pública `0x9E37_79B9_7F4A_7C15`, PRNG xorshift64* a mano, 128 hubs con >25 % de los extremos, email único. Primer `benches/` del workspace con criterion 0.7 (`harness = false`); `cargo test` los construye sin ejecutarlos. Torre: microbench → consulta → contadores (`ExecMetrics`) → flamegraph (offline) → baseline. Cifras clave (Xeon E5-2682 v4, release): point lookup 2,19 µs; expand desde hub 8,25 ms frente a 10,4 µs desde grado bajo (**×794**); scan+filtro 230,21 ms con `[NodeScan:100000 Filter:15104 Project:15104]`; CSR ×16 sobre el puerto — la justificación medida de las proyecciones del cap. 26; pool frío/caliente ×142 con hit_ratio 0.000→1.000. Percentiles p50/p90/p99/p999 a mano (nearest-rank, enteros). Baselines: `--save-baseline` / `--baseline`, contra sí misma, nunca contra titulares. Hallazgo: `Catalog::collect` es O(valores_distintos²) — ~224 s con los emails únicos; deuda señalizada, no parcheada. Todo número sin metodología es marketing.
+Dataset determinista de referencia: 100k nodos / 500k aristas, semilla pública `0x9E37_79B9_7F4A_7C15`, PRNG xorshift64* a mano, 128 hubs con >25 % de los extremos, email único. Primer `benches/` del workspace con criterion 0.7 (`harness = false`); `cargo test` los construye sin ejecutarlos. Torre: microbench → consulta → contadores (`ExecMetrics`) → flamegraph (offline) → baseline. Cifras clave (Xeon E5-2682 v4, release): point lookup 2,19 µs; expand desde hub 8,25 ms frente a 10,4 µs desde grado bajo (**×794**); scan+filtro 230,21 ms con `[NodeScan:100000 Filter:15104 Project:15104]`; CSR ×16 sobre el puerto — la justificación medida de las proyecciones del cap. 26; pool frío/caliente ×142 con hit_ratio 0.000→1.000. Percentiles p50/p90/p99/p999 a mano (nearest-rank, enteros). Baselines: `--save-baseline` / `--baseline`, contra sí misma, nunca contra titulares. Hallazgo: `Catalog::collect` es O(valores_distintos²) — ~224 s con los emails únicos; deuda señalizada y pagada tras el cierre (×68). Todo número sin metodología es marketing.
 
 ## 34.15 Una historia pequeña
 
@@ -12487,8 +12487,8 @@ Cada span ES un anillo. Y el nivel que NO aparece — `storage_read` bajo el `No
 
 Componer el edificio entero — algo que ningún capítulo hizo antes — destapó lo que cada pieza por separado escondía. Cuatro hallazgos, todos citables en `tests/arquitectura.rs`:
 
-1. **Acoplamiento oculto entre adaptadores vecinos.** `HashIndex::create` fallaba con `UnknownPage(2)` si el pool tenía menos de `3 + num_buckets` frames: el índice hace flush de TODAS sus páginas al crear, y `BufferPool::flush_page` exige RESIDENCIA. Invisible durante todo el cap. 15 porque sus tests usaban un pool holgado. Moraleja: los anillos son limpios, pero DOS adaptadores del mismo anillo tenían un contrato sin escribir — y solo emerge al componer con configuraciones adversas.
-2. **Pérdida silenciosa en el roundtrip JSONL.** `Float(2.0)` se serializa como `"2"` y reimporta como `Int(2)`: el formato del cap. 32 pierde floats enteros sin avisar. Por eso el grafo mini del smoke usa pesos fraccionarios (2.5, 3.5…) — y por eso el test de roundtrip compara elemento a elemento, incluyendo TIPOS.
+1. **Acoplamiento oculto entre adaptadores vecinos.** `HashIndex::create` fallaba con `UnknownPage(2)` si el pool tenía menos frames de los que el índice necesitaba: hace flush de TODAS sus páginas al crear, y `BufferPool::flush_page` exige RESIDENCIA. Invisible durante todo el cap. 15 porque sus tests usaban un pool holgado. Moraleja: los anillos son limpios, pero DOS adaptadores del mismo anillo tenían un contrato sin escribir — y solo emerge al componer con configuraciones adversas. *(Estado posterior, 2026-08-26: reparada tras el cierre — hoy `create` valida EAGER con la variante nueva `IndexError::CapacidadInsuficiente { requerida, disponible }` en vez del críptico `UnknownPage(2)`; y el mínimo REAL resultó ser `1 + num_buckets`, no la estimación conservadora aquí escrita: las páginas 0 y 1 van directo al pager y nunca pasan por el pool durante el create.)*
+2. **Pérdida silenciosa en el roundtrip JSONL.** `Float(2.0)` se serializa como `"2"` y reimporta como `Int(2)`: el formato del cap. 32 pierde floats enteros sin avisar. Por eso el grafo mini del smoke usa pesos fraccionarios (2.5, 3.5…) — y por eso el test de roundtrip compara elemento a elemento, incluyendo TIPOS. *(Reparada tras el cierre, 2026-08-26: serialización con formato Debug (`{:?}`) — Float(2.0) sale `"2.0"` y reimporta Float(2.0); compatibilidad atrás intacta («2» sigue importando Int) y cero cambios de goldens.)*
 3. **Un lector descuidado ve su propio futuro.** El reloj MVCC es pre-incremento arrancando en 1: tras un commit, `reloj()` devuelve el ts que el SIGUIENTE commit va a TOMAR. El snapshot correcto del lector es `ResumenCommitMvcc.ts_asignado` del commit que quiere ver. El smoke lo codifica: `iter_nodos(ts_asignado)` ve 5 nodos; `iter_nodos(reloj())` ve 6.
 4. **La recuperación SOLO renace lo confirmado.** Autocommits previos al WAL no sobreviven a `reabrir` (el redo falla limpiamente con `InvalidEdgeEndpoints` sobre un store vacío). Es la regla de oro del cap. 28 con evidencia nueva: el store NO es tu durabilidad — el log SÍ.
 
@@ -12497,14 +12497,15 @@ Componer el edificio entero — algo que ningún capítulo hizo antes — destap
 ```text
 Lo que SÍ está en el mapa:  28 modulos + CLI, cuadrados uno a uno; 5 puertos con
                             adaptador canonico instanciado en test; pipeline,
-                            algoritmos y lentes verdes en 0.00 s; 848 ALL_GREEN
+                            algoritmos y lentes verdes en 0.00 s; 848 ALL_GREEN;
+                            catálogo O(n²) REPARADO post-cierre (2026-08-26)
 Lo que AUN NO:              DiskStore detras de GraphStore (la ruta vive en RAM);
-                            catálogo O(n²) reparado; LIMIT/agregación en LiraQL;
-                            write skew cerrado; cola corrupta eliminada
+                            LIMIT/agregación en LiraQL; write skew cerrado;
+                            cola corrupta eliminada
 ```
 
 1. **El mapa referencia, nunca repite.** Cada sección remite a SU capítulo; quien quiera el CÓMO de cada pieza, vuelve a él. Este capítulo enseña a LEER el edificio, no a reexplicarlo.
-2. **Deuda técnica nombrada, jamás reparada aquí.** `Catalog::collect` es cuadrático (~224 s frente a 281 ms según MIGRATION-PATTERN §39 — candidata declarada, no arreglada); no existe `GraphStore` respaldado por disco end-to-end; LiraQL no expone LIMIT ni agregación (aunque `LimitOp`/`DistinctOp` esperan en el cap. 20); el write skew atraviesa el snapshot MVCC (frontera del cap. 30); la cola corrupta del WAL está mitigada, no eliminada (`cargar_wal_estricta`, cap. 33). Reparar cualquier cosa «de paso» sería scope creep — y rompería el argumento de estabilidad.
+2. **Deuda técnica nombrada, jamás reparada dentro del volumen — y una saldada justo después.** El catálogo cuadrático de `Catalog::collect` (~224 s frente a 281 ms según MIGRATION-PATTERN §39) quedó señalizado aquí y PAGADO tras el cierre (2026-08-26): O(V²)→O(V), ~224 s → ~3-4 s (**×68**) sobre el dataset de referencia — sin la medición de este capítulo nadie habría sabido qué reparar ni cómo verificar el arreglo. Siguen vivas: no existe `GraphStore` respaldado por disco end-to-end; LiraQL no expone LIMIT ni agregación (aunque `LimitOp`/`DistinctOp` esperan en el cap. 20); el write skew atraviesa el snapshot MVCC (frontera del cap. 30); la cola corrupta del WAL está mitigada, no eliminada (`cargar_wal_estricta`, cap. 33). Reparar cualquier cosa «de paso» sería scope creep — y rompería el argumento de estabilidad.
 3. **Qué haríamos diferente, con cifras**: `out_edges()` clona un `Vec` por llamada — los ×16 del cap. 34 son su factura, y justifican las proyecciones del cap. 26; el autocommit implícito gobernó siete partes antes de que el cap. 27 diera vocabulario para nombrarlo; `eq_push` del optimizador es lineal donde podría indexar. Nada de esto es secreto: está medido y fechado.
 4. **Sin despliegue ni procesos.** El mapa cubre el MOTOR; qué significa «producción» es el siguiente capítulo, no este.
 5. **Sin golden nuevo.** Lo determinista ya está dorado (caps. 31-35); el smoke es determinista por naturaleza. La puerta de calidad es `--test arquitectura` + ALL_GREEN, nunca «confía en mí».
@@ -12545,7 +12546,7 @@ Documentar la propia arquitectura es un género con clásicos — y LiraDB acaba
 
 ## 36.14 Si solo lees 30 segundos
 
-Capítulo de síntesis: cero cambios de código, un artefacto nuevo — `tests/arquitectura.rs` (5 tests, 0.00 s) que construye la torre completa: dominio+puerto → pipeline → WAL → recuperación → invariantes → MVCC → contadores, más la pila física FilePager→BufferPool→CSR/índices. Dos vistas: hexágono radial (dominio puro; cinco puertos: `GraphStore`/`Pager`/`PhysicalOperator`/`WeightSource`/`Heuristic`; adaptadores agrupados; frontal CLI) + vertical de flujo (parse→lower→optimize→execute, transversal sobre el puerto). Tabla módulo↔rol: 28 módulos + CLI, uno a uno. Tres decisiones lo explican: el puerto (×16 de coste asumido), los formatos estables (el WAL reutilizó framing+CRC32), el pipeline. Agujeros nombrados: hash↔pool (`UnknownPage`), float entero perdido en JSONL, reloj MVCC pre-incremento, recuperación solo de lo confirmado. Deuda visible, no fingida: catálogo O(n²), sin DiskStore, sin LIMIT, write skew. 848 tests ALL_GREEN.
+Capítulo de síntesis: cero cambios de código, un artefacto nuevo — `tests/arquitectura.rs` (5 tests, 0.00 s) que construye la torre completa: dominio+puerto → pipeline → WAL → recuperación → invariantes → MVCC → contadores, más la pila física FilePager→BufferPool→CSR/índices. Dos vistas: hexágono radial (dominio puro; cinco puertos: `GraphStore`/`Pager`/`PhysicalOperator`/`WeightSource`/`Heuristic`; adaptadores agrupados; frontal CLI) + vertical de flujo (parse→lower→optimize→execute, transversal sobre el puerto). Tabla módulo↔rol: 28 módulos + CLI, uno a uno. Tres decisiones lo explican: el puerto (×16 de coste asumido), los formatos estables (el WAL reutilizó framing+CRC32), el pipeline. Agujeros nombrados: hash↔pool (`UnknownPage`), float entero perdido en JSONL, reloj MVCC pre-incremento, recuperación solo de lo confirmado. Deuda visible, no fingida: catálogo O(n²) (reparada ×68 post-cierre), sin DiskStore, sin LIMIT, write skew. 848 tests ALL_GREEN.
 
 ## 36.15 Una historia pequeña
 
@@ -12563,7 +12564,7 @@ Mayo de 1851, Hyde Park, Londres. Mientras un comité rechazaba los 245 proyecto
 
 **Esencial (recordar — retrieval).** Sin mirar §36.6: escribe de memoria los CINCO puertos y, junto a cada uno, su adaptador canónico. Verifica contra el test de inventario (`cargo test -p vol2-liradb --test arquitectura` — el test que fallaría al compilar si un trait renombrara). Criterio: cinco parejas correctas SIN releer; el nombre del adaptador importa tanto como el del trait.
 
-**Intermedio (interleaving 13+15+36: predecir).** Del hallazgo 1 de §36.8: `HashIndex::create` exige `pool.capacity() >= 3 + num_buckets`. ANTES de tocar código: predice qué pasará con 8 buckets y capacidad `3+8-1 = 10` (¿qué variante de error?), y con capacidad 11 (¿y qué páginas quedaron escritas?). Verifica con un test propio sobre tempfile modelado en `la_pila_fisica_encadena_...`, y explica en una frase POR QUÉ el cap. 15 nunca lo vio (pista: ¿qué pool usaban SUS tests?).
+**Intermedio (interleaving 13+15+36: predecir).** Del hallazgo 1 de §36.8 —reparado tras el cierre—: hoy `HashIndex::create` valida EAGER con `IndexError::CapacidadInsuficiente { requerida, disponible }`, y el mínimo REAL es `pool.capacity() >= 1 + num_buckets` (página 2 de catálogo + un frame por bucket; las páginas 0 y 1 van directo al pager y NUNCA pasan por el pool durante el create). ANTES de tocar código: con 8 buckets, predice qué pasa con capacidad 9 (¿funciona? ¿por qué basta exactamente esa?) y con capacidad 8 (¿qué variante de error, con qué valores en sus campos?). Explica en una frase por qué el error antiguo era críptico (`UnknownPage(2)` no dice nada de capacidad) y qué información nueva aporta la variante nueva. Verifica con un test propio sobre tempfile modelado en `la_pila_fisica_encadena_...`, y remata explicando por qué el cap. 15 nunca lo vio (pista: ¿qué pool usaban SUS tests?).
 
 **Intermedio (interleaving 30+36: derivar).** Del hallazgo 3: dos commits MVCC asignan ts 1 y ts 2. Sin ejecutar nada, responde: ¿qué devuelve `reloj()` justo después? ¿Qué snapshot debe anclar un lector que quiere ver EXACTAMENTE el estado tras el primer commit? ¿Qué vería un lector descuidado que anclara `reloj()`? Verifica con un test modelado en el bloque MVCC de la tesis principal. Criterio: la frase «un lector descuidado ve su propio futuro» explicada con ts concretos.
 
@@ -14230,7 +14231,7 @@ La Parte VII abrió las puertas de operación:
 REPL de `liradb`, import/export streaming en CSV, JSONL y GraphML,
 torre de pruebas (invariantes, proptest, goldens),
 benchmarks con dataset determinista donde el catálogo cuadrático
-quedó *documentado*, no parcheado,
+quedó *documentado*, no parcheado — deuda que se pagó al cerrar el volumen,
 observabilidad con `--profile`,
 y un smoke test que recorre el edificio entero de arriba abajo.
 
@@ -14246,7 +14247,7 @@ Si has llegado hasta aquí, ya conoces la honestidad de la casa:
 y `informe_produccion()` resume con un 0·6·5 lo que falta para producción.
 
 No hay red real, no hay transacciones distribuidas,
-el catálogo escala cuadráticamente y lo sabemos,
+la ruta de consultas vive en RAM y lo sabemos,
 y así está escrito en el código y en estas páginas.
 Que sea deliberado no lo hace menos serio:
 es la decisión pedagógica central del libro.
@@ -14261,14 +14262,19 @@ Ese reconocimiento es el objetivo. Enseñar vale más que fingir.
 
 El proyecto vive en <https://github.com/Rubentxu/grafos-bbdd-desde-cero>:
 issues y PRs bienvenidos.
-Las deudas documentadas son ejercicios reales esperando a alguien con tiempo:
+Las deudas documentadas son ejercicios reales esperando a alguien con tiempo
+— y la estrategia funciona: las tres primeras del proyecto se pagaron antes
+de publicar, nada más cerrar el volumen. Quedan vivas, con nombre y test:
 
-- `Catalog::collect` es cuadrático:
-  hazlo incremental y mide el antes/después en los benchmarks del cap. 34.
+- LiraQL no expone `LIMIT` ni agregación:
+  `LimitOp` y `DistinctOp` esperan en el cap. 20 sin gramática que los invoque.
+- No hay `GraphStore` respaldado por disco end-to-end:
+  la ruta de consultas vive en RAM detrás del puerto.
+- El write skew cruza el snapshot MVCC (frontera del cap. 30):
+  ciérralo con Serializable y predicate locks.
+- La cola corrupta del WAL está mitigada, no eliminada:
+  refuerza `cargar_wal_estricta` hasta que el prefijo íntegro sea la única salida.
 - El `HashIndex` nunca crece: implanta rehashing por factor de carga.
-- El importador JSONL decide hoy de forma conservadora qué hacer
-  con floats que parecen enteros:
-  define la semántica que crees correcta y defiéndela con tests.
 
 Más allá quedan los frentes abiertos del cap. 40:
 paralelizar LeapFrog morsel-driven, orden dinámico de variables,

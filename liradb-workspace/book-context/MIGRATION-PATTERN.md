@@ -868,6 +868,10 @@ de verify.sh (perf/cargo-flamegraph, igual patrón que cargo-fuzz en cap 33).
    optimize) + test `optimizador_real_produce_index_seek_en_mini` demuestra
    equivalencia donde el catálogo es barato. DEUDA DOCUMENTADA, no parcheada:
    el capítulo mide, no repara. Candidata natural a reparación futura.
+   **REPARADA 2026-08-26** (post-cierre Vol.II): O(V²)→O(V) con HashMap de
+   clave canónica; ~224 s → ~3-4 s (×68) sobre dataset_referencia; suelo
+   restante = hashing SipHash (~1 µs/insert, 4,86M pushes); escalado lineal
+   verificado (20k→93 ms). Tests cap21 +4.
 2. **Hub vs grado bajo ×794** (expand 1-hop: 8,25 ms/2078 filas vs 10,4 µs/
    2 filas) — el fanout manda; justifica la heavy-tail ligera del dataset
    (uniforme ocultaría el coste de hubs).
@@ -927,6 +931,10 @@ herencia cap 34) + árbol de spans indentado + recibo de contadores.
    nº spans storage_read == delta del pool. Gotcha: HashIndex::create exige
    capacidad ≥ 3+num_buckets (flush final sobre páginas desalojadas daría
    UnknownPage); truco didáctico: 1 bucket + muchas claves vs pool pequeño.
+   [NOTA 2026-08-26: mínimo real CORREGIDO a 1+num_buckets — las páginas 0/1
+   van directo al pager; y desde la reparación create valida EAGER con
+   IndexError::CapacidadInsuficiente{requerida, disponible} en vez de
+   UnknownPage. Ver §41-hallazgo1.]
 6. **Transacciones contadas en capa conductora** (caps 27/28 no exponen
    contadores y no se tocan); wal_bytes_written = delta de Wal::as_bytes().len().
 
@@ -948,10 +956,16 @@ respiración: cada capítulo probó su piso; nadie había probado el edificio.
    residencia y `create` hace flush de TODAS sus páginas; invisible en el
    cap 15 porque sus tests usaban TmpPager con pool holgado. Lección: la
    composición con configuraciones adversas es la ÚNICA que revela este
-   tipo de contratos implícitos.
+   tipo de contratos implícitos. **REPARADA 2026-08-26**: validación eager
+   `IndexError::CapacidadInsuficiente{requerida, disponible}`; mínimo real
+   CORREGIDO a `1 + num_buckets` (las páginas 0/1 no pasan por el pool en
+   create — el `3+num_buckets` era estimación conservadora errónea; test
+   de frontera).
 2. **Formato con pérdida silenciosa**: `Float(2.0)` se serializa como "2"
    (`f64::to_string`) y reimporta como `Int(2)` — los floats de valor
    entero no sobreviven el roundtrip JSONL (el test usa pesos 2.5 por esto).
+   **REPARADA 2026-08-26**: serialización `{:?}` (Float(2.0) sale `"2.0"`),
+   compatibilidad atrás intacta, cero cambios de goldens.
 3. **Reloj MVCC pre-incremento arrancando en 1**: `reloj()` tras un commit
    devuelve el ts del SIGUIENTE commit; el snapshot correcto del lector es
    `ResumenCommitMvcc.ts_asignado`. Un lector descuidado ve su propio futuro.
@@ -964,10 +978,11 @@ respiración: cada capítulo probó su piso; nadie había probado el edificio.
    encoding/framing caps 9-10, pipeline caps 17-21) aguantaron 29 capítulos
    de crecimiento.
 
-**Deuda nombrada en el mapa** (no fingida): catálogo cuadrático (§39),
-HashIndex capacity ≥ 3+num_buckets (este §), sin DiskStore end-to-end,
-LiraQL sin LIMIT/agregación, write skew MVCC (cap 30), cola corrupta
-mitigada-no-eliminada (cap 33).
+**Deuda nombrada en el mapa** (no fingida): catálogo cuadrático (§39 —
+REPARADA 2026-08-26, ×68), HashIndex capacity ≥ 3+num_buckets (este § —
+REPARADA 2026-08-26, mínimo real corregido a 1+num_buckets), sin DiskStore
+end-to-end, LiraQL sin LIMIT/agregación, write skew MVCC (cap 30), cola
+corrupta mitigada-no-eliminada (cap 33).
 
 ---
 

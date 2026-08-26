@@ -60,7 +60,7 @@ La Parte VII abrió las puertas de operación:
 REPL de `liradb`, import/export streaming en CSV, JSONL y GraphML,
 torre de pruebas (invariantes, proptest, goldens),
 benchmarks con dataset determinista donde el catálogo cuadrático
-quedó *documentado*, no parcheado,
+quedó *documentado*, no parcheado — deuda que se pagó al cerrar el volumen,
 observabilidad con `--profile`,
 y un smoke test que recorre el edificio entero de arriba abajo.
 
@@ -76,7 +76,7 @@ Si has llegado hasta aquí, ya conoces la honestidad de la casa:
 y `informe_produccion()` resume con un 0·6·5 lo que falta para producción.
 
 No hay red real, no hay transacciones distribuidas,
-el catálogo escala cuadráticamente y lo sabemos,
+la ruta de consultas vive en RAM y lo sabemos,
 y así está escrito en el código y en estas páginas.
 Que sea deliberado no lo hace menos serio:
 es la decisión pedagógica central del libro.
@@ -91,14 +91,19 @@ Ese reconocimiento es el objetivo. Enseñar vale más que fingir.
 
 El proyecto vive en <https://github.com/Rubentxu/grafos-bbdd-desde-cero>:
 issues y PRs bienvenidos.
-Las deudas documentadas son ejercicios reales esperando a alguien con tiempo:
+Las deudas documentadas son ejercicios reales esperando a alguien con tiempo
+— y la estrategia funciona: las tres primeras del proyecto se pagaron antes
+de publicar, nada más cerrar el volumen. Quedan vivas, con nombre y test:
 
-- `Catalog::collect` es cuadrático:
-  hazlo incremental y mide el antes/después en los benchmarks del cap. 34.
+- LiraQL no expone `LIMIT` ni agregación:
+  `LimitOp` y `DistinctOp` esperan en el cap. 20 sin gramática que los invoque.
+- No hay `GraphStore` respaldado por disco end-to-end:
+  la ruta de consultas vive en RAM detrás del puerto.
+- El write skew cruza el snapshot MVCC (frontera del cap. 30):
+  ciérralo con Serializable y predicate locks.
+- La cola corrupta del WAL está mitigada, no eliminada:
+  refuerza `cargar_wal_estricta` hasta que el prefijo íntegro sea la única salida.
 - El `HashIndex` nunca crece: implanta rehashing por factor de carga.
-- El importador JSONL decide hoy de forma conservadora qué hacer
-  con floats que parecen enteros:
-  define la semántica que crees correcta y defiéndela con tests.
 
 Más allá quedan los frentes abiertos del cap. 40:
 paralelizar LeapFrog morsel-driven, orden dinámico de variables,
