@@ -35,9 +35,9 @@ volumes:
   - id: vol-III
     title: "Grafos en la era de la IA: modelar, razonar y recuperar"
     file: vol3-grafos-era-ia.md
-    state: DRAFTING                          # caps 41-43 DONE; 10 restantes en bucle B/C
+    state: DRAFTING                          # caps 41-44 DONE; 9 restantes en bucle B/C
     chapters_total: 13
-    chapters_done: 3                         # caps 41-43 (pasos 1-3: modelo, antipatrones, temporalidad)
+    chapters_done: 4                         # caps 41-44 (pasos 1-4: modelo, antipatrones, temporalidad, esquema)
     appendices: [A, B, C, D, E]
     style: "Híbrido (plantilla Apéndice 0) + metodología teaching (CONVENTIONS §2)"
     current_macro_phase: B/C                  # bucle capítulo: planner→generator→writer
@@ -306,7 +306,13 @@ vol-III-chapters:
     cycle: 0
     workspace_crate: vol2-liradb
     module: cap43_temporalidad
-  # caps 44-53: PLANNED (outline aprobado ADR-005; planificar en orden)
+  - id: vol-III-cap-44  # Esquema, constraints e índices en property graphs
+    state: DONE        # código+prosa en sesión 2026-08-26 (Sesión 47) — esquema declarativo 16 reglas, ORCID único, SinSolape, índices con lección honesta; KB-Lira paso-4
+    blocked_on: null
+    cycle: 0
+    workspace_crate: vol2-liradb
+    module: cap44_esquema
+  # caps 45-53: PLANNED (outline aprobado ADR-005; planificar en orden)
 ```
 
 ## Decisiones arquitectónicas (ADRs, mini-resumen)

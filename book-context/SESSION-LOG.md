@@ -254,3 +254,18 @@
 **Estado al cierre**: ALL_GREEN **971 tests**. Vol.III **3/13 caps DONE** (~1.221 líneas ensambladas). Parte I 3/5.
 
 **Próxima sesión**: cap-44 «Constraints e índices» (Parte I cap 4) — el validador paso-3 siembra las reglas; el AS OF sin índice es la deuda que el índice paga. Después cap-45 ingesta (transaction-time automático).
+
+## 2026-08-26 — Sesión 47
+
+**Asistentes**: book-orchestrator + chapter-planner + 13 generator-agentes TROCEADOS + chapter-writer.
+
+**Trabajo realizado**: Cap. 44 «Esquema, constraints e índices en property graphs» DONE — Vol.III **4/13 caps**, Parte I 4/5.
+- Contrato (444 líneas, commit 193cc43): Esquema declarativo con 6 variantes de regla (Extremos any-of, Existencia, Tipo, Unicidad, SinSolape, IntervaloValido), ORCID único, índices lógicos con lección honesta, selectividad como juez. Citas verificadas: Schwartz «Schemaless Databases Don't Exist» (SolarWinds blog, 24-feb-2015), GQL ISO/IEC 39075:2024 (abril 2024, DDL Parte 1), Neo4j 5.x (blog 3-nov-2023).
+- Código por 13 piezas troceadas (patrón consolidado, 0 fallos): `cap44_esquema.rs` (2.551 líneas, 22 tests) + datasets/kb-lira/paso-4/{nodes,edges,esquema}.csv + wiring. 971→993 ALL_GREEN.
+- HALLAZGOS: (1) subsunción INCOMPLETA descubierta y corregida — el esquema no cubría las reglas temporales del validador paso-3 → variante IntervaloValido añadida; subsunción demostrada con ids idénticos {16,21,52}; (2) MENTIONS polimórfico → Extremos generalizado a hasta_labels: Vec (any-of); (3) la lección del índice con números REALES: global reescrita 12→3, AS OF persona-céntrica 28=28 (el índice simple no casa con el patrón; +10 mantenimiento = 38), IndicePorLabel 28→22 (amortiza desde n=27); las cifras 168→18/28→16 del contrato se sustituyeron por ledgers reales con discrepancia documentada; (4) el catálogo DELATA un duplicado residual: temas 26 y 61 comparten «memoria de agentes» (selectividad 8/9) — historia pequeña del capítulo; (5) Value no deriva Hash → unicidad con clave textual canónica.
+- Prosa (353 líneas, 20 secciones): anécdota Schwartz «schemaless mentiroso»; informe pineado byte a byte; ganchos cobrados (SinSolape = «¿quién garantiza que dos afiliaciones no se solapen?»; el índice = «¿quién construye el que abarata AS OF?»).
+- SUMARIO vol3 + rebuild 1221 → **1574 líneas**. Commits 061df3a / 7fa8061.
+
+**Estado al cierre**: ALL_GREEN **993 tests**. Vol.III **4/13 caps DONE** (~1.574 líneas ensambladas). Parte I 4/5.
+
+**Próxima sesión**: cap-45 «Ingesta: del archivo al grafo» (Parte I cap 5 — CIERRA LA PARTE I) — pipeline CSV/JSONL con dedup, validación al importar (write-time, el esquema del cap-44 aplicado al vuelo), transaction-time automático (el Historico del cap-43 alimentado por ingesta).
