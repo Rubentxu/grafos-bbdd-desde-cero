@@ -311,6 +311,7 @@ mod cap34_benchmarks;
 pub mod cap35_observabilidad;
 pub mod cap37_produccion;
 pub mod cap38_columnar;
+mod cap39_joins;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -342,3 +343,4 @@ pub use cap34_benchmarks::*;
 pub use cap35_observabilidad::*;
 pub use cap37_produccion::*;
 pub use cap38_columnar::*;
+pub use cap39_joins::*;
