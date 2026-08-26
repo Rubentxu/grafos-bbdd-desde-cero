@@ -160,3 +160,23 @@
 2. Epílogo + colofón: revisar que cierren el viaje (pueden ser borradores breves); corregir deuda menor cita Olteanu-Závodný cap-38 (ICDT 2015 → ICDT 2012/TODS 40(1) 2015) en contrato Y prosa si la heredó.
 3. **Preflight D1**: todos los caps DONE ✓, verify-report ALL_GREEN ✓ → `book-builder` (HTML/PDF/EPUB) + citation-manager.
 4. Deudas mayores documentadas (MIGRATION §39/§41/§43): Catalog::collect cuadrático, HashIndex capacity ≥ 3+num_buckets, Float-entero JSONL — candidatas a reparar antes o después del render (decisión del autor).
+
+## 2026-08-26 — Sesión 41
+
+**Asistentes**: book-orchestrator + 2 agentes en paralelo (apéndice-0 / epílogo+colofón) + orquestador (corrección de citas + preflight D1 + render).
+
+**Trabajo realizado**: CIERRE Y RENDER DEL VOL.II — **VOLUMEN DONE**.
+- Apéndice 0 al estándar (115 líneas): 3 volúmenes, plantilla híbrida real de 20 secciones, proceso de producción verificado, ejemplos canónicos reales (Jim Gray cap-11, MonetDB/X100 cap-38, ×29 cap-39, Raft cap-40).
+- Epílogo redactado (140 líneas): viaje de las 8 Partes, honestidad LiraDB (qué NO hace y por qué), contribuciones/deudas como ejercicios, carta al lector; cita de cierre Feynman «What I cannot create, I do not understand». Colofón completado (13 líneas; atribución Kùzu intacta).
+- Cita Olteanu-Závodný corregida en los 6 sitios: prosa cap-38 (×2), contrato cap-38 (×4) → ICDT 2012 (+ TODS 40(1), 2015); referencias a la deuda en contrato cap-39 actualizadas a «corregida».
+- **PREFLIGHT D1 VERDE**: 40/40 caps DONE + verify-report ALL_GREEN (892 tests).
+- **RENDER BUILT** (pandoc 3.6.4 + typst 0.15.1 instalados user-local en ~/.local/bin): HTML ×2 (~2,2 MB c/u con TOC), EPUB ×2 (490 KB vol1 / 759 KB vol2), PDF ×2 (5,6 MB vol1 / 7,4 MB vol2, Liberation Serif/Fira Code). Vol.III excluido (SKELETON). `build/manifest.json` con sha256.
+- **BUG REAL DESCUBIERTO POR EL RENDER**: anchor roto en la TOC interna del Vol.I (#apéndice-b--glosario vs heading «Glosario (extendido)») — corregido en fuente manuscrito/vol1/tabla-de-contenidos.md + rebuild (commit 44351e6). Workaround documentado para headings con ²/³ (typst no acepta esos chars en labels): normalización en copia temporal solo-headings, fuente canónico intacto.
+
+**Estado al cierre**: VOL.II **DONE Y RENDERIZADO** (14.323 líneas ensambladas). Obra: Vol.I DONE (2ª ed.), Vol.II DONE, Vol.III SKELETON. build/ gitignored (artefactos locales). Commits b293df2 / 44351e6 pushed. ALL_GREEN 892 tests.
+
+**Próxima sesión (opciones)**:
+(a) Publicar artefactos (GitHub Pages/release) — requiere decisión del autor;
+(b) Arrancar Vol.III «Grafos en la era de la IA»: chapter-planner del cap-41 (outline ya aprobado);
+(c) D2 mantenimiento: version-drift-detector + code-prose-coherence-checker(drift) periódicos;
+(d) Deudas técnicas MIGRATION §39/§41/§43 (Catalog::collect cuadrático, HashIndex capacity, Float-entero JSONL) antes de cualquier re-render.

@@ -25,7 +25,7 @@ volumes:
   - id: vol-II
     title: "Construye LiraDB — De los algoritmos fundamentales a un motor persistente de consultas en Rust"
     file: vol2-construye-liradb.md
-    state: CAPS_DONE                         # 40/40 caps con prosa al estándar; quedan Apéndice 0 + epílogo/colofón antes del preflight D1
+    state: DONE                              # VOLUMEN COMPLETO Y RENDERIZADO (2026-08-26): 40 caps + Apéndice 0 al estándar + epílogo/colofón; HTML/PDF/EPUB BUILT
     chapters_total: 40
     chapters_done: 40                        # caps 1-40 COMPLETOS (2026-08-26)
     appendices: ["0", A, B, C, D, E]         # Apéndice 0 = Manual de estilo unificado (verificar si al estándar)
@@ -43,8 +43,8 @@ volumes:
     current_macro_phase: A                   # currículo + outline hechos → chapter-planner
     progressive_example: "KB-Lira (dataset hilo conductor, generador en workspace pendiente)"
 
-current_macro_phase: B/C                     # Vol.II en bucle de capítulos (39-40 restantes)
-next_macro_phase: D                          # tras cerrar Vol.II: preflight + render
+current_macro_phase: D                        # D1 ejecutado (render BUILT 2026-08-26); queda D2 mantenimiento recurrente
+next_macro_phase: —                          # Vol.II publicado; siguientes: cierre Vol.III (A/B) y D2 drift periódico
 last_updated: 2026-08-26
 ```
 
@@ -275,11 +275,11 @@ vol-II-chapters:
     module: cap40_distribucion
   # ... caps 33-40 por planificar
   - id: vol-II-apendice-0   # Manual de estilo unificado
-    state: PLANNED
+    state: DONE        # al estándar en sesión 2026-08-26 (Sesión 41): 3 volúmenes, 20 secciones, proceso verificado, ejemplos canónicos reales
     blocked_on: null
     cycle: 0
   - id: vol-II-epilogo
-    state: PLANNED
+    state: DONE        # redactado en sesión 2026-08-26 (Sesión 41): viaje de las 8 Partes + honestidad LiraDB + carta al lector (Feynman) + puente Vol.III; colofón completado
     blocked_on: null
     cycle: 0
 ```
