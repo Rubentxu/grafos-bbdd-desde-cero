@@ -1,0 +1,16 @@
+Extremos,AUTHORED,Persona,Documento
+Extremos,CITES,Documento,Documento
+Extremos,ABOUT,Documento,Tema
+Extremos,MEMBER_OF,Persona,Organizacion
+Extremos,WORKED_ON,Persona,Proyecto
+Extremos,MENTIONS,Documento,Persona;Organizacion;Proyecto
+Existencia,Documento,titulo
+Existencia,Documento,anio
+Existencia,Persona,nombre
+Existencia,Organizacion,nombre
+Existencia,Tema,nombre
+Tipo,Documento,anio,Int
+Tipo,Documento,titulo,String
+Unicidad,Persona,orcid
+SinSolape,MEMBER_OF,desde_anio,hasta_anio
+IntervaloValido,MEMBER_OF,desde_anio,hasta_anio,2026

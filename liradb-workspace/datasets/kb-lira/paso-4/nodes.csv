@@ -1,0 +1,69 @@
+id:ID, anio:INT, nombre:STRING, nota:INT, orcid:STRING, ronda:INT, titulo:STRING, :LABEL
+0,,Ana,,0000-0001-2345-0001,,,Persona
+1,,Beto,,0000-0002-3456-0002,,,Persona
+2,,Carla,,0000-0003-4567-0003,,,Persona
+3,,Dani,,0000-0004-5678-0004,,,Persona
+4,,Elena,,0000-0005-6789-0005,,,Persona
+5,,Fabio,,0000-0006-7890-0006,,,Persona
+6,,Universidad de Lira,,,,,Organizacion
+7,,Instituto Neurónica,,,,,Organizacion
+8,,Laboratorio GrafosYA,,,,,Organizacion
+9,,Proyecto Kira,,,,,Proyecto
+10,,Proyecto Oráculo,,,,,Proyecto
+11,,Proyecto Brújula,,,,,Proyecto
+12,2021,Grafos de conocimiento para agentes,,,,Grafos de conocimiento para agentes,Documento:Paper
+13,2022,Consultas declarativas sobre property graphs,,,,Consultas declarativas sobre property graphs,Documento:Paper
+14,2024,Memoria episódica en LLMs,,,,Memoria episódica en LLMs,Documento:Paper
+15,2023,Índices adaptativos para grafos,,,,Índices adaptativos para grafos,Documento:Paper
+16,2025,Recuperación aumentada con grafos,,,,Recuperación aumentada con grafos,Documento:Paper
+17,2024,Supernodos: anatomía de un cuello de botella,,,,Supernodos: anatomía de un cuello de botella,Documento:Paper
+18,2023,Notas de la reunión de arranque,,,,Notas de la reunión de arranque,Documento:Nota
+19,2024,Bitácora del experimento K-7,,,,Bitácora del experimento K-7,Documento:Nota
+20,2024,Informe anual del Proyecto Kira,,,,Informe anual del Proyecto Kira,Documento:Informe
+21,2025,Informe de revisión por pares 2025,,,,Informe de revisión por pares 2025,Documento:Informe
+22,2023,Informe técnico del Proyecto Oráculo,,,,Informe técnico del Proyecto Oráculo,Documento:Informe
+23,2025,Resumen del taller de GQL,,,,Resumen del taller de GQL,Documento:Nota
+24,,grafos de conocimiento,,,,,Tema
+25,,lenguajes de consulta,,,,,Tema
+26,,memoria de agentes,,,,,Tema
+27,,índices y almacenamiento,,,,,Tema
+28,,RAG,,,,,Tema
+29,,rendimiento,,,,,Tema
+30,,Gaby,,0000-0007-8901-0007,,,Persona
+31,,Hugo,,0000-0008-9012-0008,,,Persona
+32,,Iris,,0000-0009-0123-0009,,,Persona
+33,2024,Grafos de conocimiento en producción,,,,Grafos de conocimiento en producción,Documento:Paper
+34,2024,Unificación de entidades en knowledge graphs,,,,Unificación de entidades en knowledge graphs,Documento:Paper
+35,2024,Razonamiento multihop sobre grafos de conocimiento,,,,Razonamiento multihop sobre grafos de conocimiento,Documento:Paper
+36,2024,Consulta declarativa de knowledge graphs a escala,,,,Consulta declarativa de knowledge graphs a escala,Documento:Paper
+37,2024,Control de calidad en grafos de conocimiento,,,,Control de calidad en grafos de conocimiento,Documento:Paper
+38,2024,Materialización incremental de reglas en grafos,,,,Materialización incremental de reglas en grafos,Documento:Paper
+39,2024,Anclaje semántico para grafos de conocimiento,,,,Anclaje semántico para grafos de conocimiento,Documento:Paper
+40,2024,Versionado de ontologías en grafos,,,,Versionado de ontologías en grafos,Documento:Paper
+41,2024,GraphRAG: recuperación aumentada con grafos,,,,GraphRAG: recuperación aumentada con grafos,Documento:Paper
+42,2024,Reranking de párrafos con caminos de grafos,,,,Reranking de párrafos con caminos de grafos,Documento:Paper
+43,2024,Indexación de vecindarios para recuperación,,,,Indexación de vecindarios para recuperación,Documento:Paper
+44,2024,Fusión de grafos y texto para respuestas,,,,Fusión de grafos y texto para respuestas,Documento:Paper
+45,2024,Evaluación de sistemas GraphRAG,,,,Evaluación de sistemas GraphRAG,Documento:Paper
+46,2024,Memoria gráfica para asistentes conversacionales,,,,Memoria gráfica para asistentes conversacionales,Documento:Paper
+47,2024,Particionado de knowledge graphs para recuperación,,,,Particionado de knowledge graphs para recuperación,Documento:Paper
+48,2024,Agregación de evidencias en grafos,,,,Agregación de evidencias en grafos,Documento:Paper
+49,2025,Grafos de conocimiento temporales,,,,Grafos de conocimiento temporales,Documento:Paper
+50,2025,Streaming de aristas sobre grafos de conocimiento,,,,Streaming de aristas sobre grafos de conocimiento,Documento:Paper
+51,2025,Memoria de trabajo en agentes con grafos,,,,Memoria de trabajo en agentes con grafos,Documento:Paper
+52,2025,Planificación de tareas con memoria gráfica,,,,Planificación de tareas con memoria gráfica,Documento:Paper
+53,2025,Consolidación de recuerdos en agentes,,,,Consolidación de recuerdos en agentes,Documento:Paper
+54,2025,RAG híbrido: vectorial más grafos,,,,RAG híbrido: vectorial más grafos,Documento:Paper
+55,2025,Recuperación guiada por ontologías,,,,Recuperación guiada por ontologías,Documento:Paper
+56,2025,Lenguajes de consulta para grafos de conocimiento,,,,Lenguajes de consulta para grafos de conocimiento,Documento:Paper
+59,,knowledge graphs,,,,,Tema
+60,,GraphRAG,,,,,Tema
+61,,memoria de agentes,,,,,Tema
+62,,ICDE 2024,,,,,Conferencia
+63,,SIGMOD 2024,,,,,Conferencia
+64,,VLDB 2025,,,,,Conferencia
+65,,,7,,1,,Resena
+66,,,8,,2,,Resena
+67,,,6,,1,,Resena
+68,,,9,,1,,Resena
+69,,Instituto GrafoLuna,,,,,Organizacion
