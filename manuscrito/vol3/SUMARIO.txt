@@ -1,5 +1,6 @@
 portada.md
 prologo.md
 tabla-de-contenidos.md
+cap-41-modelar-entidades-propiedades-y-relaciones.md
 epilogo.md
 colofon.md
