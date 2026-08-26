@@ -1,0 +1,68 @@
+id:ID, afiliacion:STRING, anio:INT, nombre:STRING, orcid:STRING, titulo:STRING, :LABEL
+0,Universidad de Lira,,Ana,0000-0001-2345-0001,,Persona
+1,Instituto Neurónica,,Beto,0000-0002-3456-0002,,Persona
+2,Universidad de Lira,,Carla,0000-0003-4567-0003,,Persona
+3,Instituto Neurónica,,Dani,0000-0004-5678-0004,,Persona
+4,Laboratorio GrafosYA,,Elena,0000-0005-6789-0005,,Persona
+5,Laboratorio GrafosYA,,Fabio,0000-0006-7890-0006,,Persona
+6,Universidad de Lira,,Gaby,0000-0007-8901-0007,,Persona
+7,Instituto Neurónica,,Hugo,0000-0008-9012-0008,,Persona
+8,Universidad de Lira,,Iris,0000-0009-0123-0009,,Persona
+13,,2021,,,Grafos de conocimiento para agentes,Documento:Paper
+14,,2022,,,Consultas declarativas sobre property graphs,Documento:Paper
+15,,2024,,,Memoria episódica en LLMs,Documento:Paper
+16,,2023,,,Índices adaptativos para grafos,Documento:Paper
+17,,2025,,,Recuperación aumentada con grafos,Documento:Paper
+19,,2024,,,Supernodos: anatomía de un cuello de botella,Documento:Paper
+20,,2023,,,Notas de la reunión de arranque,Documento:Nota
+21,,2024,,,Bitácora del experimento K-7,Documento:Nota
+22,,2024,,,Informe anual del Proyecto Kira,Documento:Informe
+23,,2025,,,Informe de revisión por pares 2025,Documento:Informe
+24,,2023,,,Informe técnico del Proyecto Oráculo,Documento:Informe
+25,,2025,,,Resumen del taller de GQL,Documento:Nota
+26,,2024,,,Grafos de conocimiento en producción,Documento:Paper
+27,,2024,,,Unificación de entidades en knowledge graphs,Documento:Paper
+28,,2024,,,Razonamiento multihop sobre grafos de conocimiento,Documento:Paper
+29,,2024,,,Consulta declarativa de knowledge graphs a escala,Documento:Paper
+30,,2024,,,Control de calidad en grafos de conocimiento,Documento:Paper
+31,,2024,,,Materialización incremental de reglas en grafos,Documento:Paper
+32,,2024,,,Anclaje semántico para grafos de conocimiento,Documento:Paper
+33,,2024,,,Versionado de ontologías en grafos,Documento:Paper
+34,,2024,,,GraphRAG: recuperación aumentada con grafos,Documento:Paper
+35,,2024,,,Reranking de párrafos con caminos de grafos,Documento:Paper
+36,,2024,,,Indexación de vecindarios para recuperación,Documento:Paper
+37,,2024,,,Fusión de grafos y texto para respuestas,Documento:Paper
+38,,2024,,,Evaluación de sistemas GraphRAG,Documento:Paper
+39,,2024,,,Memoria gráfica para asistentes conversacionales,Documento:Paper
+40,,2024,,,Particionado de knowledge graphs para recuperación,Documento:Paper
+41,,2024,,,Agregación de evidencias en grafos,Documento:Paper
+42,,2025,,,Grafos de conocimiento temporales,Documento:Paper
+43,,2025,,,Streaming de aristas sobre grafos de conocimiento,Documento:Paper
+44,,2025,,,Memoria de trabajo en agentes con grafos,Documento:Paper
+45,,2025,,,Planificación de tareas con memoria gráfica,Documento:Paper
+46,,2025,,,Consolidación de recuerdos en agentes,Documento:Paper
+47,,2025,,,RAG híbrido: vectorial más grafos,Documento:Paper
+48,,2025,,,Recuperación guiada por ontologías,Documento:Paper
+49,,2025,,,Lenguajes de consulta para grafos de conocimiento,Documento:Paper
+50,,,grafos de conocimiento,,,Tema
+51,,,lenguajes de consulta,,,Tema
+52,,,memoria de agentes,,,Tema
+53,,,índices y almacenamiento,,,Tema
+54,,,RAG,,,Tema
+55,,,rendimiento,,,Tema
+56,,,knowledge graphs,,,Tema
+57,,,GraphRAG,,,Tema
+58,,,Proyecto Kira,,,Proyecto
+59,,,Universidad de Lira,,,Organizacion
+60,,,Instituto Neurónica,,,Organizacion
+61,,,Proyecto Oráculo,,,Proyecto
+62,,,Laboratorio GrafosYA,,,Organizacion
+63,,,Proyecto Brújula,,,Proyecto
+64,,,Reseña ronda 1 (nota 7),,,Resena
+65,,,Reseña ronda 2 (nota 8),,,Resena
+66,,,Reseña ronda 1 (nota 6),,,Resena
+67,,,Reseña ronda 1 (nota 9),,,Resena
+68,,,ICDE 2024,,,Conferencia
+69,,,SIGMOD 2024,,,Conferencia
+70,,,VLDB 2025,,,Conferencia
+71,,,Instituto GrafoLuna,,,Organizacion

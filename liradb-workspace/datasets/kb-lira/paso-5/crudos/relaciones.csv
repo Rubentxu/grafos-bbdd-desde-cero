@@ -1,0 +1,161 @@
+desde,hasta,tipo,desde_anio,hasta_anio,order
+Ana,Grafos de conocimiento para agentes,AUTHORED,,,1
+Beto,Grafos de conocimiento para agentes,AUTHORED,,,2
+Beto,Consultas declarativas sobre property graphs,AUTHORED,,,1
+Carla,Memoria episódica en LLMs,AUTHORED,,,1
+Dani,Memoria episódica en LLMs,AUTHORED,,,2
+Ana,Índices adaptativos para grafos,AUTHORED,,,1
+Elena,Recuperación aumentada con grafos,AUTHORED,,,1
+Fabio,Recuperación aumentada con grafos,AUTHORED,,,2
+Beto,Supernodos: anatomía de un cuello de botella,AUTHORED,,,1
+Ana,Supernodos: anatomía de un cuello de botella,AUTHORED,,,2
+Ana,Notas de la reunión de arranque,AUTHORED,,,1
+Dani,Bitácora del experimento K-7,AUTHORED,,,1
+Elena,Informe anual del Proyecto Kira,AUTHORED,,,1
+Fabio,Informe de revisión por pares 2025,AUTHORED,,,1
+Carla,Informe técnico del Proyecto Oráculo,AUTHORED,,,1
+Elena,Resumen del taller de GQL,AUTHORED,,,1
+Consultas declarativas sobre property graphs,Grafos de conocimiento para agentes,CITES,,,
+Memoria episódica en LLMs,Grafos de conocimiento para agentes,CITES,,,
+Memoria episódica en LLMs,Consultas declarativas sobre property graphs,CITES,,,
+Índices adaptativos para grafos,Consultas declarativas sobre property graphs,CITES,,,
+Recuperación aumentada con grafos,Memoria episódica en LLMs,CITES,,,
+Recuperación aumentada con grafos,Supernodos: anatomía de un cuello de botella,CITES,,,
+Recuperación aumentada con grafos,Grafos de conocimiento para agentes,CITES,,,
+Supernodos: anatomía de un cuello de botella,Consultas declarativas sobre property graphs,CITES,,,
+Supernodos: anatomía de un cuello de botella,Índices adaptativos para grafos,CITES,,,
+Informe de revisión por pares 2025,Recuperación aumentada con grafos,CITES,,,
+Grafos de conocimiento para agentes,grafos de conocimiento,ABOUT,,,
+Grafos de conocimiento para agentes,memoria de agentes,ABOUT,,,
+Consultas declarativas sobre property graphs,grafos de conocimiento,ABOUT,,,
+Consultas declarativas sobre property graphs,lenguajes de consulta,ABOUT,,,
+Memoria episódica en LLMs,memoria de agentes,ABOUT,,,
+Índices adaptativos para grafos,índices y almacenamiento,ABOUT,,,
+Recuperación aumentada con grafos,grafos de conocimiento,ABOUT,,,
+Recuperación aumentada con grafos,RAG,ABOUT,,,
+Supernodos: anatomía de un cuello de botella,rendimiento,ABOUT,,,
+Notas de la reunión de arranque,grafos de conocimiento,ABOUT,,,
+Bitácora del experimento K-7,memoria de agentes,ABOUT,,,
+Informe anual del Proyecto Kira,grafos de conocimiento,ABOUT,,,
+Informe de revisión por pares 2025,RAG,ABOUT,,,
+Informe de revisión por pares 2025,rendimiento,ABOUT,,,
+Informe técnico del Proyecto Oráculo,lenguajes de consulta,ABOUT,,,
+Resumen del taller de GQL,grafos de conocimiento,ABOUT,,,
+Notas de la reunión de arranque,Proyecto Kira,MENTIONS,,,
+Notas de la reunión de arranque,Universidad de Lira,MENTIONS,,,
+Bitácora del experimento K-7,Proyecto Kira,MENTIONS,,,
+Bitácora del experimento K-7,Instituto Neurónica,MENTIONS,,,
+Informe anual del Proyecto Kira,Instituto Neurónica,MENTIONS,,,
+Informe anual del Proyecto Kira,Elena,MENTIONS,,,
+Informe de revisión por pares 2025,Instituto Neurónica,MENTIONS,,,
+Informe técnico del Proyecto Oráculo,Proyecto Oráculo,MENTIONS,,,
+Informe técnico del Proyecto Oráculo,Instituto Neurónica,MENTIONS,,,
+Memoria episódica en LLMs,Instituto Neurónica,MENTIONS,,,
+Ana,Universidad de Lira,MEMBER_OF,2018,,
+Beto,Instituto Neurónica,MEMBER_OF,2018,2024,
+Ana,Universidad de Lira,MEMBER_OF,2018,,
+Beto,Instituto Neurónica,MEMBER_OF,2020,2023,
+Carla,Universidad de Lira,MEMBER_OF,2020,,
+Dani,Instituto Neurónica,MEMBER_OF,2021,,
+Elena,Laboratorio GrafosYA,MEMBER_OF,2019,,
+Fabio,Laboratorio GrafosYA,MEMBER_OF,2019,,
+Ana,Proyecto Kira,WORKED_ON,,,
+Beto,Proyecto Kira,WORKED_ON,,,
+Dani,Proyecto Kira,WORKED_ON,,,
+Carla,Proyecto Oráculo,WORKED_ON,,,
+Fabio,Proyecto Oráculo,WORKED_ON,,,
+Elena,Proyecto Brújula,WORKED_ON,,,
+Gaby,Grafos de conocimiento en producción,AUTHORED,,,1
+Gaby,Unificación de entidades en knowledge graphs,AUTHORED,,,1
+Gaby,Razonamiento multihop sobre grafos de conocimiento,AUTHORED,,,1
+Gaby,Consulta declarativa de knowledge graphs a escala,AUTHORED,,,1
+Gaby,Control de calidad en grafos de conocimiento,AUTHORED,,,1
+Gaby,Materialización incremental de reglas en grafos,AUTHORED,,,1
+Hugo,Anclaje semántico para grafos de conocimiento,AUTHORED,,,1
+Hugo,Versionado de ontologías en grafos,AUTHORED,,,1
+Hugo,GraphRAG: recuperación aumentada con grafos,AUTHORED,,,1
+Hugo,Reranking de párrafos con caminos de grafos,AUTHORED,,,1
+Hugo,Indexación de vecindarios para recuperación,AUTHORED,,,1
+Hugo,Fusión de grafos y texto para respuestas,AUTHORED,,,1
+Iris,Evaluación de sistemas GraphRAG,AUTHORED,,,1
+Iris,Memoria gráfica para asistentes conversacionales,AUTHORED,,,1
+Iris,Particionado de knowledge graphs para recuperación,AUTHORED,,,1
+Iris,Agregación de evidencias en grafos,AUTHORED,,,1
+Iris,Grafos de conocimiento temporales,AUTHORED,,,1
+Iris,Streaming de aristas sobre grafos de conocimiento,AUTHORED,,,1
+Fabio,Memoria de trabajo en agentes con grafos,AUTHORED,,,1
+Fabio,Planificación de tareas con memoria gráfica,AUTHORED,,,1
+Fabio,Consolidación de recuerdos en agentes,AUTHORED,,,1
+Elena,RAG híbrido: vectorial más grafos,AUTHORED,,,1
+Elena,Recuperación guiada por ontologías,AUTHORED,,,1
+Elena,Lenguajes de consulta para grafos de conocimiento,AUTHORED,,,1
+Unificación de entidades en knowledge graphs,Grafos de conocimiento en producción,CITES,,,
+Consulta declarativa de knowledge graphs a escala,Grafos de conocimiento en producción,CITES,,,
+Reranking de párrafos con caminos de grafos,Razonamiento multihop sobre grafos de conocimiento,CITES,,,
+Evaluación de sistemas GraphRAG,Reranking de párrafos con caminos de grafos,CITES,,,
+Memoria de trabajo en agentes con grafos,Memoria gráfica para asistentes conversacionales,CITES,,,
+RAG híbrido: vectorial más grafos,Reranking de párrafos con caminos de grafos,CITES,,,
+Control de calidad en grafos de conocimiento,grafos de conocimiento,ABOUT,,,
+Materialización incremental de reglas en grafos,grafos de conocimiento,ABOUT,,,
+Anclaje semántico para grafos de conocimiento,grafos de conocimiento,ABOUT,,,
+Versionado de ontologías en grafos,grafos de conocimiento,ABOUT,,,
+Evaluación de sistemas GraphRAG,grafos de conocimiento,ABOUT,,,
+Streaming de aristas sobre grafos de conocimiento,grafos de conocimiento,ABOUT,,,
+Memoria de trabajo en agentes con grafos,memoria de agentes,ABOUT,,,
+Planificación de tareas con memoria gráfica,memoria de agentes,ABOUT,,,
+Consolidación de recuerdos en agentes,memoria de agentes,ABOUT,,,
+RAG híbrido: vectorial más grafos,RAG,ABOUT,,,
+Recuperación guiada por ontologías,RAG,ABOUT,,,
+Lenguajes de consulta para grafos de conocimiento,lenguajes de consulta,ABOUT,,,
+knowledge graphs,grafos de conocimiento,SUB_TEMA_DE,,,
+GraphRAG,grafos de conocimiento,SUB_TEMA_DE,,,
+memoria de agentes,grafos de conocimiento,SUB_TEMA_DE,,,
+Grafos de conocimiento en producción,knowledge graphs,ABOUT,,,
+Unificación de entidades en knowledge graphs,knowledge graphs,ABOUT,,,
+Razonamiento multihop sobre grafos de conocimiento,knowledge graphs,ABOUT,,,
+Consulta declarativa de knowledge graphs a escala,knowledge graphs,ABOUT,,,
+GraphRAG: recuperación aumentada con grafos,GraphRAG,ABOUT,,,
+Reranking de párrafos con caminos de grafos,GraphRAG,ABOUT,,,
+Indexación de vecindarios para recuperación,GraphRAG,ABOUT,,,
+Fusión de grafos y texto para respuestas,GraphRAG,ABOUT,,,
+Memoria gráfica para asistentes conversacionales,memoria de agentes,ABOUT,,,
+Particionado de knowledge graphs para recuperación,memoria de agentes,ABOUT,,,
+Agregación de evidencias en grafos,memoria de agentes,ABOUT,,,
+Grafos de conocimiento temporales,memoria de agentes,ABOUT,,,
+Fabio,Reseña ronda 1 (nota 7),REALIZA,0,2025,
+Fabio,Reseña ronda 2 (nota 8),REALIZA,,,
+Carla,Reseña ronda 1 (nota 6),REALIZA,,,
+Gaby,Reseña ronda 1 (nota 9),REALIZA,,,
+Reseña ronda 1 (nota 7),Informe de revisión por pares 2025,SOBRE,,,
+Reseña ronda 2 (nota 8),Informe de revisión por pares 2025,SOBRE,,,
+Reseña ronda 1 (nota 6),Consulta declarativa de knowledge graphs a escala,SOBRE,,,
+Reseña ronda 1 (nota 9),Evaluación de sistemas GraphRAG,SOBRE,,,
+Reseña ronda 2 (nota 8),Reseña ronda 1 (nota 7),CONTRARRESTA,2025,,
+Grafos de conocimiento en producción,ICDE 2024,PUBLICADO_EN,,,
+Unificación de entidades en knowledge graphs,ICDE 2024,PUBLICADO_EN,,,
+Razonamiento multihop sobre grafos de conocimiento,ICDE 2024,PUBLICADO_EN,,,
+Consulta declarativa de knowledge graphs a escala,ICDE 2024,PUBLICADO_EN,,,
+Control de calidad en grafos de conocimiento,ICDE 2024,PUBLICADO_EN,,,
+Materialización incremental de reglas en grafos,ICDE 2024,PUBLICADO_EN,,,
+Anclaje semántico para grafos de conocimiento,ICDE 2024,PUBLICADO_EN,,,
+Versionado de ontologías en grafos,ICDE 2024,PUBLICADO_EN,,,
+GraphRAG: recuperación aumentada con grafos,SIGMOD 2024,PUBLICADO_EN,,,
+Reranking de párrafos con caminos de grafos,SIGMOD 2024,PUBLICADO_EN,,,
+Indexación de vecindarios para recuperación,SIGMOD 2024,PUBLICADO_EN,,,
+Fusión de grafos y texto para respuestas,SIGMOD 2024,PUBLICADO_EN,,,
+Evaluación de sistemas GraphRAG,SIGMOD 2024,PUBLICADO_EN,,,
+Memoria gráfica para asistentes conversacionales,SIGMOD 2024,PUBLICADO_EN,,,
+Particionado de knowledge graphs para recuperación,SIGMOD 2024,PUBLICADO_EN,,,
+Agregación de evidencias en grafos,SIGMOD 2024,PUBLICADO_EN,,,
+Grafos de conocimiento temporales,VLDB 2025,PUBLICADO_EN,,,
+Streaming de aristas sobre grafos de conocimiento,VLDB 2025,PUBLICADO_EN,,,
+Memoria de trabajo en agentes con grafos,VLDB 2025,PUBLICADO_EN,,,
+Planificación de tareas con memoria gráfica,VLDB 2025,PUBLICADO_EN,,,
+Consolidación de recuerdos en agentes,VLDB 2025,PUBLICADO_EN,,,
+RAG híbrido: vectorial más grafos,VLDB 2025,PUBLICADO_EN,,,
+Recuperación guiada por ontologías,VLDB 2025,PUBLICADO_EN,,,
+Lenguajes de consulta para grafos de conocimiento,VLDB 2025,PUBLICADO_EN,,,
+Hugo,Universidad de Lira,MEMBER_OF,2019,,
+Iris,Laboratorio GrafosYA,MEMBER_OF,2022,,
+Gaby,Instituto Neurónica,MEMBER_OF,2023,,
+Beto,Instituto GrafoLuna,MEMBER_OF,2024,,

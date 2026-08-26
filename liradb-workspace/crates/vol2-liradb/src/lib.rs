@@ -317,6 +317,7 @@ mod cap41_modelado;
 mod cap42_antipatrones;
 mod cap43_temporalidad;
 mod cap44_esquema;
+mod cap45_ingesta;
 
 pub use cap07_modelo::*;
 pub use cap08_graph_store::*;
@@ -354,3 +355,4 @@ pub use cap41_modelado::*;
 pub use cap42_antipatrones::*;
 pub use cap43_temporalidad::*;
 pub use cap44_esquema::*;
+pub use cap45_ingesta::*;
