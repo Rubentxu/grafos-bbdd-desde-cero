@@ -170,7 +170,7 @@ Empezamos. Bienvenido a la mejor esquina de las matemáticas discretas.
 **Apéndices**
 
 - [Apéndice A — Proyectos finales integradores](#apéndice-a--proyectos-finales-integradores)
-- [Apéndice B — Glosario](#apéndice-b--glosario)
+- [Apéndice B — Glosario](#apéndice-b--glosario-extendido)
 - [Apéndice C — Bibliografía y referencias](#apéndice-c--bibliografía-y-referencias)
 - [Apéndice D — Cómo está escrito este libro: técnicas y por qué](#apéndice-d--cómo-está-escrito-este-libro-técnicas-y-por-qué)
 - [Colofón](#colofón)

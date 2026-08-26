@@ -8,3 +8,6 @@
 vol1-v3-backup-*.md
 
 # El workspace ignora su propio build/ vía liradb-workspace/.gitignore
+
+# Artefactos de render del libro (HTML/PDF/EPUB)
+/build/
