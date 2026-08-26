@@ -39,6 +39,7 @@ cap-35-observabilidad-interna.md
 cap-36-arquitectura-final-de-liradb.md
 cap-37-que-necesitaria-una-base-de-datos-de-produccion.md
 cap-38-almacenamiento-columnar-y-ejecucion-vectorizada.md
+cap-39-joins-patrones-y-consultas-ciclicas.md
 apendice-0-manual-de-estilo-unificado.md
 epilogo.md
 colofon.md
