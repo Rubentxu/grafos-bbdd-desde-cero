@@ -35,9 +35,9 @@ volumes:
   - id: vol-III
     title: "Grafos en la era de la IA: modelar, razonar y recuperar"
     file: vol3-grafos-era-ia.md
-    state: DRAFTING                          # cap-41 DONE (primer capítulo, 2026-08-26); 12 restantes en bucle B/C
+    state: DRAFTING                          # caps 41-42 DONE; 11 restantes en bucle B/C
     chapters_total: 13
-    chapters_done: 1                         # cap-41 (KB-Lira paso-1: builder+validador+10 preguntas testeadas)
+    chapters_done: 2                         # caps 41 (KB-Lira paso-1) y 42 (antipatrones, paso-2)
     appendices: [A, B, C, D, E]
     style: "Híbrido (plantilla Apéndice 0) + metodología teaching (CONVENTIONS §2)"
     current_macro_phase: B/C                  # bucle capítulo: planner→generator→writer
@@ -294,12 +294,13 @@ vol-III-chapters:
     cycle: 0
     workspace_crate: vol2-liradb
     module: cap41_modelado
-  # caps 42-53: PLANNED (outline aprobado ADR-005; planificar en orden)
   - id: vol-III-cap-42  # Antipatrones: supernodos, reificación y otras trampas
-    state: PLANNED      # contrato LISTO (2026-08-26, commit 4b8d4c8); código PENDIENTE — 4 reintentos de generator fallaron por infraestructura del provider (respuestas vacías); reintentar
-    blocked_on: generator-infraestructura
-    remediation_target: code-example-generator
+    state: DONE        # código+prosa en sesión 2026-08-26 (Sesión 45) — detector supernodos (6,0×·46% alarma), 3 refactors (10/2 nodos, 48/28 aristas), regresión 10 preguntas; KB-Lira paso-2
+    blocked_on: null
     cycle: 0
+    workspace_crate: vol2-liradb
+    module: cap42_antipatrones
+  # caps 43-53: PLANNED (outline aprobado ADR-005; planificar en orden)
 ```
 
 ## Decisiones arquitectónicas (ADRs, mini-resumen)

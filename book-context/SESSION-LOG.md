@@ -223,3 +223,18 @@
 **BLOQUEO**: el generator-agente (`general`) devolvió RESPUESTA VACÍA 4 veces (3 fresh + 1 resume) sin tocar el árbol. El pipeline de subagentes funciona (diagnóstico con `explore` OK) — es el provider del agente `general` el que está degradado (mismo patrón que el cap-41, que se resolvió tras compactación). Trabajo NO perdido: contrato commiteado; workspace intacto 920 tests ALL_GREEN.
 
 **Estado al cierre**: LEDGER cap-42 = PLANNED con `blocked_on: generator-infraestructura`. Próximo paso: REINTENTAR el generator del cap-42 (contrato ya listo) cuando el provider se estabilice.
+
+## 2026-08-26 — Sesión 45
+
+**Asistentes**: book-orchestrator + chapter-planner + 10 generator-agentes en SECUENCIA (piezas troceadas) + chapter-writer.
+
+**Trabajo realizado**: Cap. 42 «Antipatrones: supernodos, reificación y otras trampas» DONE — Vol.III **2/13 caps**.
+- **LECCIÓN DE INFRAESTRUCTURA**: el agente `general` muere con tareas largas (respuestas vacías, 4 intentos) pero responde perfecto a tareas PEQUEÑAS (diagnóstico con tarea trivial OK). Solución adoptada: TROCear la implementación en 10 piezas siguiendo el §8 del contrato (cada una compila y testea sola, wiring temporal revertido entre piezas). El cap-41 se implementó en 1 pieza; el 42 en 10 piezas encadenadas — mismo resultado, proceso más robusto. ESTE ES AHORA EL PATRÓN DEL PROYECTO para módulos grandes.
+- Contrato (sesión 44): detector umbral doble (5× mediana + 25% share), 3 refactors, regresión 10 preguntas. Citas: Allen 2020, GraphAcademy gdm-40, Aerospike AGS 3.0, Boylan-Toomey 2024, Robinson et al. 2015 (cap. **3** — corregido por el writer verificando el PDF oficial de Neo4j), Kimball 1996.
+- Código: `cap42_antipatrones.rs` (2.710 líneas, 28 tests) + `datasets/kb-lira/paso-2/{nodes,edges}.csv` (60+135 líneas) + wiring. 920→948 ALL_GREEN.
+- Cifras reales: triplete del detector 3,0×/0,375 (paso-1 SILENCIO) → 6,0×/46% (paso-2 ALARMA) → 3,0×/0,23 (refactor SILENCIO). ⚠️ DECISIÓN DE IMPLEMENTACIÓN: mediana EXCLUYENDO al hub (si el outlier fija la línea base, paso-2 daba 4,8× y no alarmaba — documentado en el test). Migración: 10/2 nodos, 48/28 aristas, 64 lecturas (A 25, B 1, C 38). Tesis: 1 expansión 24 → 4 expansiones 12+4+4+4 (mismo total en fixture, honestidad declarada). P5 jerárquica 24, P8 40 AUTHORED (9 personas). Hallazgo validador: el base del cap-41 trata tipos nuevos como desconocidos (36 violaciones) — wrapper filtra los 6 tipos que gobierna. P8 exigió helper con target<30 (Elena/Fabio contaminaban). remove_prop vía mutación directa del campo público (precedente cap33).
+- Prosa: 358 líneas, 20 secciones + blockquote; historia pequeña Enron/email forense (Robinson cap.3, verificada vía PDF oficial + InfoQ 2014).
+
+**Estado al cierre**: ALL_GREEN **948 tests**. Vol.III **2/13 caps DONE** (~863 líneas ensambladas). Commits ba316d8 / ed45409 pushed.
+
+**Próxima sesión**: cap-43 «El tiempo en el grafo: versionado y bitemporalidad» (Parte I cap 3) — valid-time, WAL como historia (la ronda de reseña como frontera declarada del cap-42). PATRÓN: trocear la implementación en piezas pequeñas.
