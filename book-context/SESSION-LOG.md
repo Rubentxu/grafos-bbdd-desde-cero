@@ -179,4 +179,23 @@
 (a) Publicar artefactos (GitHub Pages/release) — requiere decisión del autor;
 (b) Arrancar Vol.III «Grafos en la era de la IA»: chapter-planner del cap-41 (outline ya aprobado);
 (c) D2 mantenimiento: version-drift-detector + code-prose-coherence-checker(drift) periódicos;
-(d) Deudas técnicas MIGRATION §39/§41/§43 (Catalog::collect cuadrático, HashIndex capacity, Float-entero JSONL) antes de cualquier re-render.
+(d) ~~Deudas técnicas MIGRATION §39/§41/§43~~ → **HECHAS en Sesión 42**.
+
+## 2026-08-26 — Sesión 42
+
+**Asistentes**: book-orchestrator + code-example-generator (reparaciones) + writer-agente (actualización prosa).
+
+**Trabajo realizado**: las TRES deudas técnicas documentadas REPARADAS y la prosa sincronizada.
+- **D1 Catalog::collect** (cap21_optimizador.rs): O(V²)→O(V) con HashMap de clave canónica (propiedad, etiqueta, ClaveValor con Float por bits, −0.0 normalizado) + Vec en orden de primera aparición. Medido post-fix: ~224 s → **~3-4 s (×68)** sobre dataset_referencia; suelo restante = hashing SipHash (~1 µs/insert, 4.860.024 pushes legítimos); escalado lineal verificado (20k→93 ms). API pública intacta. Tests cap21 +4 (+1 #[ignore] de medición).
+- **D2 HashIndex::create** (cap15_indices.rs): validación eager con variante nueva `IndexError::CapacidadInsuficiente { requerida, disponible }`. **HALLAZGO CORRECTIVO: el mínimo real es `1+num_buckets`, NO `3+num_buckets`** como decía la prosa del cap-36 — las páginas 0/1 se allocan directo en el pager y NUNCA pasan por el pool durante create; verificado con test de frontera exacto (capacity==1+B funciona).
+- **D3 Float JSONL** (cap32_import_export.rs): serialización `{f:?}` → Float(2.0) sale "2.0" y reimporta Float; NaN/∞ como null; compatibilidad atrás («2» sigue siendo Int); cero cambios de goldens.
+- Workspace: **892 → 901 tests ALL_GREEN** (verify.sh ×2). Único toque colateral: comentario del smoke tests/arquitectura.rs (sin aserciones).
+- Prosa sincronizada por writer-agente (4 ficheros): cap-34 (3 ediciones: hallazgo histórico conservado + PAGADA ×68), cap-36 (6 ediciones: mínimo corregido a 1+B, ejercicio intermedio REESCRITO sobre la cifra real, deudas vivas actualizadas), epílogo (3 ediciones: deudas pagadas narradas, vivas = write skew/LIMIT/DiskStore/cola corrupta), MIGRATION-PATTERN (notas REPARADA en §39/§41 + §40 gotcha corregido).
+- Verificado que cap-15 prosa/código hablan del LAYOUT del fichero (3+B páginas) — correcto, no tocado.
+- Rebuild vol2 14.323 → 14.329 líneas. Commits c7582f5 / 820256a pushed.
+
+⚠️ NOTA: los artefactos de build/ (HTML/PDF/EPUB) quedaron generados ANTES de estas reparaciones — si se publican, regenerar primero (los .md cambiaron).
+
+**Estado al cierre**: Vol.II DONE con deudas técnicas saldadas. Obra: Vol.I DONE, Vol.II DONE (901 tests), Vol.III SKELETON.
+
+**Próximas opciones**: (a) re-render + publicación; (b) Vol.III cap-41 (chapter-planner); (c) D2 mantenimiento periódico.
