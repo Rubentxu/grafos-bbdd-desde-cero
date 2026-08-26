@@ -35,9 +35,9 @@ volumes:
   - id: vol-III
     title: "Grafos en la era de la IA: modelar, razonar y recuperar"
     file: vol3-grafos-era-ia.md
-    state: DRAFTING                          # caps 41-42 DONE; 11 restantes en bucle B/C
+    state: DRAFTING                          # caps 41-43 DONE; 10 restantes en bucle B/C
     chapters_total: 13
-    chapters_done: 2                         # caps 41 (KB-Lira paso-1) y 42 (antipatrones, paso-2)
+    chapters_done: 3                         # caps 41-43 (pasos 1-3: modelo, antipatrones, temporalidad)
     appendices: [A, B, C, D, E]
     style: "Híbrido (plantilla Apéndice 0) + metodología teaching (CONVENTIONS §2)"
     current_macro_phase: B/C                  # bucle capítulo: planner→generator→writer
@@ -300,7 +300,13 @@ vol-III-chapters:
     cycle: 0
     workspace_crate: vol2-liradb
     module: cap42_antipatrones
-  # caps 43-53: PLANNED (outline aprobado ADR-005; planificar en orden)
+  - id: vol-III-cap-43  # El tiempo en el grafo: versionado y bitemporalidad
+    state: DONE        # código+prosa en sesión 2026-08-26 (Sesión 46) — valid-time en MEMBER_OF, AS OF 28=28 lecturas, caso Dani, WAL cap-28 real; KB-Lira paso-3
+    blocked_on: null
+    cycle: 0
+    workspace_crate: vol2-liradb
+    module: cap43_temporalidad
+  # caps 44-53: PLANNED (outline aprobado ADR-005; planificar en orden)
 ```
 
 ## Decisiones arquitectónicas (ADRs, mini-resumen)

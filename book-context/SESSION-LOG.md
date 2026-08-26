@@ -238,3 +238,19 @@
 **Estado al cierre**: ALL_GREEN **948 tests**. Vol.III **2/13 caps DONE** (~863 líneas ensambladas). Commits ba316d8 / ed45409 pushed.
 
 **Próxima sesión**: cap-43 «El tiempo en el grafo: versionado y bitemporalidad» (Parte I cap 3) — valid-time, WAL como historia (la ronda de reseña como frontera declarada del cap-42). PATRÓN: trocear la implementación en piezas pequeñas.
+
+## 2026-08-26 — Sesión 46
+
+**Asistentes**: book-orchestrator + chapter-planner + 12 generator-agentes TROCEADOS + chapter-writer.
+
+**Trabajo realizado**: Cap. 43 «El tiempo en el grafo: versionado y bitemporalidad» DONE — Vol.III **3/13 caps**.
+- Contrato (473 líneas, commit a5a4aa8): valid-time como props de arista, bitemporalidad con el caso Dani, AS OF con coste, conexión WAL. Citas verificadas: Snodgrass (Morgan Kaufmann, julio 1999), Jensen & Snodgrass (IEEE TKDE 11(1):36-44, 1999), TSQL2 (Kluwer, 1995), Holme & Saramäki (Physics Reports 519(3):97-125, 2012), Kostakos (Physica A 388(6), 2009), Neo4j 3.4 (2018), GQL ISO 39075:2024 (abril 2024).
+- Código por 12 piezas troceadas (patrón de la sesión 45 consolidado — funcionó de principio a fin SIN ningún fallo de agente): `cap43_temporalidad.rs` (1.853 líneas, 23 tests) + datasets/kb-lira/paso-3/{nodes,edges,historico}.csv + wiring. 948→971 ALL_GREEN.
+- Cifras reales: 68 nodos/158 aristas/10 MEMBER_OF; tabla AS OF 2026/2024/2023/2020/2019 (28/28/28/27/27 lecturas); tesis «presente = AS OF mismo barrido» (28=28); delta arista vencida 21→20 get_edge + candidatas 4→3 (la tesis 13→14 del contrato no cuadraba con el ledger real — pineado el real con comentario); gancho reseña Some(7)→Some(8) desde 2025 (CONTRARRESTA{desde_anio}); caso Dani (2019 creído vs 2021 cierto); WAL cap-28 real demuestra la frontera (replay reconstruye lo ESCRITO, no lo CORREGIDO).
+- Sorpresas cazadas: nombres reales de organizaciones («Universidad de Lira» etc.); la ronda 2 solo reina desde que emite CONTRARRESTA (gotcha resuelto); P4 es la ÚNICA discrepancia real (Beto→GrafoLuna con tiempo) — es la lección, filtrada en el subgrafo paso-1 con helper nuevo `solo_afiliaciones_paso1`.
+- Prosa (358 líneas, 20 secciones): anécdota Holme & Saramäki (aristas que se encienden y apagan); historia pequeña = la reseña del 3 de marzo como cierre del arco cap-42→43; grano anual declarado dos veces.
+- SUMARIO vol3 + rebuild 863 → **1221 líneas**. Commits 2818156 / 3165db2.
+
+**Estado al cierre**: ALL_GREEN **971 tests**. Vol.III **3/13 caps DONE** (~1.221 líneas ensambladas). Parte I 3/5.
+
+**Próxima sesión**: cap-44 «Constraints e índices» (Parte I cap 4) — el validador paso-3 siembra las reglas; el AS OF sin índice es la deuda que el índice paga. Después cap-45 ingesta (transaction-time automático).
