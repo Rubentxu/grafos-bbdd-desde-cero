@@ -126,3 +126,18 @@
 2. **Cap-40 «Distribuir una BBDD de grafos»** (Raft, sharding hash vs comunidad, cut edges) — CIERRA el Vol.II.
 3. Tras cap-40: Apéndice 0 (verificar si al estándar o placeholder), epílogo, cierre del volumen.
 4. Deudas documentadas candidatas (MIGRATION §39/§41/§43): Catalog::collect cuadrático, HashIndex capacity ≥ 3+num_buckets, Float-entero JSONL.
+
+## 2026-08-26 — Sesión 39
+
+**Asistentes**: book-orchestrator + chapter-planner + code-example-generator + chapter-writer.
+
+**Trabajo realizado**: Cap. 39 «Joins, patrones y consultas cíclicas» DONE (código Y prosa), Parte VIII cap 3.
+- Contrato por planner-agente (`book-context/contratos/vol2/cap-39.md`, 323 líneas): COBRA las tres deudas heredadas (cap-14 «WCOJ sobre adyacencias ordenadas», cap-20 «joins reales WCOJ», cap-38 «motor factorizado completo = cap 39»). Citas verificadas hoy: AGM FOCS 2008 (rev. SICOMP 42(4) 2013); NPRR PODS 2012 pp. 37-48; survey «Skew Strikes Back» SIGMOD Record 42(4) **2014**; LeapFrog ICDT 2014 + ICDT Test-of-Time 2024; factorización **ICDT 2012** / TODS 40(1) mar-2015. ⚠️ HALLAZGO: el contrato de cap-38 citaba «Olteanu-Závodný, ICDT 2015» (mezcla venue/año) — detectado, NO corregido allí por regla de fichero único; deuda menor pendiente.
+- Código por generator-agente: `cap39_joins.rs` (1.470 líneas std puro, 14 tests con nombres EXACTOS del §2: expand-como-join formalizado, intermedios K₈ 392→56, join binario vs fuerza bruta, BuscadorSalto salto exponencial+binary_search, frontera_comun, TriangulosWcoj orden estático a→b→c, cota_agm ⌊m^1,5⌋, cierre_transitivo con BitSet/Presupuesto del cap-26, ResultadoFactorizadoTriangulos, informe reproducible) + CUARTO `[[bench]] bench_joins.rs` (178 líneas) + wiring aditivo (lib.rs +2, Cargo.toml +8). Cero toques caps 7-38.
+- Bench real (Xeon E5-2682 v4 @2.50GHz): regular (800n/11.906a) 2,36 ms vs 1,15 ms (**~2×**); hub-skew (rueda 513n) 2,14 ms vs **72 µs** (**×29**, intermedios 266.752 para 512 triángulos = ratio ×521); enumeración factorizada vs plana 570 ns vs 382 ns (~1,5×). Honestidad declarada en prosa: delta regular modesto confirma la misconcepción «WCOJ no gana siempre»; pasos WCOJ hub 12.832 ≪ AGM 92.681.
+- Prosa por writer-agente (388 líneas, 20 secciones verificadas): anécdota LogicBlox/Veldhuizen «implemented before its optimality guarantees were discovered» (ICDT 2014 + Test-of-Time 2024); historia pequeña = el propio Test-of-Time desde el ángulo producción→prueba→premio; K₈ contado a mano; panel dual join-oriented vs variable-oriented; ganchos cap-38 («columnas = CÓMO lees») y cap-40 («¿y cuando el grafo no cabe en una?»).
+- SUMARIO.txt actualizado (cap-39 tras cap-38); rebuild vol2 13.401 → **13.789 líneas** (+388 exactas).
+
+**Estado al cierre**: ALL_GREEN **878 tests**. Vol.II **39/40 caps con prosa** (~13.789 líneas ensambladas); Parte VIII 3/4 (queda cap-40). Commits e248c0c / 0a4f170 en main (pushed). build_book.sh --check ALL_ASSEMBLED.
+
+**Próxima sesión**: cap-40 «Distribuir una BBDD de grafos» (particionado por nodos, edge/vertex cuts, replicación de fronteras, consultas entre particiones, consistencia, Raft, rebalanceo, hotspots) — **CIERRA EL VOL.II**. Después: Apéndice 0 (decidir si al estándar o placeholder), epílogo/colofón, preflight D1 (book-builder). Deuda menor: corregir cita Olteanu-Závodný en contrato cap-38 (ICDT 2015 → ICDT 2012/TODS 40(1) 2015). Deudas mayores documentadas (MIGRATION §39/§41/§43): Catalog::collect cuadrático, HashIndex capacity, Float-entero JSONL.
