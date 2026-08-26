@@ -52,7 +52,7 @@
   (4) «un resultado de mil millones de tuplas necesita mil millones de celdas en RAM» —
   no: la REPRESENTACIÓN FACTORIZADA guarda arrays por variable más multiplicidades y
   preserva EXACTAMENTE el mismo multiconjunto lógico (CIDR 2023; Olteanu-Závodný ICDT
-  2015); menos celdas físicas, cero filas perdidas.
+  2012); menos celdas físicas, cero filas perdidas.
 - **Pregunta crítica que el capítulo tiene que responder**: «¿qué significa SIMD y
   factorización aquí — qué se puede demostrar HOY sin nightly y cuánto cambia la
   representación del resultado?» Respuesta en dos mitades medibles: (a) ejecución por
@@ -112,7 +112,7 @@ del brief, líneas 1572-1583):
 9. **Factorización de resultados** → estructura mínima 2-hop (arrays+multiplicidad)
    con conteo filas lógicas/celdas físicas; conexión directa con el processor
    factorizado de Kùzu (CIDR 2023, CC-BY 4.0) y la teoría de Olteanu-Závodný (ICDT
-   2015). El motor factorizado completo y WCOJ son del CAP. 39 — frontera declarada.
+   2012). El motor factorizado completo y WCOJ son del CAP. 39 — frontera declarada.
 
 El hilo conductor: «el layout manda» — la misma ley que el ×16 de CSR (cap. 14),
 ahora medida en PROPIEDADES; y «la representación del resultado también es layout».
@@ -168,7 +168,7 @@ en las propiedades… y hasta el RESULTADO de una consulta es un problema de lay
 | 8 | Filtro en DOS PASADAS (máscara sin ramas internas → compactado) | LLVM auto-vectoriza bucles de comparación que producen máscara; el compactado con rama queda AISLADO y medible; sin nightly no hay compress-store vectorial | Rama por elemento (`if pred { push }`): divergencia que impide vectorizar el bucle caliente; intrinsics AVX/SSE: portabilidad y nightly prohibidas | Rust: `feature(portable_simd)` nightly-only (toolchain pinneada 1.96.0, rust-toolchain.toml); CIDR 2005 (primitivas vectorizadas) |
 | 9 | SIMD HONESTO: promesa = DELTA MEDIDO escalar-vs-lote + inspección de asm OPCIONAL fuera del pipeline (`cargo asm` / `rustc --emit=asm`), como flamegraphs en cap. 34; PROHIBIDO prometer instrucciones concretas | Lo demostrable sin nightly es el EFECTO y el MÉTODO de verificación; prometer «usa AVX2» sería infalsificable y frágil entre CPUs | Portable-simd/intrinsics: exigen nightly y romperían la toolchain pinneada (ADR-002) | Delimitación espejo de cargo-fuzz (cap. 33, §5.x); política toolchain ADR-002; criterion Book (`black_box`) |
 | 10 | Equivalencia OBLIGATORIA por test: filtro por lotes == filtro fila (multiconjunto) y factorización == expansión plana | Sin test-tesis de equivalencia, todo el capítulo sería demo de humo; la velocidad SIN corrección no es velocidad | Benchmarks sin verificación semántica: optimiza el número, corrompe el resultado | Torre de pruebas (cap. 33): cada piso con su contrato testeado |
-| 11 | Factorización MÍNIMA VIABLE: estructura arrays-por-variable + multiplicidad para 2-hop, conteo lógico/físico; motor completo y joins factorizados = cap. 39 | El concepto cabe y se DEMUESTRA con conteo exacto; el motor (operadores factorizados, WCOJ) requiere el cap. 39 entero — fingirlo aquí sería inflarlo | Implementar el processor factorizado de Kùzu: alcance de libro propio; solaparía con WCOJ del cap. 39 | Jin, Feng, Chen, Liu, Salihoğlu, «KÙZU Graph DBMS», CIDR 2023 (CC-BY 4.0; ADR-001); Olteanu & Závodný, «Factorised Representations of Query Results», ICDT 2015; brief cap. 39 (líneas 1597-1598) |
+| 11 | Factorización MÍNIMA VIABLE: estructura arrays-por-variable + multiplicidad para 2-hop, conteo lógico/físico; motor completo y joins factorizados = cap. 39 | El concepto cabe y se DEMUESTRA con conteo exacto; el motor (operadores factorizados, WCOJ) requiere el cap. 39 entero — fingirlo aquí sería inflarlo | Implementar el processor factorizado de Kùzu: alcance de libro propio; solaparía con WCOJ del cap. 39 | Jin, Feng, Chen, Liu, Salihoğlu, «KÙZU Graph DBMS», CIDR 2023 (CC-BY 4.0; ADR-001); Olteanu & Závodný, «Factorised Representations of Query Results», ICDT 2012 (rev. ACM TODS 40(1), 2015); brief cap. 39 (líneas 1597-1598) |
 | 12 | Tercer `[[bench]] bench_columnar.rs` ADITIVO + atribución Kùzu según ADR-001 (relato histórico: archivada oct-2025 tras adquisición por Apple; forks LadybugDB/bighorn; paper CIDR 2023; clean-room, cero código copiado) | Cargo integra el target gratis (verify compila, ejecuta cuando TÚ decides — regla del cap. 34); la política ADR-001 es VINCULANTE para cap. 38+ («cita CIDR 2023 y papers VLDB/SIGMOD del grupo») | Binario propio cronometrado; citar «Kùzu renombrado a Ladybug» (FALSO — error corregido por ADR-001) | Cargo Book (targets bench); ADR-001 (política completa); CONVENTIONS §5 (colofón/licencias) |
 
 ---
@@ -262,7 +262,7 @@ en las propiedades… y hasta el RESULTADO de una consulta es un problema de lay
   personal; tesis doctoral «Monet: A Next-Generation DBMS Kernel For Query-Intensive
   Applications», UvA, defendida 31-may-2002; paper CIDR 2005 con Zukowski y Nes).
   Apoyo: C-Store VLDB 2005; SIGMOD 2006 (compresión operable); SIGMOD 2008
-  (row-vs-column honesto); CIDR 2023 Kùzu CC-BY 4.0 (ADR-001); ICDT 2015
+  (row-vs-column honesto); CIDR 2023 Kùzu CC-BY 4.0 (ADR-001); ICDT 2012
   (Olteanu-Závodný); Lamb et al. PVLDB 2012 (Vertica); historia Sybase IQ 1995
   (Expressway 103, SAP/Wikipedia/dbdb.io) RESERVADA para N.10 — candidata de N.0
   descartada por ser menos pertinente a la ejecución vectorizada.

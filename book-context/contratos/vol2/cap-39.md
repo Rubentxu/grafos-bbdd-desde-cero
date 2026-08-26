@@ -24,7 +24,8 @@
 > Strikes Back» = **SIGMOD Record 42(4), 2014** (Ngo-Ré-Rudra; NI «PODS 2012» NI «SIGMOD
 > 2013»); LeapFrog = **ICDT 2014** (Veldhuizen, LogicBlox; ICDT Test-of-Time 2024);
 > factorización = **ICDT 2012** + versión revista **ACM TODS 40(1), 2015** (el contrato del
-> cap. 38 citaba «ICDT 2015» — discrepancia detectada, NO corregida aquí); Kùzu = CIDR 2023
+> cap. 38 citaba «ICDT 2015» — discrepancia detectada aquí y CORREGIDA en cap-38 el
+> 2026-08-26); Kùzu = CIDR 2023
 > CC-BY 4.0 según ADR-001. Pregunta crítica del CORPUS (`vol-II-cap-39`, Parte VIII):
 > «LeapFrog Triejoin simplificado». Gancho saliente: cap. 40 distribución — «ya sabes QUÉ
 > calcular y CÓMO leerlo rápido EN UNA máquina; ¿y cuando el grafo no cabe en una?».
@@ -268,9 +269,9 @@ desde el cap. 14».
   (Veldhuizen, ICDT 2014; Test-of-Time 2024, databasetheory.org/node/150). Fuentes para
   la prosa: Atserias-Grohe-Marx (FOCS 2008; SICOMP 42(4), 2013); Ngo-Porat-Ré-Rudra
   (PODS 2012, pp. 37-48); «Skew Strikes Back» (SIGMOD Record 42(4), 2014 — NO «PODS
-  2012», NO «SIGMOD 2013»); Veldhuizen (ICDT 2014); Olteanu-Závodný (ICDT 2012; TODS
-  40(1), mar-2015 — el «ICDT 2015» del contrato del cap. 38 debe corregirse ALLÍ, no
-  aquí); Loomis-Whitney (Bull. AMS 55, 1949); Jin et al. (CIDR 2023, CC-BY 4.0,
+   2012», NO «SIGMOD 2013»); Veldhuizen (ICDT 2014); Olteanu-Závodný (ICDT 2012; TODS
+   40(1), mar-2015 — la cita errónea «ICDT 2015» del cap. 38 fue corregida allí el
+   2026-08-26); Loomis-Whitney (Bull. AMS 55, 1949); Jin et al. (CIDR 2023, CC-BY 4.0,
   ADR-001); ISO/IEC 39075:2024 (GQL); SQL:1999 (WITH RECURSIVE).
 
 ---

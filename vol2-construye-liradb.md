@@ -12921,7 +12921,7 @@ En realidad ya tienes 864 tests verdes, ACID, WAL, MVCC, CLI y aparato de medici
 1. **«Columnar siempre gana.»** No: para OLTP — leer UN nodo entero, escribir mucho — el row store manda, y tu `MemoryStore` no va a ninguna parte. Abadi, Madden y Hachem midieron (SIGMOD 2008) que un column-store NAIVE PIERDE contra un row-store bien afinado si la ejecución no se adapta. La elección la decide EL WORKLOAD, no el titular.
 2. **«SIMD exige intrinsics o nightly.»** No: LLVM auto-vectoriza (*auto-vectorización*) bucles apretados sin ramas internas; lo que nightly añade es CONTROL (`portable_simd`). Con la toolchain pinneada 1.96.0 (ADR-002), lo honesto es MEDIR el efecto y saber inspeccionar ensamblador — no prometer instrucciones concretas.
 3. **«Comprimir siempre acelera.»** No: decodificar cuesta CPU. Lo que hace rentable la compresión ligera es OPERAR SOBRE LOS CÓDIGOS cuando el predicado lo permite (Abadi, Madden y Ferreira, SIGMOD 2006) — y aun así depende de la selectividad. Ya verás al diccionario PERDER medido en dos claves.
-4. **«Mil millones de tuplas necesitan mil millones de celdas en RAM.»** No: la REPRESENTACIÓN FACTORIZADA guarda arrays por variable más multiplicidades y preserva EXACTAMENTE el mismo multiconjunto lógico (Olteanu y Závodný, ICDT 2015; processor factorizado de Kùzu, CIDR 2023). Menos celdas físicas, cero filas perdidas — y lo vas a contar a mano.
+4. **«Mil millones de tuplas necesitan mil millones de celdas en RAM.»** No: la REPRESENTACIÓN FACTORIZADA guarda arrays por variable más multiplicidades y preserva EXACTAMENTE el mismo multiconjunto lógico (Olteanu y Závodný, ICDT 2012; processor factorizado de Kùzu, CIDR 2023). Menos celdas físicas, cero filas perdidas — y lo vas a contar a mano.
 
 Y debajo, la pregunta crítica del corpus: «¿qué significa SIMD y factorización AQUÍ — qué se puede demostrar HOY sin nightly y cuánto cambia la representación del resultado?» Respuesta en dos mitades medibles.
 
@@ -13262,7 +13262,7 @@ Finales de los años ochenta. Grace Hopper — contralmirante de la Marina de EE
 - **Daniel Abadi, Sam Madden, Nabil Hachem, «Column-Stores vs. Row-Stores: How Different Are They Really?» (SIGMOD 2008)** — el antídoto contra «columnar siempre gana»: el naive column-store que pierde.
 - **Michael Stonebraker et al., «C-Store: A Column-oriented DBMS» (VLDB 2005)** — el columnar analítico fundacional; **Andrew Lamb et al., «The Vertica Analytic Database: C-Store 7 Years Later» (PVLDB 5(12), 2012)** — de paper a producto.
 - **Guodong Jin, Xiyang Feng, Ziyi Chen, Chang Liu, Semih Salihoğlu, «KÙZU Graph Database Management System» (CIDR 2023, CC-BY 4.0)** — columnar + vectorizado + factorización para grafos; atribución según ADR-001 (archivada oct-2025; forks LadybugDB/bighorn).
-- **Dan Olteanu, Jakub Závodný, «Factorised Representations of Query Results» (ICDT 2015)** — la teoría de prefijos compartidos y multiplicidades detrás del gesto 6.
+- **Dan Olteanu, Jakub Závodný, «Factorised Representations of Query Results» (ICDT 2012; versión revista en ACM TODS 40(1), 2015)** — la teoría de prefijos compartidos y multiplicidades detrás del gesto 6.
 - **duckdb.org (docs de almacenamiento y ejecución vectorizada)** y **parquet.apache.org (encodings: Dictionary, RLE/Bit-Packing Hybrid)** — las técnicas del capítulo en producción y en formato abierto.
 - **postgresql.org/docs (TOAST; extensión Citus columnar)** — el row store de producción y cómo llega lo columnar sin tocar el core.
 - **Grace Hopper en Late Night with David Letterman (NBC, 1986) y sus grabaciones de conferencias (Computer History Museum)** — el cable de la nanosegundo, repartido en directo.
@@ -14055,104 +14055,264 @@ Stanford, 2013. Diego Ongaro lleva años peleando con Paxos, el algoritmo de con
 *(FIN DEL VOL.II — «Construye LiraDB». El hexágono del cap. 36 quedó respondido: cada pieza del mapa sobrevive al reparto POR MÁQUINA —CSR, catálogo, WAL, MVCC, optimizador—; lo que aprendiste de nuevo fue la contabilidad de la frontera: cortes, réplicas, mensajes y mayoría. Al EPÍLOGO, con las preguntas abiertas heredadas y las nuevas: ¿paralelizar leapfrog morsel-driven (39)? ¿orden dinámico de variables? ¿columnas en disco? ¿red real con runtime asíncrono? ¿compaction y snapshots del log replicado? ¿y cuando la MEMORIA de un agente necesita un grafo? El Vol.III — «Grafos en la era de la IA: KB-Lira» — empieza exactamente ahí.)*
 # Apéndice 0 — Manual de estilo unificado
 
-> *Borrador inicial — se completará en la Fase 2.*
+> *Este apéndice explica cómo está escrito este libro: por qué sus tres volúmenes suenan distinto, qué plantilla sigue cada capítulo y qué garantías de verificación hay detrás de lo que lees.*
 
 ## 0.1. Por qué un manual de estilo común
 
-Esta obra se publica en **dos volúmenes** con voces distintas:
+Esta obra se publica en **tres volúmenes**, cada uno con su propia voz:
 
-- El **Volumen I** ("Grafos en Computación: de Cero a Experto") tiene una voz **narrativa y divulgativa**, basada en el estilo que Aditya Bhargava popularizó como "Grokking Algorithms": hooks, anécdotas históricas, regla de tres, humor inesperado, ASCII art, "Pin de batalla", "Si solo lees 30 segundos", "Una historia pequeña" y Diálogos de ascensor.
+- El **Volumen I** («Grafos en Computación: de Cero a Experto») tiene una voz **narrativa y divulgativa**, basada en el estilo que Aditya Bhargava popularizó como *Grokking Algorithms*: hooks, anécdotas históricas, regla de tres, humor inesperado, ASCII art y baterías recurrentes como «Pin de batalla» o «Si solo lees 30 segundos».
+- El **Volumen II** («Construye LiraDB») tiene una voz **ingenieril y metódica**: cada capítulo construye una pieza del motor LiraDB siguiendo una plantilla fija de **20 secciones en orden invariable**, que combina los diez pasos pedagógicos del proyecto con las baterías narrativas del Vol.I.
+- El **Volumen III** («Grafos en la era de la IA: modelar, razonar y recuperar», esqueleto aprobado según ADR-005) abordará knowledge bases, GraphRAG y memoria de agentes. Definirá su propia voz cuando arranque su redacción, pero hereda desde ya el esqueleto común de este manual: baterías, cross-references, política de citación y proceso verificado.
 
-- El **Volumen II** ("Construye LiraDB") tiene una voz **ingenieril y metódica**, basada en la plantilla pedagógica de 10 pasos del brief original de LiraDB: objetivo → problema → modelo mental → primera solución → sus límites → solución evolucionada → código completo ejecutable → prueba de fuego → qué hemos sacrificado → cómo lo hace una BBDD real + retos.
+Las voces son complementarias: el Vol.I te enseña *qué es* un grafo y *qué algoritmos existen*; el Vol.II te enseña *cómo construir* un sistema que los persiste y consulta; el Vol.III conectará todo con cómo la IA razona sobre grafos. Un manual común asegura que cambies de volumen sin perder el mapa.
 
-Ambas voces son válidas y complementarias. El Vol.I te enseña *qué es* un grafo y *qué algoritmos existen*. El Vol.II te enseña *cómo construir* un sistema que los persiste y los consulta. La fusión en una sola obra exige un manual que documente ambas plantillas y diga **cuándo y cómo se aplican**.
+## 0.2. Las dos plantillas, lado a lado
 
-## 0.2. Las dos plantillas lado a lado
+Cada columna conserva su propio orden interno; se emparejan por concepto:
 
-| # | Plantilla Vol.I (Grokking 2.0) | Plantilla Vol.II (híbrida) |
+| # | Plantilla Vol.I (Grokking 2.0) | Plantilla Vol.II (híbrida — orden fijo) |
 |---|---|---|
-| 1 | `# Capítulo N — Título evocador` | `# Capítulo N — Título evocador` |
+| 1 | `# Capítulo N — <Título evocador>` | `# Capítulo N — <Título evocador>` |
 | 2 | `## N.0 La anécdota de la esquina` | `## N.0 La anécdota de la esquina` |
-| 3 | `## N.1 ...` (cuerpo técnico libre, 4-12 secciones) | `## N.1 Objetivo` … `## N.10 Cómo lo hace una BBDD real + retos` (10 pasos fijos) |
-| 4 | `## Ejercicios resueltos` | `## Ejercicios resueltos` (con niveles) |
-| 5 | `## Ejercicios propuestos` | `## Ejercicios propuestos` (con niveles) |
-| 6 | `## Lo que te llevas` | `## N.11 Lo que te llevas` |
-| 7 | `## Ojo, cuidado con…` | `## N.12 Ojo, cuidado con…` |
-| 8 | `## Para profundizar` | `## Para profundizar` |
-| 9 | `## Pin de batalla` | `## N.13 Pin de batalla` |
-| 10 | `## Si solo lees 30 segundos` | `## N.14 Si solo lees 30 segundos` |
-| 11 | `## Una historia pequeña` | `## N.15 Una historia pequeña` |
-| 12 | (sólo en Parte VI) `## Diálogo de ascensor / Mini-diálogo` | `## Mini-diálogo: en guardia nocturna` |
+| 3 | `## N.1 … N.K` — cuerpo técnico libre (4-12 secciones) | `## N.1 Objetivo` … `## N.10 Cómo lo hace una BBDD real + retos` (los diez pasos, ver abajo) |
+| 4 | `## Lo que te llevas` | `## N.11 Lo que te llevas` |
+| 5 | `## Ojo, cuidado con…` | `## N.12 Ojo, cuidado con…` |
+| 6 | `## Pin de batalla` | `## N.13 Pin de batalla` |
+| 7 | `## Si solo lees 30 segundos` | `## N.14 Si solo lees 30 segundos` |
+| 8 | `## Una historia pequeña` | `## N.15 Una historia pequeña` |
+| 9 | `## Ejercicios resueltos` | `## Ejercicios resueltos` |
+| 10 | `## Ejercicios propuestos` | `## Ejercicios propuestos` (con retos esencial/intermedio/experto) |
+| 11 | `## Para profundizar` | `## Para profundizar` |
+| 12 | Solo Parte VI: `Diálogo de ascensor / Mini-diálogo` | `## Mini-diálogo: en guardia nocturna` |
 
-**Regla**: en el Vol.II, el orden es **fijo** y la sección técnica va numerada `N.1`–`N.10` con los títulos del brief LiraDB. No se eligen baterías sueltas.
+En el Vol.II, el orden de esas 20 secciones es **fijo**: primero la anécdota (N.0), luego el ciclo completo problema → primera solución → límites → solución evolucionada (N.1-N.10), después las baterías numeradas N.11-N.15 y, al cierre, ejercicios, referencias y mini-diálogo. No se omiten ni se reordenan secciones.
 
-## 0.3. Tabla "qué batería aplica en qué volumen"
+Los diez pasos del cuerpo técnico del Vol.II son:
 
-| Batería | Vol.I | Vol.II |
-|---|:-:|:-:|
-| Anécdota de apertura | ✅ siempre | ✅ siempre (N.0) |
-| 10 pasos LiraDB | ❌ no aplica | ✅ siempre (N.1–N.10) |
-| Lo que te llevas | ✅ siempre | ✅ siempre (N.11) |
-| Ojo, cuidado con… | ✅ siempre | ✅ siempre (N.12) |
-| Pin de batalla | ✅ siempre | ✅ siempre (N.13) |
-| Si solo lees 30 segundos | ✅ siempre | ✅ siempre (N.14) |
-| Una historia pequeña | ✅ siempre | ✅ siempre (N.15) |
-| Ejercicios resueltos | ✅ siempre | ✅ siempre |
-| Ejercicios propuestos | ✅ siempre | ✅ siempre (esencial/intermedio/experto) |
-| Para profundizar | ✅ siempre | ✅ siempre |
-| Diálogo de ascensor | ⚠️ sólo Parte VI Vol.I | ✅ siempre (mini-diálogo) |
+1. `N.1 Objetivo` — qué construye el capítulo y deudas que cobra.
+2. `N.2 Problema` — el escenario y las ideas equivocadas que desactiva antes.
+3. `N.3 Modelo mental` — la figura o escalera que ordena el tema.
+4. `N.4 Primera solución` — la versión ingenua, correcta pero incompleta.
+5. `N.5 Sus límites` — dónde y por qué esa versión se rompe, con cifras.
+6. `N.6 Solución evolucionada` — cada gesto con su alternativa descartada.
+7. `N.7 Código completo ejecutable` — el módulo del workspace, no un esbozo.
+8. `N.8 Prueba de fuego` — tests y benches con salidas reales.
+9. `N.9 Qué hemos sacrificado` — lo que NO hace, declarado sin vergüenza.
+10. `N.10 Cómo lo hace una BBDD real + retos` — PostgreSQL/Neo4j/DuckDB/Kùzu… y retos esencial/intermedio/experto.
+
+## 0.3. Ejemplos canónicos
+
+Para ver cada pieza en acción, estos capítulos reales son la referencia:
+
+- **Anécdota de apertura (N.0)**: el brazo mecánico del disco con Jim Gray en el cap. 11; MonetDB destrozado por un bucle escrito a mano en el cap. 38; el leapfrog triejoin en producción años antes de probarse su optimalidad en el cap. 39.
+- **Modelo mental (N.3)**: la escalera de ocho peldaños y el contraste plan binario vs. worst-case optimal del cap. 39.
+- **Primera solución, sus límites y sacrificios (N.4-N.5, N.9)**: el plan binario del cap. 39 materializa 392 tuplas intermedias en K₈ para devolver solo 56 triángulos — y el capítulo confiesa qué renuncia al no integrar esos joins en el executor.
+- **Prueba de fuego (N.8)** con salidas reales: los benches medidos del cap. 34 (§34.8) y la tabla del cap. 39 donde el join WCOJ gana ~29× al plan binario, con microsegundos reales.
+- **Retos graduados (N.10)**: esencial/intermedio/experto en cualquier capítulo, p. ej. cap. 25 (Louvain).
+- **Mini-diálogo de guardia nocturna**: presente en todos los capítulos del Vol.II, p. ej. cap. 27 (ACID).
+- **Una historia pequeña**: Grace Hopper repartiendo cables de nanosegundo (cap. 38) y el Raft diseñado para ser comprensible (cap. 40).
 
 ## 0.4. Reglas de transición entre volúmenes
 
-- Cualquier referencia a un concepto del Vol.I desde el Vol.II debe incluir la notación `(Vol. I, cap. N)`.
-- El **cap. 32 del Vol.I** (Quantum Computing) cierra el Vol.I invitando al lector a continuar con el Vol.II.
-- El **cap. 1 del Vol.II** ("Qué es realmente un grafo") abre citando explícitamente los caps. 1-2 del Vol.I como prerequisito.
-- Los caps. 21-32 del Vol.I (Grafos en la Informática Moderna) funcionan como "semilleros" del Vol.II: cada uno termina con una nota al pie apuntando al capítulo del Vol.II que implementa lo que ese cap. introdujo.
+- Cualquier referencia a un concepto de otro volumen usa la notación `(Vol. I, cap. N)` o `(Vol. III, cap. N)`; dentro del mismo volumen basta `(cap. N)`.
+- El **cap. 32 del Vol.I** cierra ese volumen invitando a continuar con el Vol.II; el **cap. 40 del Vol.II** cierra el segundo invitando al tercero.
+- El **cap. 1 del Vol.II** («Qué es realmente un grafo») abre citando explícitamente los caps. 1-2 del Vol.I como prerrequisito.
+- Los caps. 21-32 del Vol.I funcionan como «semilleros» del Vol.II: cada uno termina con una nota que apunta al capítulo del Vol.II que implementa lo introducido.
 
-## 0.5. Política de versiones Rust y `Cargo.lock`
+## 0.5. Un solo workspace Rust
 
-- Cada capítulo del Vol.II incluye su propio `Cargo.toml` con versiones **pineadas** (sin `^` ni `~`).
-- Cada workspace de capítulo incluye `rust-toolchain.toml` con la versión exacta de Rust stable usada para escribirlo.
-- El `Cargo.lock` se commitea al repositorio, no se regenera por CI.
-- Si una versión de crate queda obsoleta durante la escritura, se documenta en `book-context/CHANGELOG.md` y se abre una incidencia; **no se reescriben caps ya publicados**.
+Todo el código del Vol.II vive en **un workspace único**, `liradb-workspace/` (ADR-007):
 
-## 0.6. Convención de cross-references
+- Un `Cargo.toml` raíz y **un módulo por capítulo** (`crates/vol2-liradb/src/capNN_*.rs`): el cap. 39 corresponde a `cap39_joins.rs`, y así sucesivamente.
+- La toolchain está **pinea** en `rust-toolchain.toml` (canal `1.96.0`, con `rustfmt` y `clippy`). Cambiarla exige pasar la suite completa y documentarlo en el changelog.
+- Las versiones de crates van **pineadas** (sin `^` ni `~`) y el `Cargo.lock` está **commiteado**: lo que compilamos es lo que tú compilas.
+- Si un crate queda obsoleto durante la escritura, se documenta y se decide en una incidencia; **no se reescriben capítulos ya publicados** salvo errata técnica.
+- Regla de construcción «primero a mano, luego con crates»: cada componente de LiraDB se implementa dos veces — primero con la biblioteca estándar, después con el crate maduro — seguido de un benchmark comparativo y una decisión documentada (ADR) de cuál se queda.
 
-- `(Vol. I, cap. N)` — referencia al Volumen I.
-- `(Vol. II, cap. N)` — referencia al Volumen II.
-- `(cap. N)` sin prefijo — referencia dentro del mismo Volumen.
-- `(LiraDB §N.M)` — referencia a una sección del workspace `liradb-workspace/`.
+Cuando veas `(LiraDB §N.M)` en la prosa, es la referencia al módulo del workspace asociado a esa sección.
 
-## 0.7. Glosario de términos estructurales
+## 0.6. El proceso de producción verificado
+
+Cada capítulo pasa por la misma cadena, en este orden:
+
+1. **Contrato de capítulo**: objetivos de aprendizaje, modelo mental, trampas y ejercicios se acuerdan antes de escribir una línea.
+2. **Código en el workspace**: los ejemplos se implementan como módulos con tests, no como fragmentos sueltos.
+3. **Verificación**: `./liradb-workspace/scripts/verify.sh` debe terminar en **ALL_GREEN** (formato, clippy, tests y golden files). Sin ALL_GREEN no hay prosa.
+4. **Prosa**: el texto explica el código ya verde mediante `include::`; nunca duplica el código.
+5. **Ensamblado**: los documentos finales se generan con `scripts/build_book.sh` a partir del `SUMARIO.txt` de cada volumen.
+6. **Commits**: solo se integran cambios con la suite en ALL_GREEN.
+
+Regla editorial derivada: los ensamblados generados en la raíz del repositorio **nunca se editan a mano** — si algo cambia, cambia la fuente y se regenera.
+
+## 0.7. Cómo se cita
+
+- Toda afirmación técnica lleva **fuente primaria**: paper con venue y año verificados (p. ej. Veldhuizen, ICDT 2014; Ongaro-Ousterhout, USENIX ATC 2014), especificación o documentación oficial del crate.
+- El relato histórico de Kùzu sigue el ADR-001: se cita el paper CIDR 2023 (licencia CC-BY 4.0) y la cronología verificada Waterloo → adquisición por Apple (octubre de 2025) → repositorio archivado → forks comunitarios LadybugDB y bighorn. Nunca diremos que Kùzu fue «renombrada»: LiraDB es una reimplementación conceptual *clean-room* del concepto publicado, con la atribución correspondiente en el colofón.
+- Los términos técnicos en inglés aparecen entre paréntesis la primera vez; luego se usa el término español.
+
+## 0.8. Glosario estructural
+
+Los términos que verás repetirse capítulo a capítulo:
 
 | Término | Significado |
 |---|---|
-| **Capítulo** | Unidad principal (~200-700 líneas). Numerado dentro de cada Vol. |
-| **Parte** | Agrupación de 5-8 capítulos. Numerada en romanos. |
-| **Batería** | Sección recurrente fija. |
-| **Reto esencial/intermedio/experto** | Niveles de ejercicios en Vol.II. |
-| **Claim** | Afirmación técnica con `claim_id` y `confidence_score`. |
-| **Evidence card** | Recorte verificable de fuente, extraído por `source-researcher`. |
-| **Code card** | Snippet de código Rust con `Cargo.toml` asociado. |
-| **ADR** | Architecture Decision Record (Apéndice D Vol.II). |
-
-*(El Manual de estilo se completará con ejemplos canónicos cuando se hayan publicado los primeros caps. del Vol.II.)*
+| **Capítulo** | Unidad principal (~200-700 líneas), numerado dentro de cada volumen. |
+| **Parte** | Agrupación de 5-8 capítulos, numerada en romanos. |
+| **Batería** | Sección recurrente fija que cierra cada capítulo (p. ej. «Pin de batalla»). |
+| **Reto esencial/intermedio/experto** | Niveles de dificultad de los ejercicios propuestos del Vol.II. |
+| **Contrato de capítulo** | Checklist previo a la redacción: objetivos, modelo mental, trampas y ejercicios comprometidos. |
+| **Claim** | Afirmación técnica identificable (`claim_id`) con nivel de confianza y fuente asociada. |
+| **Evidence card** | Recorte verificable de una fuente (paper, doc, spec) que respalda una claim. |
+| **Code card** | Fragmento de código Rust con su `Cargo.toml` y tests asociados en el workspace. |
+| **ADR** | Architecture Decision Record: la decisión y su justificación (Apéndice D del Vol.II). |
 
 ---
-
 # Epílogo — Ya sabes construir una base de datos
 
-> *Borrador.*
+## Lo que hay sobre tu mesa
 
-*(Este epílogo se redactará al cierre de la Fase B, cuando todos los caps. estén en estado `DONE`. Incluirá: qué hemos construido, qué queda por hacer, cómo contribuir al proyecto LiraDB, y una carta al lector.)*
+Este volumen empezó con una pregunta incómoda:
+¿qué convierte una estructura de datos en una base de datos?
+
+No la respondimos con teoría; la respondimos construyendo.
+Cuarenta capítulos después, tienes sobre la mesa a **LiraDB**:
+unas 25.000 líneas de Rust que solo usan la biblioteca estándar
+— cero dependencias de runtime — sostenidas por 892 tests en verde.
+
+## Los hitos del viaje
+
+El primero fue el instante exacto en que tu grafo dejó de caber en memoria:
+descubriste que *representar* ya es diseñar (Parte I).
+
+Luego vino la primera consulta completa,
+de `MATCH` a filas, atravesando lexer, parser, binder, plan lógico y motor Volcano (cap. 20).
+Antes tenías un almacenamiento; desde entonces, una base de datos.
+
+Poco después, el primer commit durable:
+el marcador escrito en el WAL *antes* de aplicar cambios,
+y ARIES rejugando la historia entera tras un crash simulado (caps. 28-29).
+Y el día que `liradb explain` te mostró el plan optimizado (cap. 21),
+viste por primera vez al motor *pensar*.
+
+Los dos números que recordarás siempre llegaron al final:
+el ×63 del almacenamiento columnar y el ×29 de WCOJ sobre un grafo hub-skew (caps. 38-39):
+el layout manda y el skew factura.
+
+Y el clúster Raft girando con tics lógicos (cap. 40):
+elecciones, AppendEntries y compromiso por mayoría,
+deterministas hasta el último paso, sin una sola hebra de red real.
+
+¿Cómo se llegó hasta ahí? Las Partes I y II pensaron el grafo y lo hicieron modelo:
+Property Graph con `Value` tipado, el trait `GraphStore` como frontera hexagonal,
+un formato binario con magic number y CRC, un log append-only.
+La Parte III le puso músculo físico:
+slotted pages, pager, buffer pool Clock/LRU con métricas,
+el CSR persistente — hallazgo ×16 frente al puerto ingenuo —,
+índices hash y B+ tree, compactación con `inspect | check | compact`.
+
+La Parte IV construyó LiraQL *antes* de escribir su código,
+parser descendente a mano incluido,
+con el bug del binder conservado a propósito como caso de estudio.
+
+La Parte V cargó algoritmos sobre el grafo persistente:
+Dijkstra y Bellman-Ford con semántica estricta de pesos, A* con heurísticas tuyas,
+centralidad y PageRank — con el eigenvector como honesto «antes» —,
+Louvain determinista y presupuestos de streaming que se miden, no se prometen
+(la tesis del test 2/499 sigue ahí).
+
+La Parte VI veló porque nada se perdiera:
+transacciones con vocabulario ACID sin maquillaje,
+MVCC con snapshots y niveles de aislamiento,
+y el `GrafoEspera` cobrando puntual la deuda del cap. 30.
+
+La Parte VII abrió las puertas de operación:
+REPL de `liradb`, import/export streaming en CSV, JSONL y GraphML,
+torre de pruebas (invariantes, proptest, goldens),
+benchmarks con dataset determinista donde el catálogo cuadrático
+quedó *documentado*, no parcheado,
+observabilidad con `--profile`,
+y un smoke test que recorre el edificio entero de arriba abajo.
+
+Y la Parte VIII levantó la vista:
+particionado hash contra comunidad con la factura de cortes delante (−40,7 %),
+vertex-cut para domar al hub, consenso Raft por tics.
+De un `Vec<Vec<usize>>` a un sistema distribuido emulable en tu portátil.
+
+## Lo que LiraDB NO hace
+
+Si has llegado hasta aquí, ya conoces la honestidad de la casa:
+`informe_acid()` admite qué propiedades ACID no cumplimos,
+y `informe_produccion()` resume con un 0·6·5 lo que falta para producción.
+
+No hay red real, no hay transacciones distribuidas,
+el catálogo escala cuadráticamente y lo sabemos,
+y así está escrito en el código y en estas páginas.
+Que sea deliberado no lo hace menos serio:
+es la decisión pedagógica central del libro.
+
+Un motor que *finge* ser de producción esconde sus decisiones detrás del marketing;
+uno didáctico las muestra con nombre, número y test.
+Cuando abras la documentación de PostgreSQL o el código de SQLite,
+vas a reconocer cada pieza: el buffer pool, el WAL, el planificador.
+Ese reconocimiento es el objetivo. Enseñar vale más que fingir.
+
+## Qué queda por hacer — y cómo tú puedes seguir
+
+El proyecto vive en <https://github.com/Rubentxu/grafos-bbdd-desde-cero>:
+issues y PRs bienvenidos.
+Las deudas documentadas son ejercicios reales esperando a alguien con tiempo:
+
+- `Catalog::collect` es cuadrático:
+  hazlo incremental y mide el antes/después en los benchmarks del cap. 34.
+- El `HashIndex` nunca crece: implanta rehashing por factor de carga.
+- El importador JSONL decide hoy de forma conservadora qué hacer
+  con floats que parecen enteros:
+  define la semántica que crees correcta y defiéndela con tests.
+
+Más allá quedan los frentes abiertos del cap. 40:
+paralelizar LeapFrog morsel-driven, orden dinámico de variables,
+compactación y snapshots del log replicado,
+o sustituir los tics por un runtime asíncrono con red de verdad.
+
+Y luego está la puerta siguiente.
+El Vol.III — «Grafos en la era de la IA» — empieza justo donde este cierra:
+KB-Lira, GraphRAG, la memoria de un agente que necesita un grafo.
+Lo que aquí construiste pieza a pieza se convertirá allí
+en infraestructura de sistemas que razonan.
+
+## Carta al lector
+
+Te escribo esto el día que el volumen se cierra, y quiero decírtelo sin rodeos:
+usar una base de datos y entender una base de datos
+son dos habilidades distintas,
+y solo una de ellas sobrevive a las 3 de la madrugada de un incidente.
+
+Ningún tutorial te da lo que te ha dado este viaje.
+Los tutoriales te muestran el resultado;
+construir desde cero te obliga a habitar cada decisión:
+por qué el commit marker va antes del apply,
+por qué el eigenvector era un «antes» honesto y no un fracaso,
+por qué un ×63 puede salir de cambiar un layout sin tocar un algoritmo.
+Ese conocimiento no se descarga; se gana sudando tests.
+Si llegaste hasta aquí, ya no miras las bases de datos igual.
+Abres un `EXPLAIN` ajeno y ves un plan;
+ves un log y piensas en recuperación;
+escuchas «distribuido» y preguntas por cortes y réplicas.
+
+Gracias por construir conmigo en lugar de conformarte con consumir.
+Nos vemos en el Vol.III. Trae tus contadores.
 
 ---
 
+> «What I cannot create, I do not understand.»
+>
+> — Richard Feynman, anotación hallada en la pizarra de su despacho de Caltech tras su muerte (1988)
 # Colofón
 
-**Agradecimientos** — *pendiente*.
+**Agradecimientos** — A los investigadores cuyo trabajo este volumen explica y reimplementa conceptualmente: Semih Salihoğlu y el equipo de Kùzu (atribuidos abajo), Peter Boncz, Marcin Zukowski y Niels Nes por MonetDB/X100, Diego Ongaro y John Ousterhout por Raft, Grzegorz Malewicz y colegas por Pregel, Joseph Gonzalez y colegas por PowerGraph, y C. Mohan y colegas por ARIES. A PostgreSQL y SQLite como referentes docentes eternos: generaciones enteras aprendieron internals de bases de datos leyendo su código y sus documentos. A la comunidad de Rust, por una biblioteca estándar tan completa que permitió construir LiraDB entero sin una sola dependencia. Y a ti, lector, por construir en lugar de consumir.
 
-**Sobre esta edición** — *pendiente*.
+**Sobre esta edición** — Edición unificada 2026 de una obra en tres volúmenes. Este Volumen II, «Construye LiraDB», queda cerrado con 40 capítulos y 5 apéndices (A-E). Todo el código está escrito en Rust (edición 2024) usando exclusivamente la biblioteca estándar, sin dependencias de runtime, y se verifica con 892 tests en verde: cada ejemplo del libro es el mismo código que se compila y se prueba.
 
 **Versión Python** — El Vol.II tendrá una versión paralela en Python (LiraDB-py) en un repositorio hermano, compartiendo estructura y decisiones arquitectónicas.
 
@@ -14160,8 +14320,4 @@ Ambas voces son válidas y complementarias. El Vol.I te enseña *qué es* un gra
 
 **Atribuciones** — A Semih Salihoğlu y al equipo de Kùzu —Guodong Jin, Xiyang Feng, Ziyi Chen, Chang Liu y el resto del grupo de la Universidad de Waterloo— por los papers seminales sobre GDBMS modernos, en particular «KÙZU Graph Database Management System» (CIDR 2023). La arquitectura conceptual de los caps. 37-40 del Vol.II se inspira en ese paper y en las publicaciones del grupo; la reimplementación es clean-room: ningún código de Kùzu ha sido copiado. Kùzu Inc., la empresa que comercializó la base de datos con licencia MIT, fue adquirida por Apple en octubre de 2025 y su repositorio quedó archivado; el proyecto continúa hoy en forks comunitarios como LadybugDB y bighorn. Los papers permanecen públicamente accesibles bajo sus licencias originales (CC-BY 4.0 / MIT según el caso). Texto y código de este libro están bajo CC BY-NC-SA 4.0.
 
-**Contacto** — *pendiente*.
-
----
-
-*Fin del esqueleto del Volumen II. El cuerpo se redactará en las Fases B-C del workflow BOOK-WORKFLOW.*
+**Contacto** — Errores, sugerencias y contribuciones: <https://github.com/Rubentxu/grafos-bbdd-desde-cero> (issues y PRs bienvenidos).
