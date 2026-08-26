@@ -269,3 +269,19 @@
 **Estado al cierre**: ALL_GREEN **993 tests**. Vol.III **4/13 caps DONE** (~1.574 líneas ensambladas). Parte I 4/5.
 
 **Próxima sesión**: cap-45 «Ingesta: del archivo al grafo» (Parte I cap 5 — CIERRA LA PARTE I) — pipeline CSV/JSONL con dedup, validación al importar (write-time, el esquema del cap-44 aplicado al vuelo), transaction-time automático (el Historico del cap-43 alimentado por ingesta).
+
+## 2026-08-26 — Sesión 48
+
+**Asistentes**: book-orchestrator + chapter-planner + 13 generator-agentes TROCEADOS + chapter-writer.
+
+**Trabajo realizado**: Cap. 45 «Workflows de ingesta: de datos crudos al grafo» DONE — **PARTE I DEL VOL.III CERRADA (caps 41-45)**.
+- Contrato (481 líneas, commit 0aa5c2e): pipeline 4 etapas con esquema como validar (2 niveles), lotes 25, idempotencia por clave natural, ER (blocking+Levenshtein+jaccard+componentes cap-25), fusión con HistorialIngesta. Citas: Christen (Springer 2012), Swoosh (VLDB J. 18(1), 2009), Levenshtein (1966), GIGO (verificado: prensa 10-nov-1957, The Hammond Times).
+- Código por 13 piezas troceadas: `cap45_ingesta.rs` (3.648 líneas, 24 tests) + datasets/kb-lira/paso-5/ (crudos 221 filas + nodes/edges). 993→1017 ALL_GREEN.
+- Cifras reales: 221 filas → 11 lotes → 4 rechazos → 6 fusiones (con 6 conflictos declarados, orcid malformado entre ellos) → **67 nodos/158 aristas**, esquema cap-44 Ok; ER 91→11 pares (80 evitadas), 9 clusters (5 Anas + 2 Betos + 7 singletons); jaccard 0,4/0,3/0,11; Levenshtein typo 0,97 vs par legítimo 0,77; **cura Tema 26/61 (68→67)** — el arco del cap-44 cerrado («delatar no es curar»).
+- HALLAZGOS: (1) P2 rota al principio (el CSV crudo no transportaba `order`) → columna añadida (40 filas AUTHORED) y P2 reparada — la lección «la ingesta pierde la riqueza que el builder tenía a mano»; (2) el orcid malformado NO se rechaza (debe llegar a la fusión para declarar el conflicto — discrepancias documentadas); (3) Levenshtein ≥0,9 para títulos (jaccard sobrefundiría); (4) clave natural de Persona = primer token.
+- Prosa (375 líneas, 20 secciones): anécdota GIGO (verificada 1957); historia pequeña = el typo de un carácter (0,97 vs 0,77); repaso-árco de cierre de Parte I + puente a Parte II (RDF/SHACL/lenguajes).
+- SUMARIO vol3 + rebuild 1574 → **1949 líneas**. Commits 36795b5 / 5d671e4.
+
+**Estado al cierre**: ALL_GREEN **1017 tests**. Vol.III **5/13 caps DONE — PARTE I CERRADA** (~1.949 líneas ensambladas).
+
+**Próxima sesión (mañana)**: **Parte II «Razonar sobre el grafo»** — cap-46 «El modelo RDF: tripletas, quads e IRIs» (Parte II cap 1): la otra gran familia de modelos (contraste con LPG, reificación de tripletas, SPARQL como lenguaje — anzuelo al cap-48). Después caps 47 (ontologías/SHACL), 48 (lenguajes de consulta Cypher/GQL/SPARQL), 49 (embeddings)... PATRÓN ESTABLECIDO: contrato commiteado → troceo 12-17 piezas → prosa → commits ALL_GREEN. Recordatorio: regenerar build/ antes de publicar (deudas reparadas post-render).

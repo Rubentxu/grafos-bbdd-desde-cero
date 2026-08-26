@@ -35,9 +35,9 @@ volumes:
   - id: vol-III
     title: "Grafos en la era de la IA: modelar, razonar y recuperar"
     file: vol3-grafos-era-ia.md
-    state: DRAFTING                          # caps 41-44 DONE; 9 restantes en bucle B/C
+    state: DRAFTING                          # PARTE I CERRADA (caps 41-45 DONE); 8 restantes en bucle B/C
     chapters_total: 13
-    chapters_done: 4                         # caps 41-44 (pasos 1-4: modelo, antipatrones, temporalidad, esquema)
+    chapters_done: 5                         # caps 41-45 (pasos 1-5: PARTE I COMPLETA)
     appendices: [A, B, C, D, E]
     style: "Híbrido (plantilla Apéndice 0) + metodología teaching (CONVENTIONS §2)"
     current_macro_phase: B/C                  # bucle capítulo: planner→generator→writer
@@ -312,7 +312,13 @@ vol-III-chapters:
     cycle: 0
     workspace_crate: vol2-liradb
     module: cap44_esquema
-  # caps 45-53: PLANNED (outline aprobado ADR-005; planificar en orden)
+  - id: vol-III-cap-45  # Workflows de ingesta: de datos crudos al grafo — CIERRA LA PARTE I
+    state: DONE        # código+prosa en sesión 2026-08-26 (Sesión 48) — pipeline 4 etapas, ER (91→11), fusión con conflictos, cura Tema 26/61; KB-Lira paso-5
+    blocked_on: null
+    cycle: 0
+    workspace_crate: vol2-liradb
+    module: cap45_ingesta
+  # caps 46-53: PLANNED (outline aprobado ADR-005; planificar en orden)
 ```
 
 ## Decisiones arquitectónicas (ADRs, mini-resumen)
